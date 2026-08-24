@@ -9,6 +9,58 @@ is, and nothing should learn.
 | `geo.js` | Boxes, buffers and coverage. Named `west/south/east/north`, never four bare numbers |
 | `dem.js` | 3DEP terrain discovery through The National Map |
 | `hrrr.js` | HRRR request building through the NOMADS GRIB2 filter |
+| `profile.js` | The `windProfile` contract: what a field looks like leaving here, and every check it has to pass |
+
+## The `windProfile` contract — v1
+
+The payload that crosses the product line, and the thing to treat as published rather
+than internal. `profile.js` owns it; `lib/solver.js` consumes it and reports what it
+did. Every key below is **required to be present**, with `null` the legal way to say
+"not known" or "calm on this axis".
+
+| Key | Type | Meaning |
+| --- | --- | --- |
+| `schemaVersion` | `1` | Contract version. Read before anything else |
+| `frame` | `"shooter"` | `u` along the downrange axis, `v` to the shooter's right, `w` up. The only frame accepted |
+| `azimuthDeg` | 0…360 | True-north bearing **of the downrange axis** — not where the wind comes from |
+| `rangesYards` | number[] | Strictly ascending, 0…20000 |
+| `heightsAglFt` | number[] | Strictly ascending, −1000…30000 |
+| `uFps` `vFps` `wFps` | grid or `null` | `[heightIndex][rangeIndex]`, finite, ≤ 300 fps. `null` means calm on that axis |
+| `source` | string | Where the field came from, e.g. `"hrrr:2024-06-01T18Z+f01"` |
+| `terrainResolutionM` | number \| `null` | Resolution of the terrain the downscaling used |
+| `windSourceResolutionM` | number \| `null` | Native resolution of the weather model |
+| `confidence` | 0…1 \| `null` | The engine's own account of how much to believe the field |
+
+Components are the velocity **of the air**, which is the opposite sense to the app's
+clock convention: a "3 o'clock wind" names where the wind blows *from*, and blows
+toward the shooter's left, so it is negative `v`.
+
+Sampling is bilinear between nodes and **flat outside them** — the edge value is held
+rather than extrapolating a wind nobody looked at.
+
+### Why it refuses things
+
+A field that cannot be trusted comes back `{ ok: false, code, reason }`, and the solver
+reports `windProfileApplied: false` with the same code and sentence. It is never
+silently ignored and never partially applied, because the failure mode being avoided is
+a confident, wrong hold.
+
+| Code | Raised when |
+| --- | --- |
+| `not-an-object`, `missing-field`, `unknown-field`, `unsupported-version` | The envelope is not v1 |
+| `unsupported-frame` | Anything but `"shooter"` — an east-north field is numerically indistinguishable, so it has to be declared and rotated by the sender |
+| `azimuth-missing`, `azimuth-mismatch` | The shot has no bearing, or the field describes a different one. This is the one field nothing else can catch: get it wrong and every shot solves as if fired due north |
+| `malformed-axis`, `malformed-grid`, `out-of-range` | Shape, ordering, finiteness, or a magnitude that means the units are wrong |
+| `unsupported-vertical-wind` | A non-zero `wFps`. The 3DOF solver has no vertical wind term, and discarding a measured updraft quietly is worse than refusing the field |
+
+The codes are the stable half of the answer — a caller may branch on them. The sentences
+are for a person and may be reworded.
+
+**Presence is required on purpose.** A mistyped `uMps` is otherwise just an absent
+`uFps`, which reads as calm and solves cleanly; a missing confidence and an unknown
+confidence look identical on a screen, and only one of them is honest.
+
+## Ingestion
 
 **Request building is separated from request making.** Everything except `dem.discover`
 is a pure function over URLs and JSON, so selection logic, cycle arithmetic and box
