@@ -8,6 +8,25 @@ agriculture — and BallisticVector is one API consumer among them. **Nothing in
 what a rifle is, and nothing should learn.** See `AGENTS.md` for where that line runs and
 why a `forShot=` parameter is the way it dies.
 
+> **What works today:** the `windProfile` contract and the request-building half of
+> ingestion. Nothing here fetches a GRIB2 message or a GeoTIFF yet — see
+> [Not built yet](#not-built-yet). **Read [Things that bite](#things-that-bite) before you
+> touch ingestion**, not after: three of the four items there look like working code
+> returning an ordinary answer.
+
+## Contents
+
+- [Modules](#modules)
+- [Using it](#using-it) · [Why the tarball](#why-the-tarball) · [Releasing a contract change](#releasing-a-contract-change)
+- [The `windProfile` contract — v1](#the-windprofile-contract--v1) · [The frame](#the-frame) · [The keys](#the-keys) · [The grids](#the-grids) · [Why it refuses things](#why-it-refuses-things)
+- [Ingestion](#ingestion)
+- [Measured, not assumed](#measured-not-assumed)
+- [Resolution is a finding, not a setting](#resolution-is-a-finding-not-a-setting)
+- [Things that bite](#things-that-bite)
+- [Not built yet](#not-built-yet)
+
+## Modules
+
 | Module | What it does |
 | --- | --- |
 | `geo.js` | Boxes, buffers and coverage. Named `west/south/east/north`, never four bare numbers |
@@ -27,50 +46,115 @@ reach a caller on a Tuesday:
 }
 ```
 
-The release tarball rather than `github:ballisticvector/windsolver#v1.0.0`, because npm
-rewrites the shorthand to `git+ssh://git@github.com/…` in the consumer's lockfile, and
-`npm ci` then needs an SSH key on every runner and host that installs it — three of them
-in BallisticVector's case, to fetch a public repo. The tarball is plain HTTPS and npm
-records an integrity hash for it, so no credential is needed anywhere and a moved tag
-fails the install loudly instead of quietly delivering different code.
-
 ```js
 const { validateWindProfile, sampleWindField } = require("@ballisticvector/windsolver/profile");
 ```
 
-The repo is public so that resolves with no credential — on a CI runner, on a deploy
-runner and on the droplet, which is three places a private-repo token would have had to
-live and expire.
+That is the whole install. The repo is public, so it resolves with no credential — on a
+CI runner, on a deploy runner and on the droplet.
 
-**Releasing a contract change:** land it here, tag it, then bump the pin in the consumer
-in its own PR. The consumer's full suite running against the new tag is the test that the
-change did not break anything; there is no job in this repo that can do it, because
-checking out a private consumer from a public repo needs a credential and a job that
-skips without one asserts nothing while looking like it does.
+### Why the tarball
+
+Rather than `github:ballisticvector/windsolver#v1.0.0`: npm rewrites the shorthand to
+`git+ssh://git@github.com/…` in the consumer's lockfile, and `npm ci` then needs an SSH
+key on every runner and host that installs it — three of them in BallisticVector's case,
+to fetch a public repo. The tarball is plain HTTPS and npm records an integrity hash for
+it, so no credential is needed anywhere and a moved tag fails the install loudly instead
+of quietly delivering different code.
+
+### Releasing a contract change
+
+Land it here, tag it, then bump the pin in the consumer in its own PR. The consumer's
+full suite running against the new tag is the test that the change did not break
+anything; there is no job in this repo that can do it, because checking out a private
+consumer from a public repo needs a credential and a job that skips without one asserts
+nothing while looking like it does.
 
 ## The `windProfile` contract — v1
 
 The payload that crosses the product line, and the thing to treat as published rather
 than internal. `profile.js` owns it; BallisticVector's `lib/solver.js` consumes it and
-reports what it did. Every key below is **required to be present**, with `null` the legal way to say
-"not known" or "calm on this axis".
+reports what it did.
 
-| Key | Type | Meaning |
-| --- | --- | --- |
-| `schemaVersion` | `1` | Contract version. Read before anything else |
-| `frame` | `"shooter"` | `u` along the downrange axis, `v` to the shooter's right, `w` up. The only frame accepted |
-| `azimuthDeg` | 0…360 | True-north bearing **of the downrange axis** — not where the wind comes from |
-| `rangesYards` | number[] | Strictly ascending, 0…20000 |
-| `heightsAglFt` | number[] | Strictly ascending, −1000…30000 |
-| `uFps` `vFps` `wFps` | grid or `null` | `[heightIndex][rangeIndex]`, finite, ≤ 300 fps. `null` means calm on that axis |
-| `source` | string | Where the field came from, e.g. `"hrrr:2024-06-01T18Z+f01"` |
-| `terrainResolutionM` | number \| `null` | Resolution of the terrain the downscaling used |
-| `windSourceResolutionM` | number \| `null` | Native resolution of the weather model |
-| `confidence` | 0…1 \| `null` | The engine's own account of how much to believe the field |
+### The frame
 
-Components are the velocity **of the air**, which is the opposite sense to the app's
-clock convention: a "3 o'clock wind" names where the wind blows *from*, and blows
-toward the shooter's left, so it is negative `v`.
+`frame: "shooter"` is a right-handed coordinate system pinned to **one shot**: its origin
+is the muzzle, and its downrange axis is the bearing in `azimuthDeg`. It is not a
+compass frame, and the same air over the same ground has different numbers in it for
+two shooters facing different ways — which is why the frame has to be declared and why
+an east-north field must be rotated by the sender rather than sent as-is.
+
+Looking down on a shot fired due east — `azimuthDeg: 90` — with a 10 mph wind out of the
+south, which for this shooter is a 3 o'clock wind:
+
+```
+   N (0°)
+   ^
+   |                        +u  downrange, azimuthDeg = 90
+   |     muzzle o---------------------------------> target
+   |            |
+   |            |  +v  to the shooter's RIGHT (here, due south)
+   |            v                    +w is up, out of the page
+   |
+   |            air moves south -> north, i.e. toward the shooter's LEFT:
+   |            uFps = 0,  vFps = -14.7,  wFps = 0     (10 mph = 14.7 fps)
+```
+
+The sign is the part that catches people. Components are the velocity **of the air**,
+whereas the app's clock convention names where the wind comes **from**. A "3 o'clock
+wind" blows from the shooter's right, toward their left, so it is **negative** `v` —
+and it pushes the bullet left, so the shooter dials right.
+
+Heights are **above ground level**, in feet, not above the muzzle and not above sea
+level. Ranges are in yards from the muzzle along the downrange axis.
+
+### The keys
+
+**Every key is required to be present.** The `Null?` column says only whether `null` is
+an accepted *value* — never whether the key may be omitted. Omitting one is
+`missing-field`, including the ones that are nearly always `null` in practice.
+
+| Key | Type | Null? | Meaning |
+| --- | --- | --- | --- |
+| `schemaVersion` | `1` | no | Contract version. Read before anything else |
+| `frame` | `"shooter"` | no | The only frame accepted — see above |
+| `azimuthDeg` | 0…360 | no | True-north bearing **of the downrange axis** — not where the wind comes from |
+| `rangesYards` | number[] | no | Strictly ascending, 0…20000. Non-empty |
+| `heightsAglFt` | number[] | no | Strictly ascending, −1000…30000. Non-empty |
+| `uFps` `vFps` `wFps` | grid | **yes** | See below. `null` means calm on that axis, and is expanded to a zero grid |
+| `source` | string | no | Non-empty, ≤ 200 chars, naming where the field came from, e.g. `"hrrr:2024-06-01T18Z+f01"` |
+| `terrainResolutionM` | number | **yes** | Resolution of the terrain the downscaling used |
+| `windSourceResolutionM` | number | **yes** | Native resolution of the weather model |
+| `confidence` | 0…1 | **yes** | The engine's own account of how much to believe the field |
+
+### The grids
+
+Each of `uFps`, `vFps` and `wFps` is a **2D array of arrays**, indexed
+`[heightIndex][rangeIndex]`, with **exactly** `heightsAglFt.length` rows each of
+**exactly** `rangesYards.length` numbers. A flat array is not accepted, and a row of the
+wrong length is `malformed-grid` rather than being padded or truncated — a grid whose
+shape disagrees with its axes is a units-or-transpose bug, and guessing which is how a
+transposed field becomes a plausible wrong answer. The two axes are independent and
+routinely differ in length.
+
+Two heights × three ranges: no headwind component, and a left-blowing crosswind that
+strengthens both with height and downrange.
+
+```js
+{
+  rangesYards:  [0, 500, 1000],     // 3 columns
+  heightsAglFt: [6, 60],            // 2 rows
+  uFps: [[0, 0, 0],                 // [heightIndex][rangeIndex]
+         [0, 0, 0]],
+  vFps: [[-7.3, -8.8, -10.3],       // 5–7 mph at 6 ft AGL
+         [-11.7, -13.2, -14.7]],    // 8–10 mph at 60 ft AGL
+  wFps: null                        // no vertical component: same as a zero grid
+}
+```
+
+Every component must be finite and **within ±300 fps, which is a refusal and not a
+warning**: 300 fps is 205 mph, past any surface wind ever recorded, so a value beyond it
+is a field built in cm/s or km/h and labelled fps. It comes back `out-of-range`.
 
 Sampling is bilinear between nodes and **flat outside them** — the edge value is held
 rather than extrapolating a wind nobody looked at.
@@ -88,14 +172,18 @@ a confident, wrong hold.
 | `unsupported-frame` | Anything but `"shooter"` — an east-north field is numerically indistinguishable, so it has to be declared and rotated by the sender |
 | `azimuth-missing`, `azimuth-mismatch` | The shot has no bearing, or the field describes a different one. This is the one field nothing else can catch: get it wrong and every shot solves as if fired due north |
 | `malformed-axis`, `malformed-grid`, `out-of-range` | Shape, ordering, finiteness, or a magnitude that means the units are wrong |
+| `malformed-field` | `source` is absent as a description: empty, not a string, or over 200 characters |
 | `unsupported-vertical-wind` | A non-zero `wFps`. The 3DOF solver has no vertical wind term, and discarding a measured updraft quietly is worse than refusing the field |
 
 The codes are the stable half of the answer — a caller may branch on them. The sentences
 are for a person and may be reworded.
 
-**Presence is required on purpose.** A mistyped `uMps` is otherwise just an absent
-`uFps`, which reads as calm and solves cleanly; a missing confidence and an unknown
-confidence look identical on a screen, and only one of them is honest.
+**Presence is required on purpose, and it is why `null` has to be spelled out.** A
+mistyped `uMps` is otherwise just an absent `uFps`, which reads as calm and solves
+cleanly; a missing confidence and an unknown confidence look identical on a screen, and
+only one of them is honest. Sending `confidence: null` is a sender saying *I do not
+know*; omitting it is a sender who has not read this page, and the two must not be
+allowed to look the same.
 
 ## Ingestion
 
@@ -180,3 +268,16 @@ Fetching and decoding. Nothing here reads a GRIB2 message or a GeoTIFF — `disc
 returns *what to fetch*, and the pipeline that turns those into a terrain grid and a
 wind field is the next piece, along with caching, which is what decides whether the
 "seconds" tier in the design document is real.
+
+**What a caller can rely on today** is `profile.js` — the contract, its validation and
+its sampling — plus the request builders in `geo.js`, `dem.js` and `hrrr.js`. That is
+what BallisticVector installs and runs in production; it is not a preview. What it
+cannot do is *produce* a field, so a caller has to bring its own and have it validated,
+which is exactly what BV does with a browser-built wind call.
+
+**On the version number:** `1.0.0` is the version of the *published contract*, and it is
+deliberately not a claim that the product is finished. A `0.x` package would imply the
+payload may be reshaped without warning, which is the opposite of the promise being made
+— the whole reason the consumer pins a tag is that this shape is stable. The ingestion
+pipeline is unbuilt, and building it should add modules and tags, not change what a
+valid `windProfile` is. If it ever has to, that is a `2.0.0` and a consumer PR.
