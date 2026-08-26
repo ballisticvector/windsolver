@@ -1,8 +1,10 @@
-# WindSolver — ingestion
+# WindSolver
 
-Turning a coordinate into the terrain and atmosphere a wind solve needs. This is the
-engine side of the split described in `AGENTS.md`: nothing in here knows what a rifle
-is, and nothing should learn.
+Turning a coordinate into the terrain and atmosphere a wind solve needs. windsolver.com
+is being built as a product in its own right — boating, hiking, sailing, flying, fire,
+agriculture — and BallisticVector is one API consumer among them. **Nothing in here knows
+what a rifle is, and nothing should learn.** See `AGENTS.md` for where that line runs and
+why a `forShot=` parameter is the way it dies.
 
 | Module | What it does |
 | --- | --- |
@@ -11,11 +13,36 @@ is, and nothing should learn.
 | `hrrr.js` | HRRR request building through the NOMADS GRIB2 filter |
 | `profile.js` | The `windProfile` contract: what a field looks like leaving here, and every check it has to pass |
 
+## Using it
+
+Consumers pin a tag rather than tracking a branch, so a change to the contract cannot
+reach a caller on a Tuesday:
+
+```json
+"dependencies": {
+  "@ballisticvector/windsolver": "github:ballisticvector/windsolver#v1.0.0"
+}
+```
+
+```js
+const { validateWindProfile, sampleWindField } = require("@ballisticvector/windsolver/profile");
+```
+
+The repo is public so that resolves with no credential — on a CI runner, on a deploy
+runner and on the droplet, which is three places a private-repo token would have had to
+live and expire.
+
+**Releasing a contract change:** land it here, tag it, then bump the pin in the consumer
+in its own PR. The consumer's full suite running against the new tag is the test that the
+change did not break anything; there is no job in this repo that can do it, because
+checking out a private consumer from a public repo needs a credential and a job that
+skips without one asserts nothing while looking like it does.
+
 ## The `windProfile` contract — v1
 
 The payload that crosses the product line, and the thing to treat as published rather
-than internal. `profile.js` owns it; `lib/solver.js` consumes it and reports what it
-did. Every key below is **required to be present**, with `null` the legal way to say
+than internal. `profile.js` owns it; BallisticVector's `lib/solver.js` consumes it and
+reports what it did. Every key below is **required to be present**, with `null` the legal way to say
 "not known" or "calm on this axis".
 
 | Key | Type | Meaning |
@@ -64,13 +91,14 @@ confidence look identical on a screen, and only one of them is honest.
 
 **Request building is separated from request making.** Everything except `dem.discover`
 is a pure function over URLs and JSON, so selection logic, cycle arithmetic and box
-maths are tested with no network — see `tests/windsolver.test.js`. `discover` takes a
+maths are tested with no network — see `tests/ingestion.test.js`. `discover` takes a
 `fetchJson` so even it can be tested offline.
 
 ## Measured, not assumed
 
-Run live against a 2-mile display domain at **36.77, −104.49** — the coordinate from
-`docs/terrain-wind-map.md` — with a 6-mile buffer, so a 16 × 16 mile simulation domain:
+Run live against a 2-mile display domain at **36.77, −104.49** — the coordinate from the
+terrain wind map design, `docs/terrain-wind-map.md` in the BallisticVector repo — with a
+6-mile buffer, so a 16 × 16 mile simulation domain:
 
 | | Result |
 | --- | --- |

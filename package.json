@@ -1,0 +1,27 @@
+{
+  "name": "@ballisticvector/windsolver",
+  "version": "1.0.0",
+  "description": "WindSolver: terrain and atmosphere ingestion, and the windProfile contract that crosses the product line",
+  "main": "profile.js",
+  "type": "commonjs",
+  "files": [
+    "profile.js",
+    "geo.js",
+    "dem.js",
+    "hrrr.js",
+    "README.md"
+  ],
+  "scripts": {
+    "test": "jest tests/",
+    "lint": "eslint ."
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ballisticvector/windsolver.git"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.39.4",
+    "eslint": "^9.39.4",
+    "jest": "^30.4.2"
+  }
+}
