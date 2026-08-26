@@ -4,6 +4,44 @@ Notes for anyone — human or AI agent — picking up work here. `README.md` doc
 modules and the contract; this file covers the decisions that are not visible in the
 code and that will otherwise be undone by accident.
 
+## Contents
+
+- [Start here](#start-here) — the four rules, and the ones that bite
+- [What this is](#what-this-is)
+- [The line: WindSolver knows nothing about rifles](#the-line-windsolver-knows-nothing-about-rifles)
+- [The contract is published, not internal](#the-contract-is-published-not-internal)
+- [The shooter's grid is a projection, not the native shape](#the-shooters-grid-is-a-projection-not-the-native-shape)
+- [Things that bite](#things-that-bite)
+- [Licensing, before anything is sold](#licensing-before-anything-is-sold)
+- [Conventions](#conventions)
+
+## Start here
+
+```bash
+npm install
+npm test
+npm run lint
+```
+
+- Conventional commits (`feat:`, `fix:`, `test:`, `docs:`, `chore:`). Branch from `main`
+  with a `devin/…` or `claude/…` prefix, land through a PR, CI green before merge.
+- ESLint enforces `eqeqeq`, `no-var`, `prefer-const`, and no unused variables.
+- Write the failing test first for anything the contract or the geometry turns on.
+- **Say what you did not verify.** The rest is in [Conventions](#conventions).
+
+> **Read this before you touch ingestion.** Three of these four look like working code
+> returning an ordinary answer, which is why they cost time rather than failing loudly.
+> Full detail in [Things that bite](#things-that-bite) and in `README.md`.
+>
+> - **Dataset tags are matched verbatim** — a near-miss returns an empty result, which
+>   is indistinguishable from "no terrain here".
+> - **NOMADS answers a bad request with an HTML error page and HTTP 200** — the failure
+>   arrives downstream as a GRIB file that will not parse.
+> - **The HRRR availability lag is an assumption, not a measurement** — 75 minutes,
+>   chosen conservatively, never measured from this codebase.
+> - **Coverage is sampled, not exact** — fine for "good enough or fall back", not a
+>   number to show a user.
+
 ## What this is
 
 WindSolver turns a coordinate into an atmosphere over real ground: USGS 3DEP terrain,
@@ -30,13 +68,27 @@ calls.** A wind solution custom to a rifle and load is a BallisticVector feature
 turning drift into a hold, and drawing it on a reticle all happen on the consumer's
 side.
 
+To be clear that this is a prediction and not a war story: **nobody has asked for
+`forShot=` yet.** It is written down now precisely because it has not happened — the
+moment it does it will arrive as a small, reasonable-sounding request from the one
+consumer that exists, and the cost of agreeing to it is invisible until a second
+consumer needs the same endpoint without a rifle.
+
 ## The contract is published, not internal
 
 `profile.js` is the `windProfile` v1 contract: a range × height grid of `u`/`v`/`w` in
-the shooter's frame, with an azimuth, a source, two resolutions and a confidence. It
-exists so there is **one definition of a valid field rather than two that drift**, which
-is the whole reason this module is a dependency of the consumer rather than a copy in
-it.
+the shooter's frame, with an azimuth, a source, two resolutions and a confidence.
+
+**The shooter's frame** is a right-handed coordinate system pinned to one shot: origin
+at the muzzle, `u` along the downrange axis named by `azimuthDeg`, `v` positive to the
+shooter's right, `w` positive up, all three the velocity *of the air* in fps. It is not
+a compass frame — two shooters standing together facing different ways describe the same
+air with different numbers — which is why the sender has to rotate an east-north field
+rather than hand it over as-is. `README.md` has the diagram.
+
+The contract exists so there is **one definition of a valid field rather than two that
+drift**, which is the whole reason this module is a dependency of the consumer rather
+than a copy in it.
 
 - Adding a key is cheap. Changing what an existing key *means* breaks a caller you
   cannot see — treat it the way you would treat a change to a published endpoint, and
@@ -52,10 +104,14 @@ it.
 
 ## The shooter's grid is a projection, not the native shape
 
-The general service answers over a **volume and a time**. A sailor and a fire crew have
-no `azimuthDeg` to give it, so a range × height slice along a bearing must be a
-documented *view* over a more general field, not the format everything else is bent
-into.
+The general service answers over a **volume and a time**: wind components on a 3D grid
+— a lat/long bbox × a set of vertical levels — valid at one instant, with no bearing
+anywhere in it. That is the *volume endpoint*. The shooter's range × height grid is one
+vertical plane cut out of that volume along `azimuthDeg` and re-expressed in the
+shooter's frame; a sailor asking about a bay wants a horizontal slice at 10 m, and a
+fire crew wants the whole box. A sailor and a fire crew have no `azimuthDeg` to give it,
+so the shooter's slice must be a documented *view* over the general field, not the
+format everything else is bent into.
 
 **This decides the cache key, and that is the deadline.** `(bbox, level set, valid
 time)` — never `(azimuth, ranges)`. Producing a slice at ingestion collapses two
@@ -70,10 +126,10 @@ same mistake as a shooter-shaped field, pointing the other way.
 
 ## Things that bite
 
-Read the "Things that bite" section of `README.md` before touching ingestion: dataset
-tags are matched verbatim, NOMADS answers a bad request with an HTML error page and
-HTTP 200, the HRRR availability lag is an assumption rather than a measurement, and
-coverage is sampled rather than exact.
+The four summarised at the top of this file are set out in full in the "Things that
+bite" section of `README.md`, along with a fifth: HRRR here is **CONUS only**, and
+Alaska, Hawaii and the territories need a different filter or a different model
+entirely.
 
 **Request building is separated from request making** so that every bit of selection
 logic, cycle arithmetic and box maths is testable with no network. Keep new code on the
@@ -90,15 +146,16 @@ promise a latency tier, against a guess.
 If a tier ends up driven by WindNinja's momentum solver, that solver is OpenFOAM, which
 is GPL-3. Running it behind a hosted API is not distribution and does not trigger the
 licence; shipping a customer a container image containing it is. Settle that before an
-on-prem or self-hosted offering is promised to anyone. Not legal advice.
+on-prem or self-hosted offering is promised to anyone.
+
+**Get an actual opinion from counsel before the first commercial tier ships**, and treat
+the paragraph above as a flag planted by an engineer, not as advice. The reason it is in
+this file at all is that the decision is cheap now and expensive after a customer has
+been promised a self-hosted deployment.
 
 ## Conventions
 
-```bash
-npm install
-npm test
-npm run lint
-```
+The short form is at the top of this file; this is the reasoning.
 
 - ESLint enforces `eqeqeq`, `no-var`, `prefer-const`, and no unused variables.
 - Conventional commits (`feat:`, `fix:`, `test:`, `docs:`, `chore:`).
