@@ -1,5 +1,7 @@
 # WindSolver
 
+[![CI](https://github.com/ballisticvector/windsolver/actions/workflows/ci.yml/badge.svg)](https://github.com/ballisticvector/windsolver/actions/workflows/ci.yml)
+
 Turning a coordinate into the terrain and atmosphere a wind solve needs. windsolver.com
 is being built as a product in its own right — boating, hiking, sailing, flying, fire,
 agriculture — and BallisticVector is one API consumer among them. **Nothing in here knows
