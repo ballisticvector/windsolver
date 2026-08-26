@@ -8,10 +8,11 @@ agriculture — and BallisticVector is one API consumer among them. **Nothing in
 what a rifle is, and nothing should learn.** See `AGENTS.md` for where that line runs and
 why a `forShot=` parameter is the way it dies.
 
-> **What works today:** the `windProfile` contract and the request-building half of
-> ingestion. Nothing here fetches a GRIB2 message or a GeoTIFF yet — see
+> **What works today:** the `windProfile` contract, the request-building half of
+> ingestion, and a GRIB2 decoder that turns an HRRR response into values and
+> coordinates. Nothing here *fetches* anything yet, and no GeoTIFF is read — see
 > [Not built yet](#not-built-yet). **Read [Things that bite](#things-that-bite) before you
-> touch ingestion**, not after: three of the four items there look like working code
+> touch ingestion**, not after: four of the five items there look like working code
 > returning an ordinary answer.
 
 ## Contents
@@ -32,6 +33,7 @@ why a `forShot=` parameter is the way it dies.
 | `geo.js` | Boxes, buffers and coverage. Named `west/south/east/north`, never four bare numbers |
 | `dem.js` | 3DEP terrain discovery through The National Map |
 | `hrrr.js` | HRRR request building through the NOMADS GRIB2 filter |
+| `grib2.js` | Decodes what NOMADS returns: message parsing, simple packing, the Lambert grid, and the grid-to-earth wind rotation |
 | `profile.js` | The `windProfile` contract: what a field looks like leaving here, and every check it has to pass |
 
 ## Using it
@@ -192,6 +194,19 @@ is a pure function over URLs and JSON, so selection logic, cycle arithmetic and 
 maths are tested with no network — see `tests/ingestion.test.js`. `discover` takes a
 `fetchJson` so even it can be tested offline.
 
+`grib2.decode(buffer)` is on the same side of that line: it takes bytes and returns one
+record per message — parameter, level, valid time, the grid, and a value plus a latitude
+and longitude for every point. It is **checked against ecCodes rather than against
+itself**: `tests/fixtures/….eccodes.json` is `grib_get_data`'s reading of the same bytes,
+and the suite compares all 336 values and coordinates against it. Every intermediate
+quantity in a GRIB decode looks plausible, so a decoder graded on its own arithmetic
+passes while being wrong by a scale factor.
+
+It decodes the templates HRRR sends and **refuses the rest by name** — packing, grid
+template, scanning mode, earth shape — rather than approximating them. Refusing is the
+only safe default here: a half-understood field is a wind blowing the wrong way, and it
+arrives with no error attached.
+
 ## Measured, not assumed
 
 Run live against a 2-mile display domain at **36.77, −104.49** — the coordinate from the
@@ -205,7 +220,21 @@ terrain wind map design, `docs/terrain-wind-map.md` in the BallisticVector repo 
 | HRRR subset (6 vars, 3 levels, f00) | **2,164 bytes**, magic `GRIB` |
 | S3 range requests | supported — `accept-ranges: bytes`, `206` on a partial GET |
 
-Two things fall out of that, and they point in opposite directions.
+A second live pull, over a 0.2° box west of Boulder, is what `grib2.js` was written
+against and is committed as `tests/fixtures/hrrr-20260826t20z-f00-boulder.grib2`:
+
+| | Result |
+| --- | --- |
+| Response | **1,883 bytes**, 8 messages, magic `GRIB` |
+| Grid | 6 × 7 points, 3 km spacing, Lambert conformal tangent at 38.5° (template 3.30) |
+| Packing | simple, 6–16 bits per value (template 5.0) — **not** JPEG2000 |
+| Wind components | relative to the grid, not to true north |
+
+**Simple packing is the load-bearing finding.** JPEG2000 would have meant a native
+dependency on the droplet; simple packing is a bit reader and a scale factor, which is
+why decoding landed in one module with no build step.
+
+Two things fall out of the sizing, and they point in opposite directions.
 
 **The atmosphere is nearly free.** Two kilobytes for the wind over a 16-mile box. Pulling
 a whole forecast run, or a decade of archived cycles for the climatology mode, is
@@ -250,6 +279,13 @@ does not fail — it arrives downstream as a GRIB file that will not parse. `hrr
 throws on an out-of-range forecast hour, a transposed box, or a domain outside CONUS
 rather than building a URL that will do that.
 
+**HRRR wind components are relative to the grid, not to north.** Flag table 3.3 bit 5 is
+set in every HRRR message, so `UGRD` is along the grid's x axis and not eastward. Using
+them as earth-relative rotates the wind by the grid convergence — about 5° near Boulder,
+up to 14° at the western edge of CONUS — and every value still looks like a plausible
+wind. `grib2.toEarthRelativeWind` does the rotation; `grid.windComponentsRelativeToGrid`
+says when it is needed.
+
 **HRRR cycle availability is an assumption.** `DEFAULT_AVAILABILITY_LAG_MINUTES` is 75,
 chosen conservatively and not measured from this codebase. It worked on the live test
 above. If discovery starts returning error pages, raise it first.
@@ -264,13 +300,16 @@ separate domain; Hawaii and the territories have neither and need a different mo
 
 ## Not built yet
 
-Fetching and decoding. Nothing here reads a GRIB2 message or a GeoTIFF — `discover`
-returns *what to fetch*, and the pipeline that turns those into a terrain grid and a
-wind field is the next piece, along with caching, which is what decides whether the
-"seconds" tier in the design document is real.
+Fetching, terrain, and the field itself. `grib2.js` decodes a GRIB2 buffer, but nothing
+here goes and gets one, nothing reads a GeoTIFF, and no `windProfile` is produced:
+`discover` still returns *what to fetch*. Next, in this order, is the network client that
+refuses NOMADS' HTML-with-HTTP-200; then a volume cached on `(bbox, level set, valid
+time)`; then the slice along an azimuth that BallisticVector already consumes. The cache
+is what decides whether the "seconds" tier in the design document is real.
 
 **What a caller can rely on today** is `profile.js` — the contract, its validation and
-its sampling — plus the request builders in `geo.js`, `dem.js` and `hrrr.js`. That is
+its sampling — plus `grib2.js` and the request builders in `geo.js`, `dem.js` and
+`hrrr.js`. That is
 what BallisticVector installs and runs in production; it is not a preview. What it
 cannot do is *produce* a field, so a caller has to bring its own and have it validated,
 which is exactly what BV does with a browser-built wind call.
