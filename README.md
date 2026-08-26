@@ -20,9 +20,17 @@ reach a caller on a Tuesday:
 
 ```json
 "dependencies": {
-  "@ballisticvector/windsolver": "github:ballisticvector/windsolver#v1.0.0"
+  "@ballisticvector/windsolver":
+    "https://github.com/ballisticvector/windsolver/archive/refs/tags/v1.0.0.tar.gz"
 }
 ```
+
+The release tarball rather than `github:ballisticvector/windsolver#v1.0.0`, because npm
+rewrites the shorthand to `git+ssh://git@github.com/…` in the consumer's lockfile, and
+`npm ci` then needs an SSH key on every runner and host that installs it — three of them
+in BallisticVector's case, to fetch a public repo. The tarball is plain HTTPS and npm
+records an integrity hash for it, so no credential is needed anywhere and a moved tag
+fails the install loudly instead of quietly delivering different code.
 
 ```js
 const { validateWindProfile, sampleWindField } = require("@ballisticvector/windsolver/profile");
