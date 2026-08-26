@@ -1,0 +1,43 @@
+name: CI
+
+# Actions are pinned to v7 because GitHub runs actions on Node 24 now. The
+# node-version below stays on 20: it is what the droplet that consumes this
+# package runs, and testing a Node the consumer does not have is rehearsing the
+# wrong thing.
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_call:
+
+jobs:
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - run: npm run lint
+
+  test:
+    name: Unit Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - run: npm test
+
+# There is deliberately no job here that runs BallisticVector against this
+# checkout. It would need a credential for a private repo in a public one, and
+# a job that skips when the token is missing asserts nothing while looking like
+# it does. The consumer is tested where the consumer lives: BV pins a tag, and
+# bumping that pin runs BV's full suite in BV's own PR. See README.md.
