@@ -35,13 +35,15 @@ npm run lint
 >
 > - **Dataset tags are matched verbatim** — a near-miss returns an empty result, which
 >   is indistinguishable from "no terrain here".
-> - **NOMADS answers a bad request with an HTML error page and HTTP 200** — the failure
->   arrives downstream as a GRIB file that will not parse. `grib2.decode` names it.
+> - **NOMADS answers a bad request with an HTML error page and HTTP 200** — and answers a
+>   bad *subregion* with 20 MB of perfectly valid GRIB for the whole continent.
+>   `nomads.fetchGrib` refuses both; nothing downstream can tell the second one apart.
 > - **HRRR wind components are relative to the grid, not to true north** — using them
 >   as-is rotates the wind by up to 14° over CONUS, and every value still looks like a
 >   wind. `grib2.toEarthRelativeWind` is the fix.
 > - **The HRRR availability lag is an assumption, not a measurement** — 75 minutes,
->   chosen conservatively, never measured from this codebase.
+>   chosen conservatively. `nomads.fetchLatestHrrrBox` walks back until a cycle answers
+>   and reports the lag it really had, which is the only number worth quoting.
 > - **Coverage is sampled, not exact** — fine for "good enough or fall back", not a
 >   number to show a user.
 
@@ -149,9 +151,20 @@ plausible, so a decoder checked against itself passes while being wrong by a sca
 factor.
 
 **Request building is separated from request making** so that every bit of selection
-logic, cycle arithmetic and box maths is testable with no network. Keep new code on the
-same side of that line: a function that both decides what to fetch and fetches it
-cannot be tested offline, and none of the interesting bugs are in the fetching.
+logic, cycle arithmetic and box maths is testable with no network. `nomads.js` is the one
+module on the other side of that line, and it takes its `fetch` as an option so even its
+own suite is offline. Keep new code on the pure side: a function that both decides what
+to fetch and fetches it cannot be tested offline, and none of the interesting bugs are in
+the fetching.
+
+**A 200 from NOMADS means nothing on its own.** The measured table is in `README.md`; the
+part to carry around is that a missing `file=` returns the filter's HTML form with HTTP
+200, and a subregion that misses the grid returns the entire CONUS field — 20 MB, valid
+GRIB, decodes cleanly, wrong place. `nomads.js` checks the body shape, a byte ceiling
+enforced while reading, the GRIB magic, and the bounds of the grid that came back. Do not
+relax any of those four to make a new request work; the request is what is wrong.
+Captured error pages live in `tests/fixtures/nomads-*.html`, so the suite is graded
+against what the service really sends rather than against an invented page.
 
 **Measure before you size anything.** The numbers in `README.md` — 3 GB of 1 m terrain
 for one coordinate, 2 KB for the atmosphere over the same box — came from live runs, and

@@ -20,6 +20,8 @@ module.exports = [
         URL: "readonly",
         URLSearchParams: "readonly",
         fetch: "readonly",
+        AbortController: "readonly",
+        globalThis: "readonly",
         describe: "readonly",
         test: "readonly",
         expect: "readonly",

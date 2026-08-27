@@ -9,6 +9,8 @@
     "geo.js",
     "dem.js",
     "hrrr.js",
+    "grib2.js",
+    "nomads.js",
     "README.md"
   ],
   "scripts": {
