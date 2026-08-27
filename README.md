@@ -20,7 +20,7 @@ why a `forShot=` parameter is the way it dies.
 - [Modules](#modules)
 - [Using it](#using-it) · [Why the tarball](#why-the-tarball) · [Releasing a contract change](#releasing-a-contract-change)
 - [The `windProfile` contract — v1](#the-windprofile-contract--v1) · [The frame](#the-frame) · [The keys](#the-keys) · [The grids](#the-grids) · [Why it refuses things](#why-it-refuses-things)
-- [Ingestion](#ingestion)
+- [Ingestion](#ingestion) · [The network client](#the-network-client)
 - [Measured, not assumed](#measured-not-assumed)
 - [Resolution is a finding, not a setting](#resolution-is-a-finding-not-a-setting)
 - [Things that bite](#things-that-bite)
@@ -34,6 +34,7 @@ why a `forShot=` parameter is the way it dies.
 | `dem.js` | 3DEP terrain discovery through The National Map |
 | `hrrr.js` | HRRR request building through the NOMADS GRIB2 filter |
 | `grib2.js` | Decodes what NOMADS returns: message parsing, simple packing, the Lambert grid, and the grid-to-earth wind rotation |
+| `nomads.js` | The only module that makes a request. Fetches a subset and refuses everything NOMADS returns that is not the field that was asked for |
 | `profile.js` | The `windProfile` contract: what a field looks like leaving here, and every check it has to pass |
 
 ## Using it
@@ -207,6 +208,53 @@ template, scanning mode, earth shape — rather than approximating them. Refusin
 only safe default here: a half-understood field is a wind blowing the wrong way, and it
 arrives with no error attached.
 
+### The network client
+
+`nomads.js` is the seam: `hrrr.js` decides what to ask for, `nomads.js` asks, `grib2.js`
+reads the answer. It is a separate module because NOMADS does not fail the way an API is
+expected to fail. Measured against `filter_hrrr_2d.pl` on 2026-08-27, over a two-mile box:
+
+| Defect in the request | Status | Body | What arrives |
+| --- | --- | --- | --- |
+| none | 200 | 1,529 B GRIB | the subset |
+| `var_NOTAVAR=on` | 500 | 292 B HTML | "invalid parameter: var_NOTAVAR" |
+| forecast hour that does not exist | 404 | 412 B HTML | "Data file is not present" |
+| cycle older than the archive | 403 | 681 B HTML | "Request for Old Data" |
+| no `file=` | **200** | 111 KB HTML | the filter's own web form |
+| no `var_` selected | **200** | 10 KB GRIB | every variable at those levels |
+| no `subregion` | **200** | **13.4 MB** GRIB | the whole CONUS grid |
+| subregion off the grid | **200** | **20.2 MB** GRIB | the whole CONUS grid, 1799 × 1059 |
+
+Only the first three are ordinary HTTP errors. The last two are HTTP 200 **and valid
+GRIB** — they decode perfectly, they are simply not what was asked for, and a 20 MB
+answer to a 1.5 KB question is noticed as a bandwidth bill rather than as a bug. So the
+client checks four things past the status code:
+
+- the body does not open like HTML, whatever the content type claims (`html-response`);
+- it stays under a byte ceiling, enforced **while reading** so an unexpected full-domain
+  file is abandoned in flight rather than buffered and then rejected (`too-large`);
+- it starts with the GRIB magic (`not-grib`);
+- and the grid that comes back covers the box that was asked for (`subregion-ignored`).
+
+The error carries the filter's own sentence, because "500" alone leaves the caller
+guessing which parameter was wrong. Retries are narrow: transport failures and
+502/503/504 only. A 500 here means *you sent a bad parameter*, and sending it again is
+not a recovery strategy.
+
+```js
+const { fetchLatestHrrrBox } = require("@ballisticvector/windsolver/nomads");
+
+const got = await fetchLatestHrrrBox({
+  box: { west: -105.32, south: 39.98, east: -105.24, north: 40.04 }
+});
+// got.cycle, got.lagMinutes, got.bytes, got.records — grib2 records, still grid-relative
+```
+
+`fetchLatestHrrrBox` walks back an hour at a time while the answer is a 404, so the
+75-minute availability lag stops being an assumption: `lagMinutes` on the result is what
+it actually was for the cycle that answered. It does **not** walk past a 403 or a 500 —
+those are defects in the request, and an hour earlier they are just as wrong.
+
 ## Measured, not assumed
 
 Run live against a 2-mile display domain at **36.77, −104.49** — the coordinate from the
@@ -277,7 +325,13 @@ looks exactly like "no terrain here".
 **NOMADS answers a bad request with an HTML error page and HTTP 200.** So an invalid URL
 does not fail — it arrives downstream as a GRIB file that will not parse. `hrrr.filterUrl`
 throws on an out-of-range forecast hour, a transposed box, or a domain outside CONUS
-rather than building a URL that will do that.
+rather than building a URL that will do that, and `nomads.fetchGrib` refuses the page
+itself, quoting the filter's complaint.
+
+**And a bad subregion is worse than an error page: it is 20 MB of valid GRIB.** A box
+that misses the grid returns the entire CONUS field under HTTP 200. It decodes, it is
+internally consistent, and nothing about it says it is the wrong place — only a byte
+ceiling and a bounds check separate it from a legitimate answer.
 
 **HRRR wind components are relative to the grid, not to north.** Flag table 3.3 bit 5 is
 set in every HRRR message, so `UGRD` is along the grid's x axis and not eastward. Using
@@ -300,16 +354,16 @@ separate domain; Hawaii and the territories have neither and need a different mo
 
 ## Not built yet
 
-Fetching, terrain, and the field itself. `grib2.js` decodes a GRIB2 buffer, but nothing
-here goes and gets one, nothing reads a GeoTIFF, and no `windProfile` is produced:
-`discover` still returns *what to fetch*. Next, in this order, is the network client that
-refuses NOMADS' HTML-with-HTTP-200; then a volume cached on `(bbox, level set, valid
-time)`; then the slice along an azimuth that BallisticVector already consumes. The cache
-is what decides whether the "seconds" tier in the design document is real.
+Terrain, the volume, and the field itself. `nomads.js` will fetch and decode an HRRR
+subset, but nothing here caches one, nothing reads a GeoTIFF, and no `windProfile` is
+produced: `discover` still returns *what to fetch*. Next, in this order, is a volume
+cached on `(bbox, level set, valid time)`; then terrain-aware downscaling; then the slice
+along an azimuth that BallisticVector already consumes. The cache is what decides whether
+the "seconds" tier in the design document is real.
 
 **What a caller can rely on today** is `profile.js` — the contract, its validation and
-its sampling — plus `grib2.js` and the request builders in `geo.js`, `dem.js` and
-`hrrr.js`. That is
+its sampling — plus `grib2.js`, `nomads.js`, and the request builders in `geo.js`,
+`dem.js` and `hrrr.js`. That is
 what BallisticVector installs and runs in production; it is not a preview. What it
 cannot do is *produce* a field, so a caller has to bring its own and have it validated,
 which is exactly what BV does with a browser-built wind call.
