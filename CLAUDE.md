@@ -171,6 +171,15 @@ for one coordinate, 2 KB for the atmosphere over the same box — came from live
 they are why terrain is windowed rather than tile-fetched. Do not buy hardware, or
 promise a latency tier, against a guess.
 
+**Both DEM products are COGs, so do not mirror CONUS for speed.** `tools/cog-survey.js`
+reads the TIFF headers over range requests; 20 tiles across six states all had the
+directory at byte 192, 512 x 512 internal tiles and five overview levels, so a domain's
+window is one round trip and ~267 GB of block storage buys nothing but resilience. Layout
+is a property of the conversion rather than of the product, though, and 3DEP is thousands
+of separately converted projects — a reader must cope with a directory at the end of the
+file, which is legal, still windowable, and one extra range request to locate. Re-run the
+survey before relying on either shape.
+
 ## Licensing, before anything is sold
 
 If a tier ends up driven by WindNinja's momentum solver, that solver is OpenFOAM, which

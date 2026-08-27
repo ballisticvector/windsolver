@@ -123,11 +123,17 @@ function newestPerFootprint(items) {
  * 10 km tiles — measured live at roughly **3 GB** for one coordinate. The
  * droplet's 120 GB disk holds forty of those.
  *
- * So whole-tile fetching is not the plan. The tiles are GeoTIFFs on S3 and the
- * bucket answers range requests with 206, so the window a domain actually needs
- * can be read without pulling the tile. Confirm the files are internally tiled
- * (a real COG) before relying on that: a stripped TIFF technically supports
- * ranges while still forcing you to read most of the file to get a window.
+ * So whole-tile fetching is not the plan, and it does not have to be. The
+ * bucket answers range requests with 206, and every tile measured so far is a
+ * Cloud Optimized GeoTIFF — directory at byte 192, 512 x 512 internal tiles,
+ * five overview levels, on 12 of 12 one-metre and 8 of 8 ten-metre tiles across
+ * six states (`node tools/cog-survey.js`). A domain's window is one round trip.
+ *
+ * Layout is a property of the conversion rather than of the product, though,
+ * and 3DEP is thousands of separately converted lidar projects. A directory at
+ * the end of the file is legal and still windowable; it costs one extra range
+ * request to find. A reader that assumes otherwise silently pulls whole tiles,
+ * which is what this figure exists to make visible.
  *
  * This is also the argument the design document already makes from the other
  * direction — 1 m terrain does not imply a 1 m computational mesh. Keep the
