@@ -289,17 +289,33 @@ a whole forecast run, or a decade of archived cycles for the climatology mode, i
 cheap. Subsetting through NOMADS is doing exactly what it should.
 
 **The terrain is not.** Three gigabytes for one coordinate. The droplet's 120 GB disk
-holds forty of them, and that is before anyone else asks for a different mountain. So
-whole-tile fetching is not the plan:
+holds forty of them, and that is before anyone else asks for a different mountain.
 
-- The tiles are GeoTIFFs on S3 and the bucket answers range requests, so the window a
-  domain actually needs can be read without pulling 233 MB per tile. **Confirm the files
-  are internally tiled — a real COG — before relying on this.** A stripped TIFF supports
-  ranges while still making you read most of the file to get a window.
-- The design document's other argument stands on its own: 1 m terrain does not imply a
-  1 m computational mesh. Keep the source for display, resample to 10–20 m for the solve.
+That figure is the cost of *whole-tile* fetching, and it does not have to be paid. Both
+DEM products are Cloud Optimized GeoTIFFs, measured by reading the TIFF headers over
+range requests — 20 tiles, six states, both datasets (`node tools/cog-survey.js`):
 
-`discover` returns `downloadBytes` so a caller cannot avoid noticing.
+| | 1 m | 1/3 arc-second |
+| --- | --- | --- |
+| First IFD | byte **192** — 12/12 tiles | byte **192** — 8/8 tiles |
+| Internal tiling | 512 × 512 | 512 × 512 |
+| Overviews | 5 levels | 5 levels |
+| Range requests | 206 | 206 |
+
+So the window a domain needs is one round trip: the directory is in the first kilobyte,
+it says where the tiles are, and only those tiles are fetched. The overviews mean a
+zoomed-out preview is cheaper still. **Mirroring CONUS is therefore optional** — do it
+for resilience if USGS availability becomes a problem, not for speed.
+
+**Do not assume this per tile, though.** The 3DEP catalogue is thousands of separate
+lidar projects converted at different times, and layout is a property of the conversion,
+not of the product. A tile with its directory at the end of a 400 MB file is legal, is
+still windowable, and just costs one extra range request to find the directory — worth
+caching per tile. A reader that assumes a front-loaded IFD will one day fetch a whole
+tile without saying so, which is why `discover` reports `downloadBytes`.
+
+The design document's other argument stands regardless: 1 m terrain does not imply a
+1 m computational mesh. Keep the source for display, resample to 10–20 m for the solve.
 
 ## Resolution is a finding, not a setting
 
