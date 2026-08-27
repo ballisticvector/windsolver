@@ -61,11 +61,33 @@ const RETRYABLE_STATUS = [502, 503, 504, 429];
 /**
  * How far outside the requested box the returned grid may reach before it is
  * treated as "the filter ignored the subregion". The filter returns whole grid
- * cells, so a small overhang is normal: HRRR's 3 km spacing is under 0.03° of
- * latitude, and two cells of slack on each side is still four hundred times
- * smaller than the CONUS domain it is meant to catch.
+ * cells, so a small fixed overhang is normal: HRRR's 3 km spacing is under 0.03°
+ * of latitude.
  */
 const DEFAULT_BOX_MARGIN_DEG = 0.2;
+
+/**
+ * ...and a *proportional* overhang is normal too, which a fixed margin alone gets
+ * wrong. HRRR is on a Lambert conic grid, so the filter can only cut a rectangular
+ * window of grid indices; the lat/long bounding box of that window bulges away from
+ * the requested box as the window gets wider, because the grid rows are not parallels.
+ *
+ * Measured against filter_hrrr_2d.pl on 2026-08-27, worst overhang on any one side as
+ * a fraction of the box's span on that axis:
+ *
+ *      2 mi @40.0N   2x2 grid    (undercuts the box by a third of a cell)
+ *     16 mi @40.0N  18x19 grid   7.6%
+ *     60 mi @40.0N  69x69 grid   8.6%
+ *    150 mi @40.0N 174x174 grid  11.2%
+ *     60 mi @32.7N  66x65 grid    1.0%
+ *     60 mi @46.8N  67x68 grid    4.0%
+ *
+ * So the allowance is fixed slack plus a fraction of the box, set to roughly double
+ * the worst measured bulge. It still separates a subset from the continent by more
+ * than an order of magnitude: a whole-CONUS answer overhangs a 150-mile box by ~34°
+ * against an allowance of 1.3°.
+ */
+const BOX_BULGE_FRACTION = 0.2;
 
 function fail(code, message, detail) {
   const err = new Error(message);
@@ -297,10 +319,15 @@ function gridBounds(record) {
 function assertCoversBox(records, box, marginDeg) {
   const margin = marginDeg === undefined ? DEFAULT_BOX_MARGIN_DEG : marginDeg;
   const bounds = gridBounds(records[0]);
-  const over =
-    Math.max(0, box.west - bounds.west) + Math.max(0, bounds.east - box.east) +
-    Math.max(0, box.south - bounds.south) + Math.max(0, bounds.north - box.north);
-  if (over > margin) {
+  const allowLon = margin + BOX_BULGE_FRACTION * (box.east - box.west);
+  const allowLat = margin + BOX_BULGE_FRACTION * (box.north - box.south);
+  const over = Math.max(
+    (box.west - bounds.west) - allowLon,
+    (bounds.east - box.east) - allowLon,
+    (box.south - bounds.south) - allowLat,
+    (bounds.north - box.north) - allowLat
+  );
+  if (over > 0) {
     throw fail("subregion-ignored",
       "the grid returned spans " + bounds.west.toFixed(2) + ".." + bounds.east.toFixed(2) + " by " +
       bounds.south.toFixed(2) + ".." + bounds.north.toFixed(2) + " for a box of " +

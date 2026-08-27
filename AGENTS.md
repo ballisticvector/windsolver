@@ -118,11 +118,12 @@ fire crew wants the whole box. A sailor and a fire crew have no `azimuthDeg` to 
 so the shooter's slice must be a documented *view* over the general field, not the
 format everything else is bent into.
 
-**This decides the cache key, and that is the deadline.** `(bbox, level set, valid
-time)` — never `(azimuth, ranges)`. Producing a slice at ingestion collapses two
-dimensions early and then rebuilds them later, and once the fetch/cache layer has
-picked its key, changing it is a rewrite rather than an edit. The map UI is several
-steps downstream and inherits whatever this decides.
+**This decided the cache key, and that deadline has passed: `cache.js` keys on
+`(source, snapped bbox, level set, valid time)`.** Never `(azimuth, ranges)` — producing a
+slice at ingestion collapses two dimensions early and then rebuilds them later, and every
+consumer that is not a rifle would re-fetch the same air. Terrain derivatives, the
+downscaling and the map UI are all downstream of that key and should extend it, not
+replace it.
 
 Order of work, which is deliberately not "general API first": get a real field over a
 bbox and a time in memory, cache it, expose the slice the one existing consumer can

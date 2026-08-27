@@ -11,6 +11,8 @@
     "hrrr.js",
     "grib2.js",
     "nomads.js",
+    "volume.js",
+    "cache.js",
     "README.md"
   ],
   "scripts": {

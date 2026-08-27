@@ -288,6 +288,26 @@ describe("assertCoversBox — a valid GRIB of the wrong place is still wrong", (
     expect(() => nomads.assertCoversBox(records, tight)).not.toThrow();
   });
 
+  test("a wide box is allowed the bulge a conic grid gives it", () => {
+    // Measured live: a 60-mile box over Boulder comes back spanning 0.19 deg wider
+    // on its west side. A fixed margin refuses that, and the answer is correct.
+    const wide = { west: -107.02, south: 39.15, east: -104.74, north: 40.89 };
+    const returned = [{
+      latitudes: [39.01, 41.03, 39.01, 41.03],
+      longitudes: [-107.22, -107.22, -104.58, -104.58]
+    }];
+    expect(() => nomads.assertCoversBox(returned, wide)).not.toThrow();
+  });
+
+  test("the continent is still refused for a box wide enough to be allowed a bulge", () => {
+    const wide = { west: -107.02, south: 39.15, east: -104.74, north: 40.89 };
+    const conus = [{
+      latitudes: [21.14, 21.14, 47.84, 47.84],
+      longitudes: [-134.09, -60.91, -134.09, -60.91]
+    }];
+    expect(() => nomads.assertCoversBox(conus, wide)).toThrow(/whole domain/);
+  });
+
   test("a degree of overhang is not, and the margin is adjustable", () => {
     const wide = [{
       latitudes: [39.0, 42.0],

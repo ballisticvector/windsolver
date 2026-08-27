@@ -271,6 +271,39 @@ describe("hrrr — cycle arithmetic", () => {
   });
 });
 
+describe("hrrr — level names and valid times", () => {
+  test("translates a canonical level key into the filter's name for it", () => {
+    expect(hrrr.filterLevel("heightAboveGround:10")).toBe("10_m_above_ground");
+    expect(hrrr.filterLevel("surface")).toBe("surface");
+  });
+
+  test("refuses a level it has no name for, rather than sending a guess", () => {
+    // An unrecognised lev_ parameter is not an error at NOMADS: it is a 200
+    // with the filter's defaults, which decodes cleanly and is the wrong air.
+    expect(() => hrrr.filterLevel("heightAboveGround:37")).toThrow(/no NOMADS level is known/);
+    expect(() => hrrr.filterLevel("isobaric:500")).toThrow(/Known: surface, heightAboveGround:2/);
+  });
+
+  test("every default level key has a filter name", () => {
+    for (const key of hrrr.DEFAULT_LEVEL_KEYS) {
+      expect(hrrr.DEFAULT_LEVELS).toContain(hrrr.filterLevel(key));
+    }
+  });
+
+  test("an instant on the hour names the cycle whose analysis is valid then", () => {
+    const cycle = hrrr.analysisCycleFor(new Date("2026-08-26T20:00:00Z"));
+    expect(cycle).toEqual({ year: 2026, month: 8, day: 26, hour: 20 });
+    expect(hrrr.cycleValidTime(cycle, 0).toISOString()).toBe("2026-08-26T20:00:00.000Z");
+    expect(hrrr.cycleValidTime(cycle, 3).toISOString()).toBe("2026-08-26T23:00:00.000Z");
+  });
+
+  test("an instant between the hours is refused rather than rounded", () => {
+    expect(() => hrrr.analysisCycleFor(new Date("2026-08-26T20:30:00Z")))
+      .toThrow(/runs on the hour/);
+    expect(() => hrrr.analysisCycleFor("not a time")).toThrow(/Date or an ISO string/);
+  });
+});
+
 describe("hrrr — filter URLs", () => {
   const box = geo.boundingBox(LAT, LON, 6);
   const cycle = { year: 2026, month: 8, day: 23, hour: 12 };

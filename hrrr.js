@@ -94,6 +94,68 @@ const DEFAULT_VARIABLES = ["UGRD", "VGRD", "TMP", "PRES", "HPBL", "GUST"];
 const DEFAULT_LEVELS = ["10_m_above_ground", "80_m_above_ground", "surface"];
 
 /**
+ * NOMADS' level names against the canonical level keys a volume is filed under.
+ *
+ * Two vocabularies exist because two systems named the same thing: the filter
+ * wants `10_m_above_ground`, and GRIB's own tables say surface type 103 at 10.
+ * The translation is a table rather than string surgery so that an unknown
+ * level is refused by name — a level the filter does not recognise is not an
+ * error, it is a 200 with the defaults substituted, which is far worse.
+ */
+const FILTER_LEVELS = {
+  "surface": "surface",
+  "heightAboveGround:2": "2_m_above_ground",
+  "heightAboveGround:10": "10_m_above_ground",
+  "heightAboveGround:80": "80_m_above_ground",
+  "heightAboveGround:1000": "1000_m_above_ground"
+};
+
+const DEFAULT_LEVEL_KEYS = ["heightAboveGround:10", "heightAboveGround:80", "surface"];
+
+/** Canonical level key -> the filter's name for it. */
+function filterLevel(levelKey) {
+  const name = FILTER_LEVELS[levelKey];
+  if (!name) {
+    throw new Error(
+      "no NOMADS level is known for " + levelKey + "; the filter answers an unrecognised " +
+      "level with its defaults and HTTP 200, so this is refused rather than sent. Known: " +
+      Object.keys(FILTER_LEVELS).join(", ")
+    );
+  }
+  return name;
+}
+
+/**
+ * The cycle whose analysis (forecast hour 0) is valid at an instant.
+ *
+ * HRRR runs hourly on the hour, so this is the hour containing `validTime` —
+ * and it must be exactly on the hour, because there is no analysis valid at
+ * 20:30Z and rounding to one silently answers a different question.
+ */
+function analysisCycleFor(validTime) {
+  const t = validTime instanceof Date ? validTime : new Date(validTime);
+  if (!isFinite(t.getTime())) throw new Error("validTime must be a Date or an ISO string");
+  if (t.getUTCMinutes() !== 0 || t.getUTCSeconds() !== 0 || t.getUTCMilliseconds() !== 0) {
+    throw new Error(
+      "HRRR runs on the hour; " + t.toISOString() + " is not an instant it produces. " +
+      "Round deliberately rather than here"
+    );
+  }
+  return {
+    year: t.getUTCFullYear(),
+    month: t.getUTCMonth() + 1,
+    day: t.getUTCDate(),
+    hour: t.getUTCHours()
+  };
+}
+
+/** The instant a cycle's analysis is valid at. */
+function cycleValidTime(cycle, forecastHour) {
+  return new Date(Date.UTC(cycle.year, cycle.month - 1, cycle.day, cycle.hour) +
+    (forecastHour || 0) * 3600 * 1000);
+}
+
+/**
  * Build a GRIB2 filter URL.
  *
  * Throws rather than returning a broken URL: NOMADS answers an invalid request
@@ -158,7 +220,12 @@ module.exports = {
   CONUS,
   DEFAULT_VARIABLES,
   DEFAULT_LEVELS,
+  DEFAULT_LEVEL_KEYS,
+  FILTER_LEVELS,
   DEFAULT_AVAILABILITY_LAG_MINUTES,
+  filterLevel,
+  analysisCycleFor,
+  cycleValidTime,
   inConus,
   boxInConus,
   maxForecastHour,
