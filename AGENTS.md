@@ -29,14 +29,17 @@ npm run lint
 - Write the failing test first for anything the contract or the geometry turns on.
 - **Say what you did not verify.** The rest is in [Conventions](#conventions).
 
-> **Read this before you touch ingestion.** Three of these four look like working code
+> **Read this before you touch ingestion.** Four of these five look like working code
 > returning an ordinary answer, which is why they cost time rather than failing loudly.
 > Full detail in [Things that bite](#things-that-bite) and in `README.md`.
 >
 > - **Dataset tags are matched verbatim** — a near-miss returns an empty result, which
 >   is indistinguishable from "no terrain here".
 > - **NOMADS answers a bad request with an HTML error page and HTTP 200** — the failure
->   arrives downstream as a GRIB file that will not parse.
+>   arrives downstream as a GRIB file that will not parse. `grib2.decode` names it.
+> - **HRRR wind components are relative to the grid, not to true north** — using them
+>   as-is rotates the wind by up to 14° over CONUS, and every value still looks like a
+>   wind. `grib2.toEarthRelativeWind` is the fix.
 > - **The HRRR availability lag is an assumption, not a measurement** — 75 minutes,
 >   chosen conservatively, never measured from this codebase.
 > - **Coverage is sampled, not exact** — fine for "good enough or fall back", not a
@@ -126,10 +129,24 @@ same mistake as a shooter-shaped field, pointing the other way.
 
 ## Things that bite
 
-The four summarised at the top of this file are set out in full in the "Things that
-bite" section of `README.md`, along with a fifth: HRRR here is **CONUS only**, and
+The five summarised at the top of this file are set out in full in the "Things that
+bite" section of `README.md`, along with a sixth: HRRR here is **CONUS only**, and
 Alaska, Hawaii and the territories need a different filter or a different model
 entirely.
+
+**A decoder that guesses is worse than one that refuses.** `grib2.js` handles the
+templates HRRR actually sends — Lambert conformal 3.30, simple packing 5.0, scanning
+mode 0x40 — and throws, naming the template, on everything else. The temptation when
+NCEP changes something is to decode it approximately; the output of that is a wind field
+that looks entirely ordinary and is wrong. Add a fixture and a test first, then widen the
+decoder.
+
+**Grade the decoder against ecCodes, not against your own arithmetic.**
+`tests/fixtures/*.eccodes.json` is `grib_get_data`'s reading of the committed fixture,
+and the header of `tests/grib2.test.js` has the commands that regenerate it
+(`apt-get install libeccodes-tools`). Every intermediate quantity in a GRIB decode is
+plausible, so a decoder checked against itself passes while being wrong by a scale
+factor.
 
 **Request building is separated from request making** so that every bit of selection
 logic, cycle arithmetic and box maths is testable with no network. Keep new code on the
