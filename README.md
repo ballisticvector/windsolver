@@ -20,7 +20,7 @@ why a `forShot=` parameter is the way it dies.
 - [Modules](#modules)
 - [Using it](#using-it) · [Why the tarball](#why-the-tarball) · [Releasing a contract change](#releasing-a-contract-change)
 - [The `windProfile` contract — v1](#the-windprofile-contract--v1) · [The frame](#the-frame) · [The keys](#the-keys) · [The grids](#the-grids) · [Why it refuses things](#why-it-refuses-things)
-- [Ingestion](#ingestion) · [The network client](#the-network-client)
+- [Ingestion](#ingestion) · [The network client](#the-network-client) · [The volume and its cache](#the-volume-and-its-cache)
 - [Measured, not assumed](#measured-not-assumed)
 - [Resolution is a finding, not a setting](#resolution-is-a-finding-not-a-setting)
 - [Things that bite](#things-that-bite)
@@ -35,6 +35,8 @@ why a `forShot=` parameter is the way it dies.
 | `hrrr.js` | HRRR request building through the NOMADS GRIB2 filter |
 | `grib2.js` | Decodes what NOMADS returns: message parsing, simple packing, the Lambert grid, and the grid-to-earth wind rotation |
 | `nomads.js` | The only module that makes a request. Fetches a subset and refuses everything NOMADS returns that is not the field that was asked for |
+| `volume.js` | The general atmosphere in memory: a lat/long box × a set of levels at one valid time, earth-relative, with no bearing in it. Sampling and interpolation live here |
+| `cache.js` | Keys a volume on `(bbox, level set, valid time)`, keeps it while it is the newest field there is, and collapses simultaneous callers into one fetch |
 | `profile.js` | The `windProfile` contract: what a field looks like leaving here, and every check it has to pass |
 
 ## Using it
@@ -255,6 +257,54 @@ const got = await fetchLatestHrrrBox({
 it actually was for the cycle that answered. It does **not** walk past a 403 or a 500 —
 those are defects in the request, and an hour earlier they are just as wrong.
 
+### The volume and its cache
+
+```js
+const { createHrrrVolumeSource } = require("@ballisticvector/windsolver/cache");
+const { windProfileAt, mpsToFps } = require("@ballisticvector/windsolver/volume");
+
+const source = createHrrrVolumeSource({});
+const v = await source.getLatest({ box, levels: ["heightAboveGround:10", "heightAboveGround:80"] });
+
+windProfileAt(v, 40.02, -105.28);  // [{ heightAglM: 10, east, north }, …] in m/s
+```
+
+**The key is `(source, snapped bbox, level set, valid time)` and never an azimuth or a
+set of ranges.** A sailor and a fire crew have no bearing to give, and a bearing in the
+key means every consumer that is not a rifle re-fetches the same air. The shooter's
+range × height grid is a *view* over this, cut later.
+
+What that costs in practice, measured live on 2026-08-27:
+
+| Box | Grid | On the wire | In the cache | Fetch |
+| --- | --- | --- | --- | --- |
+| 2 miles | 3 × 3 | 1,576 B | 720 B | 0.9–1.4 s |
+| 16 miles | 19 × 19 | 4,800 B | 28 KB | 1.0–4.2 s |
+| 60 miles | 70 × 70 | 48,668 B | 392 KB | 1.2 s |
+
+So the default 256-entry LRU is about 100 MB of resident memory if every entry is a
+60-mile map domain, and a few megabytes if they are shooting boxes. **Nothing here needs
+a bigger droplet.** One cold fetch was also measured at 53 s against the same service
+that answered in 1.1 s a minute earlier — NOMADS latency is the variable that matters,
+not ours, which is the argument for the cache rather than for hardware.
+
+A few decisions worth not undoing:
+
+- **Boxes are snapped outward to a 0.01° grid before they are keyed *and before they are
+  fetched*.** Two shooters a hundred metres apart otherwise miss each other's cache entry
+  for the same air. Snapping only the key would serve the second one a field that does
+  not cover them.
+- **An entry lives 135 minutes from its valid time**, not 60. HRRR is hourly but takes up
+  to 75 minutes to appear, so expiring on the hour throws a field away during the window
+  in which nothing newer can be fetched — a miss that resolves to a 404.
+- **Simultaneous misses on one key are coalesced**, so ten callers over the same box make
+  one request. Measured: 10 concurrent calls, 1 load, 9 coalesced.
+- **A failed load is not cached**, and the valid time the source returns is checked
+  against the one that was asked for. Filing an hour of weather under the wrong hour is
+  a cache that is confidently wrong, which is worse than an empty one.
+- **`buildVolume` rotates grid-relative wind to earth-relative once**, on the way in, so
+  nothing downstream can forget to.
+
 ## Measured, not assumed
 
 Run live against a 2-mile display domain at **36.77, −104.49** — the coordinate from the
@@ -370,19 +420,24 @@ separate domain; Hawaii and the territories have neither and need a different mo
 
 ## Not built yet
 
-Terrain, the volume, and the field itself. `nomads.js` will fetch and decode an HRRR
-subset, but nothing here caches one, nothing reads a GeoTIFF, and no `windProfile` is
-produced: `discover` still returns *what to fetch*. Next, in this order, is a volume
-cached on `(bbox, level set, valid time)`; then terrain-aware downscaling; then the slice
-along an azimuth that BallisticVector already consumes. The cache is what decides whether
-the "seconds" tier in the design document is real.
+Terrain and the field itself. A live HRRR volume can be fetched, decoded, sampled and
+cached, but nothing here reads a GeoTIFF and no `windProfile` is produced: `dem.discover`
+still returns *what to fetch*. Next, in this order, is the terrain window reader and its
+derivatives — slope, aspect, curvature, roughness, sheltering by sector, computed once
+per domain because they never change; then terrain-aware downscaling of the volume; then
+the slice along an azimuth that BallisticVector already consumes. All three inherit the
+cache key that is now settled.
 
 **What a caller can rely on today** is `profile.js` — the contract, its validation and
-its sampling — plus `grib2.js`, `nomads.js`, and the request builders in `geo.js`,
-`dem.js` and `hrrr.js`. That is
-what BallisticVector installs and runs in production; it is not a preview. What it
-cannot do is *produce* a field, so a caller has to bring its own and have it validated,
+its sampling — plus `grib2.js`, `nomads.js`, `volume.js`, `cache.js`, and the request
+builders in `geo.js`, `dem.js` and `hrrr.js`. `profile.js` is what BallisticVector
+installs and runs in production; it is not a preview. What none of it does yet is
+*produce* a `windProfile`, so a caller still has to bring its own and have it validated,
 which is exactly what BV does with a browser-built wind call.
+
+The volume layer is exercised against live NOMADS and against the committed fixture, but
+its sampling has **not** been graded against an independent interpolator the way the
+decoder was graded against ecCodes, and no vertical level above 80 m has been fetched.
 
 **On the version number:** `1.0.0` is the version of the *published contract*, and it is
 deliberately not a claim that the product is finished. A `0.x` package would imply the
