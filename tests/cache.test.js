@@ -314,3 +314,161 @@ describe("createHrrrVolumeSource", () => {
     expect(source.summary().hits).toBe(1);
   });
 });
+
+/**
+ * Terrain is the other half of the cache and it behaves the opposite way: no
+ * expiry at all, because a mountain is the same at 06Z as at 18Z, and a bound
+ * in bytes rather than in entries, because one derived domain can be four
+ * orders of magnitude larger than another.
+ */
+
+const TERRAIN_BOX = { west: -105.32, south: 39.98, east: -105.24, north: 40.04 };
+
+function derived(width, height, over) {
+  return Object.assign({
+    width: width,
+    height: height,
+    fields: { slopeDeg: null, aspectDeg: null },
+    shelter: null
+  }, over);
+}
+
+describe("terrainKey", () => {
+  test("has no time in it, because terrain does not have one", () => {
+    const key = cacheModule.terrainKey({ box: TERRAIN_BOX });
+    expect(key).not.toMatch(/\d{4}-\d{2}-\d{2}/);
+    expect(key).toBe(cacheModule.terrainKey({ box: TERRAIN_BOX, validTime: new Date() }));
+  });
+
+  test("snaps ten times finer than the atmosphere does", () => {
+    // 0.01 degrees on each side of a two-mile box is another 2.2 km of ground,
+    // which at 1 m is fifty times the pixels anybody asked for.
+    expect(cacheModule.DEFAULT_TERRAIN_SNAP_DEG).toBe(cacheModule.DEFAULT_SNAP_DEG / 10);
+    const nudged = { west: -105.3199, south: 39.9801, east: -105.2401, north: 40.0399 };
+    expect(cacheModule.terrainKey({ box: nudged })).toBe(cacheModule.terrainKey({ box: TERRAIN_BOX }));
+    const elsewhere = { west: -105.33, south: 39.98, east: -105.24, north: 40.04 };
+    expect(cacheModule.terrainKey({ box: elsewhere })).not.toBe(cacheModule.terrainKey({ box: TERRAIN_BOX }));
+  });
+
+  test("everything that changes the numbers is in it", () => {
+    const base = { box: TERRAIN_BOX };
+    const keys = [
+      base,
+      { box: TERRAIN_BOX, dataset: "3DEP 1 meter" },
+      { box: TERRAIN_BOX, resolutionM: 1 },
+      { box: TERRAIN_BOX, resolutionM: 10 },
+      { box: TERRAIN_BOX, shelter: true },
+      { box: TERRAIN_BOX, shelter: { sectors: 8 } },
+      { box: TERRAIN_BOX, shelter: { maxDistanceM: 1000 } },
+      { box: TERRAIN_BOX, shelter: { stepM: 5 } }
+    ].map(cacheModule.terrainKey);
+    expect(new Set(keys).size).toBe(keys.length);
+  });
+
+  test("the defaults are written out, so the same computation is one entry", () => {
+    // Sx to 300 m over 16 sectors is what {shelter: true} means. Spelling it
+    // out must not derive the same domain a second time and hold both copies.
+    expect(cacheModule.terrainKey({ box: TERRAIN_BOX, shelter: true }))
+      .toBe(cacheModule.terrainKey({ box: TERRAIN_BOX, shelter: { sectors: 16, maxDistanceM: 300 } }));
+    // Sector centres are a set, not a sequence: the order they arrive in
+    // changes the order of the output fields and nothing about the numbers.
+    expect(cacheModule.terrainKey({ box: TERRAIN_BOX, shelter: { sectors: [200, 10, 90] } }))
+      .toBe(cacheModule.terrainKey({ box: TERRAIN_BOX, shelter: { sectors: [10, 90, 200] } }));
+  });
+});
+
+describe("createStaticCache", () => {
+  test("counts the fields, the elevation and every shelter sector", () => {
+    const plain = derived(100, 100);
+    expect(cacheModule.derivedBytes(plain)).toBe(3 * 100 * 100 * 4);
+    const withSx = derived(100, 100, { shelter: { sectors: new Array(16) } });
+    expect(cacheModule.derivedBytes(withSx)).toBe(19 * 100 * 100 * 4);
+  });
+
+  test("evicts by bytes, not by count, and least recently used first", () => {
+    const cache = cacheModule.createStaticCache({ maxBytes: 10 * 3 * 4 });
+    cache.set("a", derived(1, 4));    // 48 bytes
+    cache.set("b", derived(1, 4));    // 48 bytes, and the cache holds 120
+    expect(cache.get("a")).toBeTruthy();   // 'a' is now the most recent
+    cache.set("c", derived(1, 4));
+    expect(cache.keys()).toEqual(["a", "c"]);
+    expect(cache.get("b")).toBeNull();
+    expect(cache.summary().evictions).toBe(1);
+    expect(cache.summary().bytes).toBe(96);
+  });
+
+  test("nothing expires, however long it sits there", () => {
+    // The volume cache measures freshness from a valid time; this one has no
+    // notion of one, and giving it a TTL would recompute identical numbers.
+    const cache = cacheModule.createStaticCache();
+    cache.set("k", derived(4, 4));
+    expect(cache.get("k")).toBeTruthy();
+    expect(Object.keys(cache.summary())).not.toContain("staleAfterMs");
+  });
+
+  test("refuses a domain bigger than the whole cache rather than emptying it", () => {
+    const cache = cacheModule.createStaticCache({ maxBytes: 1000 });
+    cache.set("keep", derived(2, 2));
+    expect(cache.set("huge", derived(100, 100))).toBe(false);
+    expect(cache.keys()).toEqual(["keep"]);
+    expect(cache.summary().rejected).toBe(1);
+  });
+
+  test("replacing a key does not double-count its bytes", () => {
+    const cache = cacheModule.createStaticCache({ maxBytes: 1000 });
+    cache.set("k", derived(2, 2));
+    cache.set("k", derived(2, 2));
+    expect(cache.summary().bytes).toBe(48);
+    expect(cache.delete("k")).toBe(true);
+    expect(cache.summary().bytes).toBe(0);
+    expect(cache.delete("k")).toBe(false);
+  });
+});
+
+describe("createTerrainSource", () => {
+  test("derives once, then serves the same domain from memory", async () => {
+    let loads = 0;
+    const source = cacheModule.createTerrainSource({
+      load: async () => { loads++; return derived(4, 4); }
+    });
+    await source.get({ box: TERRAIN_BOX });
+    await source.get({ box: { west: -105.3199, south: 39.9801, east: -105.2401, north: 40.0399 } });
+    expect(loads).toBe(1);
+    expect(source.summary().hits).toBe(1);
+  });
+
+  test("ten concurrent misses over one hillside derive it once", async () => {
+    let loads = 0;
+    let release;
+    const gate = new Promise((resolve) => { release = resolve; });
+    const source = cacheModule.createTerrainSource({
+      load: async () => { loads++; await gate; return derived(4, 4); }
+    });
+    const all = Promise.all(Array.from({ length: 10 }, () => source.get({ box: TERRAIN_BOX })));
+    expect(source.summary().inFlight).toBe(1);
+    release();
+    const domains = await all;
+    expect(loads).toBe(1);
+    expect(new Set(domains).size).toBe(1);
+    expect(source.summary().coalesced).toBe(9);
+    expect(source.summary().inFlight).toBe(0);
+  });
+
+  test("a failed read is not cached, and does not wedge the key", async () => {
+    let attempt = 0;
+    const source = cacheModule.createTerrainSource({
+      load: async () => {
+        attempt++;
+        if (attempt === 1) throw new Error("USGS said 503");
+        return derived(4, 4);
+      }
+    });
+    await expect(source.get({ box: TERRAIN_BOX })).rejects.toThrow(/503/);
+    await expect(source.get({ box: TERRAIN_BOX })).resolves.toBeTruthy();
+    expect(attempt).toBe(2);
+  });
+
+  test("refuses to be built without a loader", () => {
+    expect(() => cacheModule.createTerrainSource({})).toThrow(/load\(spec\) is required/);
+  });
+});

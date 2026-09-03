@@ -20,7 +20,7 @@ why a `forShot=` parameter is the way it dies.
 - [Modules](#modules)
 - [Using it](#using-it) · [Why the tarball](#why-the-tarball) · [Releasing a contract change](#releasing-a-contract-change)
 - [The `windProfile` contract — v1](#the-windprofile-contract--v1) · [The frame](#the-frame) · [The keys](#the-keys) · [The grids](#the-grids) · [Why it refuses things](#why-it-refuses-things)
-- [Ingestion](#ingestion) · [The network client](#the-network-client) · [The volume and its cache](#the-volume-and-its-cache) · [Terrain, read as windows](#terrain-read-as-windows)
+- [Ingestion](#ingestion) · [The network client](#the-network-client) · [The volume and its cache](#the-volume-and-its-cache) · [Terrain, read as windows](#terrain-read-as-windows) · [Terrain derivatives](#terrain-derivatives)
 - [Measured, not assumed](#measured-not-assumed)
 - [Resolution is a finding, not a setting](#resolution-is-a-finding-not-a-setting)
 - [Things that bite](#things-that-bite)
@@ -36,10 +36,11 @@ why a `forShot=` parameter is the way it dies.
 | `grib2.js` | Decodes what NOMADS returns: message parsing, simple packing, the Lambert grid, and the grid-to-earth wind rotation |
 | `nomads.js` | The only module that makes a request. Fetches a subset and refuses everything NOMADS returns that is not the field that was asked for |
 | `volume.js` | The general atmosphere in memory: a lat/long box × a set of levels at one valid time, earth-relative, with no bearing in it. Sampling and interpolation live here |
-| `cache.js` | Keys a volume on `(bbox, level set, valid time)`, keeps it while it is the newest field there is, and collapses simultaneous callers into one fetch |
+| `cache.js` | Keys a volume on `(bbox, level set, valid time)`, keeps it while it is the newest field there is, and collapses simultaneous callers into one fetch. Keys terrain derivatives on the ground alone, with no time in the key at all |
 | `proj.js` | UTM ⇄ geographic for the datums 3DEP is published on, graded against PROJ |
 | `cog.js` | Reads a GeoTIFF: directories, tags, LZW and Deflate, the floating-point predictor, and which bytes a lat/long box needs. No network |
 | `terrain.js` | The only other module that makes a request. Turns a box into elevation grids over HTTP range reads |
+| `derive.js` | What the ground does to the wind: slope, aspect, curvature, roughness and directional sheltering over an elevation grid. Pure arithmetic, no network |
 | `profile.js` | The `windProfile` contract: what a field looks like leaving here, and every check it has to pass |
 
 ## Using it
@@ -361,6 +362,73 @@ Holes stay holes. 3DEP writes `-999999` where a project boundary, water or a voi
 interpolating across it, and `elevationAt` moves to the next grid. Interpolating over a
 void invents ground, and invented ground is a wind feature the mountain does not have.
 
+### Terrain derivatives
+
+```js
+const { derive, shelterAt } = require("@ballisticvector/windsolver/derive");
+
+const d = derive(grid, { shelter: { maxDistanceM: 300 } });   // grid from readTerrain
+d.fields.slopeDeg;                       // Float32Array, NaN where undefined
+shelterAt(d, 39.985, -105.30, 270);      // Sx for a wind from due west, in degrees
+```
+
+Terrain does not change between forecast hours, so all of this is a function of the
+elevation grid alone. That is the point of computing it separately: the expensive
+geometry moves off the request path once per domain, and an hourly wind update becomes
+arithmetic over grids that already exist.
+
+| Field | What it is |
+| --- | --- |
+| `slopeDeg`, `aspectDeg` | Horn's 3 × 3 weighted difference, the one GDAL, ArcGIS and GRASS all use. Aspect is the downhill compass bearing |
+| `dzdx`, `dzdy` | The gradient itself, kept because a bearing cannot be interpolated and a vector can |
+| `profileCurvature`, `planCurvature`, `totalCurvature` | Zevenbergen & Thorne, in 1/m, **positive convex in all three** |
+| `relief`, `tri`, `tpi` | Roughness three ways, in metres: GDAL's `roughness`, Riley's ruggedness index, and the topographic position index |
+| `shelter.sectors[i].sx` | Winstral's Sx per wind sector, in degrees. Positive is sheltered |
+
+**Metres, not degrees.** A geographic DEM's pixel is 1/3 arc-second on both axes and
+those are not the same distance on the ground — about 10.3 m north-south and 7.9 m
+east-west at 40°, and the ratio moves with latitude across a single domain. Every
+derivative divides by a spacing computed per row for that reason. `gdaldem -s` cannot
+express it: it takes one scale for both axes, so on a geographic DEM it overstates the
+east-west spacing by 1/cos(lat), and `tests/derive.test.js` measures that disagreement
+rather than papering over it.
+
+Graded against `gdaldem` for slope, aspect, roughness, TRI and TPI over the same fixtures
+`cog.js` uses; against analytic surfaces of known curvature, since no GDAL tool computes
+curvature; and against a synthetic wall, summit and hollow for sheltering. Where we and
+GDAL differ — up to 0.011° of slope on ground 2,218 m above the datum — the suite
+reproduces GDAL's float32 arithmetic bit for bit to show the difference is its rounding
+rather than a different formula, and then shows on a plane of known gradient that ours is
+the closer of the two.
+
+Undefined stays undefined, for the same reason holes stay holes:
+
+- **the border is `NaN`**, because a 3 × 3 window does not fit, and reflecting it invents
+  a gradient exactly where one domain is stitched to the next;
+- **any neighbourhood touching a void is `NaN`** — nothing is averaged around the hole;
+- **flat ground has no aspect**, so it gets `NaN` rather than 0. Zero is a real bearing,
+  and a flat pixel reported as facing north becomes a sheltering answer nothing
+  downstream can tell is wrong;
+- **a shelter ray that leaves the grid is `NaN`, not 0.** "Nothing upwind" and "we did not
+  look" are different answers and only one of them means exposed — read the window with
+  `maxDistanceM` of padding if the edges matter;
+- **`fieldAt` refuses `aspectDeg`.** Interpolating 350 and 10 gives 180, which points the
+  wrong way; `aspectAt` goes through the gradient instead.
+
+Sheltering costs cells × sectors × steps, so it is computed only when asked for. Bearings
+are true north: a UTM grid's columns follow its central meridian rather than the local
+one, which is up to 3° of rotation applied to every sector in the domain, and one
+projection removes it.
+
+**The cache for these has no time in the key.** `cache.terrainKey` is
+`(dataset, snapped box, resolution, sheltering parameters)` — a mountain is the same at
+06Z as at 18Z, so a derived domain stands until USGS reflies the ground and the dataset
+tag changes. What is in the key is everything that changes the numbers: an Sx searched to
+300 m is a different answer from one searched to 1000 m. `createStaticCache` is bounded
+in **bytes** rather than entries, because ten float32 fields plus the elevation over a
+432 × 421 domain is 7 MB before any sheltering, and sixteen sectors is another 11 MB —
+256 of those would be five gigabytes, not the ~100 MB the volume cache holds.
+
 ## Measured, not assumed
 
 Run live against a 2-mile display domain at **36.77, −104.49** — the coordinate from the
@@ -495,16 +563,15 @@ separate domain; Hawaii and the territories have neither and need a different mo
 
 ## Not built yet
 
-The field itself. Terrain and atmosphere can both be fetched, decoded and sampled now,
-but nothing joins them: no `windProfile` is produced. Next, in this order, are the
-terrain derivatives — slope, aspect, curvature, roughness, sheltering by sector, computed
-once per domain because they never change; then terrain-aware downscaling of the volume
-onto them; then the slice along an azimuth that BallisticVector already consumes. All
-three inherit the cache key that is now settled.
+The field itself. Terrain and atmosphere can both be fetched, decoded, sampled and — for
+terrain — reduced to the geometry a downscaling model needs, but nothing joins them: no
+`windProfile` is produced. Next, in this order, are terrain-aware downscaling of the
+volume onto those derivatives, and then the slice along an azimuth that BallisticVector
+already consumes. Both inherit the cache keys that are now settled.
 
 **What a caller can rely on today** is `profile.js` — the contract, its validation and
 its sampling — plus `grib2.js`, `nomads.js`, `volume.js`, `cache.js`, `proj.js`,
-`cog.js`, `terrain.js`, and the request builders in `geo.js`, `dem.js` and `hrrr.js`. `profile.js` is what BallisticVector
+`cog.js`, `terrain.js`, `derive.js`, and the request builders in `geo.js`, `dem.js` and `hrrr.js`. `profile.js` is what BallisticVector
 installs and runs in production; it is not a preview. What none of it does yet is
 *produce* a `windProfile`, so a caller still has to bring its own and have it validated,
 which is exactly what BV does with a browser-built wind call.
@@ -519,6 +586,13 @@ both over Colorado. BigTIFF, tiles in other UTM zones, Alaska's projections and 
 compression 3DEP has not used here are refused by name rather than handled, and the
 `no-range-support` and `header-scattered` refusals are proved by fixtures rather than by
 a server that has actually done either.
+
+The derivatives are graded against `gdaldem` for the five measures GDAL computes, and
+against analytic surfaces for the three curvatures, which no GDAL tool produces —
+so curvature is checked against theory rather than against a second implementation.
+Sheltering has no independent reference at all: it is checked against synthetic geometry
+whose answer is known by trigonometry, and against no other Sx implementation. Nothing
+consumes any of it yet, so the fields have been validated but not used.
 
 **On the version number:** `1.0.0` is the version of the *published contract*, and it is
 deliberately not a claim that the product is finished. A `0.x` package would imply the

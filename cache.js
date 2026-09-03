@@ -33,6 +33,7 @@
 "use strict";
 
 const volumeModule = require("./volume.js");
+const derive = require("./derive.js");
 
 /**
  * Snap resolution for cache keys, in degrees. 0.01 degrees is roughly 1.1 km
@@ -383,14 +384,209 @@ function createHrrrVolumeSource(opts) {
   return Object.assign({}, source, { getLatest: getLatest });
 }
 
+/**
+ * Snap resolution for terrain keys, in degrees.
+ *
+ * A tenth of the atmospheric one. Snapping outward is free for a 3 km HRRR
+ * cell and expensive for terrain: 0.01° added to each side of a two-mile box is
+ * another 2.2 km of ground, which at 1 m is fifty times the pixels actually
+ * wanted. 0.001° is about 111 m, so the padding stays a small fraction of a
+ * domain while two requests for the same hillside still share an entry.
+ */
+const DEFAULT_TERRAIN_SNAP_DEG = 0.001;
+
+/** Derived terrain kept, in bytes. Set from measured domains, not guessed. */
+const DEFAULT_TERRAIN_MAX_BYTES = 512 * 1024 * 1024;
+
+/**
+ * What a set of terrain derivatives is filed under.
+ *
+ * **No time in it, and that is the point.** Terrain is static, so a derived
+ * domain is valid until the ground moves or USGS reflies it, and the dataset
+ * tag in the key is what changes when they do. Everything that changes the
+ * *numbers* is in the key instead: the resolution they were computed at, and
+ * the sheltering parameters, because an Sx computed to 300 m is a different
+ * answer from one computed to 1000 m and filing them together would serve the
+ * wrong horizon under a key that looks right.
+ */
+function terrainKey(spec) {
+  const s = spec || {};
+  const box = snapBox(s.box, s.snapDeg === undefined ? DEFAULT_TERRAIN_SNAP_DEG : s.snapDeg);
+  return [
+    s.dataset || "3DEP",
+    [box.west, box.south, box.east, box.north].join(","),
+    s.resolutionM === undefined ? "auto" : String(s.resolutionM),
+    shelterKey(s.shelter)
+  ].join("|");
+}
+
+/**
+ * The sheltering half of a terrain key, with the defaults filled in.
+ *
+ * `{shelter: true}` and `{shelter: {sectors: 16, maxDistanceM: 300}}` are the
+ * same computation, so they have to be the same key: leaving the defaults
+ * unwritten would compute a domain twice and hold both copies. Sector centres
+ * given explicitly are sorted, because the order they arrive in changes the
+ * order of the output fields and nothing else.
+ */
+function shelterKey(shelter) {
+  if (!shelter) return "no-sx";
+  const s = shelter === true ? {} : shelter;
+  const sectors = Array.isArray(s.sectors)
+    ? s.sectors.slice().sort(function (a, b) { return a - b; }).join("/")
+    : String(s.sectors === undefined ? derive.DEFAULT_SECTORS : s.sectors);
+  const max = s.maxDistanceM === undefined ? derive.DEFAULT_MAX_SHELTER_DISTANCE_M : s.maxDistanceM;
+  return "sx" + sectors + "@" + max + "/" + (s.stepM === undefined ? "pixel" : s.stepM);
+}
+
+/**
+ * Rough heap cost of a derived domain.
+ *
+ * Terrain derivatives are the first thing here big enough for a count to
+ * matter: ten float32 fields plus the elevation over a 432 x 421 domain is 7 MB
+ * before any sheltering, and sixteen sectors is another 11 MB. A cache of 256
+ * of those is not 100 MB, it is five gigabytes, which is why this cache is
+ * bounded in bytes and the volume cache is bounded in entries.
+ */
+function derivedBytes(derived) {
+  const cells = (derived.width || 0) * (derived.height || 0);
+  let fields = Object.keys(derived.fields || {}).length + 1;
+  if (derived.shelter) fields += derived.shelter.sectors.length;
+  return fields * cells * 4;
+}
+
+/**
+ * An LRU with no expiry, bounded by bytes.
+ *
+ * Nothing static needs a time-to-live, and giving it one would evict a
+ * mountain's slope on the hour to recompute exactly the same numbers. What it
+ * does need is a ceiling in bytes rather than in entries, because one domain
+ * can be four orders of magnitude larger than another.
+ */
+function createStaticCache(opts) {
+  const o = opts || {};
+  const maxBytes = o.maxBytes === undefined ? DEFAULT_TERRAIN_MAX_BYTES : o.maxBytes;
+  const sizeOf = o.sizeOf || derivedBytes;
+  const entries = new Map();
+  const stats = { hits: 0, misses: 0, evictions: 0, stored: 0, rejected: 0 };
+  let bytes = 0;
+
+  function get(key) {
+    const entry = entries.get(key);
+    if (!entry) {
+      stats.misses++;
+      return null;
+    }
+    entries.delete(key);
+    entries.set(key, entry);
+    stats.hits++;
+    return entry.value;
+  }
+
+  function set(key, value) {
+    const size = sizeOf(value);
+    // One domain larger than the whole cache would evict everything and then
+    // itself. Refusing is honest: the caller still has the value it just
+    // computed, and the next request recomputes rather than thrashing.
+    if (size > maxBytes) {
+      stats.rejected++;
+      return false;
+    }
+    if (entries.has(key)) bytes -= entries.get(key).bytes;
+    entries.delete(key);
+    entries.set(key, { value: value, bytes: size });
+    bytes += size;
+    stats.stored++;
+    while (bytes > maxBytes) {
+      const oldest = entries.keys().next().value;
+      bytes -= entries.get(oldest).bytes;
+      entries.delete(oldest);
+      stats.evictions++;
+    }
+    return true;
+  }
+
+  return {
+    get: get,
+    set: set,
+    has: function (key) { return entries.has(key); },
+    delete: function (key) {
+      const entry = entries.get(key);
+      if (!entry) return false;
+      bytes -= entry.bytes;
+      return entries.delete(key);
+    },
+    clear: function () { entries.clear(); bytes = 0; },
+    keys: function () { return Array.from(entries.keys()); },
+    summary: function () {
+      return Object.assign({ entries: entries.size, bytes: bytes, maxBytes: maxBytes }, stats);
+    }
+  };
+}
+
+/**
+ * A cache in front of something that derives terrain.
+ *
+ * Same shape as `createVolumeSource`, and single-flight for the same reason
+ * with more force behind it: two callers arriving together over one hillside
+ * would otherwise both range-read the tile and both spend the geometry, and the
+ * geometry is the expensive half.
+ */
+function createTerrainSource(opts) {
+  const o = opts || {};
+  if (typeof o.load !== "function") throw fail("no-loader", "load(spec) is required");
+  const cache = o.cache || createStaticCache(o);
+  const inFlight = new Map();
+  const stats = { coalesced: 0, loads: 0 };
+
+  async function get(spec) {
+    const key = terrainKey(spec);
+    const hit = cache.get(key);
+    if (hit) return hit;
+
+    const pending = inFlight.get(key);
+    if (pending) {
+      stats.coalesced++;
+      return pending;
+    }
+
+    const promise = (async function () {
+      stats.loads++;
+      const derived = await o.load(spec);
+      cache.set(key, derived);
+      return derived;
+    })();
+
+    inFlight.set(key, promise);
+    try {
+      return await promise;
+    } finally {
+      inFlight.delete(key);
+    }
+  }
+
+  return {
+    get: get,
+    key: terrainKey,
+    cache: cache,
+    summary: function () { return Object.assign({ inFlight: inFlight.size }, stats, cache.summary()); }
+  };
+}
+
 module.exports = {
   DEFAULT_SNAP_DEG,
   DEFAULT_MAX_ENTRIES,
   DEFAULT_STALE_AFTER_MS,
+  DEFAULT_TERRAIN_SNAP_DEG,
+  DEFAULT_TERRAIN_MAX_BYTES,
   snapBox,
   cacheKey,
+  terrainKey,
   approximateBytes,
+  derivedBytes,
   createCache,
+  createStaticCache,
   createVolumeSource,
+  createTerrainSource,
   createHrrrVolumeSource
 };
