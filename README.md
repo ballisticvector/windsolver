@@ -20,8 +20,8 @@ why a `forShot=` parameter is the way it dies.
 - [Modules](#modules)
 - [Using it](#using-it) · [Why the tarball](#why-the-tarball) · [Releasing a contract change](#releasing-a-contract-change)
 - [The `windProfile` contract — v1](#the-windprofile-contract--v1) · [The frame](#the-frame) · [The keys](#the-keys) · [The grids](#the-grids) · [Why it refuses things](#why-it-refuses-things)
-- [Ingestion](#ingestion) · [The network client](#the-network-client) · [The volume and its cache](#the-volume-and-its-cache) · [Terrain, read as windows](#terrain-read-as-windows) · [Terrain derivatives](#terrain-derivatives) · [Downscaling: the model wind over the ground](#downscaling-the-model-wind-over-the-ground) · [The whole chain: `field.js`](#the-whole-chain-fieldjs)
-- [Measured, not assumed](#measured-not-assumed) · [The whole chain, live over Boulder](#the-whole-chain-live-over-boulder)
+- [Ingestion](#ingestion) · [The network client](#the-network-client) · [The volume and its cache](#the-volume-and-its-cache) · [Terrain, read as windows](#terrain-read-as-windows) · [Terrain derivatives](#terrain-derivatives) · [Downscaling: the model wind over the ground](#downscaling-the-model-wind-over-the-ground) · [The whole chain: `field.js`](#the-whole-chain-fieldjs) · [The line a consumer cuts: `slice.js`](#the-line-a-consumer-cuts-slicejs)
+- [Measured, not assumed](#measured-not-assumed) · [The whole chain, live over Boulder](#the-whole-chain-live-over-boulder) · [A line through it, live](#a-line-through-it-live)
 - [Resolution is a finding, not a setting](#resolution-is-a-finding-not-a-setting)
 - [Things that bite](#things-that-bite)
 - [Not built yet](#not-built-yet)
@@ -43,6 +43,7 @@ why a `forShot=` parameter is the way it dies.
 | `derive.js` | What the ground does to the wind: slope, aspect, curvature, roughness and directional sheltering over an elevation grid. Pure arithmetic, no network |
 | `downscale.js` | Puts the two halves together: a 3 km model wind × the terrain, giving east/north over every pixel of the domain. Pure arithmetic, no network |
 | `field.js` | The whole chain in one call: a coordinate in, terrain read, derived and cached, live HRRR fetched and cached, an east/north field over the domain out |
+| `slice.js` | The view a consumer cuts out of a field: a WGS84 geodesic from a point and a bearing, the wind resolved onto it, stacked over a set of heights, and serialised as a `windProfile`. Pure arithmetic, no network |
 | `profile.js` | The `windProfile` contract: what a field looks like leaving here, and every check it has to pass |
 
 ## Using it
@@ -551,6 +552,66 @@ itself, since every derivative within a curvature arm of it is undefined too. Wh
 filled and from which product is reported rather than blended away — over Boulder, a
 third of the "1 m" domain is really 10 m ground.
 
+### The line a consumer cuts: `slice.js`
+
+`field.js` answers over a box, which is the shape a map, a fire crew and a sailor all
+want. A consumer travelling along a line — a leg, a route, a shot — wants that box cut
+down to the line. `slice.js` is that cut, and it is a **view**: it takes a field that has
+already been solved and does no fetching and no second solve.
+
+```js
+const slice = require("@ballisticvector/windsolver/slice");
+
+const from = { lat: 40.015, lon: -105.2705 };
+const f = await service.get({ box: slice.boxFor(from, 90, 914.4) });
+
+const cut = slice.plane(f, {
+  from: from, bearingDeg: 90, lengthM: 914.4, stepM: 91.44,
+  heightsAglM: [0.6, 1.5, 3, 6, 15]
+});
+
+cut.stations;                    // where each one is, its ground, and the wind there
+cut.alongMps; cut.crossMps;      // [height][distance], m/s, velocity of the air
+slice.toWindProfile(cut, { source: "WindSolver HRRR + 3DEP 10 m" });
+```
+
+**`along` is positive in the direction of travel, `cross` is positive to the right of
+it, `up` is positive up, and all three are the velocity of the air** — not the direction
+it comes from. A wind out of the south crossing an eastward line blows toward the
+traveller's left, so it is negative cross. That is the convention the contract's shooter
+frame already uses, which is why `toWindProfile` is a rename and a unit conversion rather
+than a rotation.
+
+**The line is a geodesic, and its bearing is not constant.** Walk 1,000 yards east from
+Boulder and the line's own direction at the far end is 90.007°, because a geodesic is
+straight on the ellipsoid and curved on the graticule. Every station resolves the wind
+onto the direction of the line *there*, and `convergenceDeg` reports the difference; at a
+mile it is under a hundredth of a degree, and over a sailing leg it is not.
+
+**`destination` is graded against PROJ, not against its own arithmetic** — 270 cases from
+`tools/geodesic-reference.py` (`pyproj.Geod(ellps="WGS84").fwd`), five origins including
+Sydney, Svalbard and a point half a minute from the antimeridian, nine bearings and six
+distances from 1 m to 100 km. The worst disagreement is under a micrometre on the ground
+and 1e-9° on the bearing.
+
+**A line that leaves the field is refused, not clamped.** Holding the edge value returns
+a plausible wind for ground the field never covered, which is the same shape of failure
+as a nodata sentinel that decodes to a number. `outside-domain` names the distance and
+the coordinate where it ran out. `boxFor` exists so a caller does not have to guess a
+radius that happens to contain the line: it is the corridor the line needs, and
+`field.js` adds the derivative margin on top of it.
+
+**Heights are the neutral log law and nothing else.** `plane` scales the field's own
+height to each requested height with `downscale.heightFactor` and reports the factors it
+used. It does **not** turn the wind with height — no Ekman veer, no stability — and `w`
+is explicitly zero, because the downscaling model has no vertical velocity term to give
+it. A profile that quietly invented one would look exactly like a measured one.
+
+**`toWindProfile` will not invent provenance.** `source` is required; `confidence` and
+the two resolutions are `null` unless the caller supplies them, rather than defaulting to
+something that reads as a claim. The azimuth it writes is the line's own, so a consumer
+cannot produce an `azimuth-mismatch` by accident.
+
 ## Measured, not assumed
 
 Run live against a 2-mile display domain at **36.77, −104.49** — the coordinate from the
@@ -650,6 +711,43 @@ to reach the UI: a screen that says 1 m everywhere is lying wherever the lidar i
 reference wind is one HRRR sample at the domain centre, which is defensible at 1.07 cells
 across and is not for a map-sized domain.
 
+### A line through it, live
+
+`node tools/slice-live.js --lat 40.0150 --lon -105.2705 --bearing 90 --range 1000` — a
+live field over the corridor `boxFor` asked for, and a 1,000-yard line cut out of it at
+five heights:
+
+```
+valid          2026-09-03T21:00:00.000Z, field 209 x 94 at 8.00 x 8.00 m of 1m
+model wind     8.11 mph, 0.37 HRRR cells across the box
+convergence    0.0069° between the start of the line and its far end
+contract       valid v1 windProfile
+
+  yards   ground   wind        from   along    cross   (at 10 ft)
+      0     1621    6.02 mph     94°    -6.00    -0.44
+    500     1616    5.84 mph     94°    -5.82    -0.45
+   1000     1612    5.77 mph     94°    -5.75    -0.44
+
+timing         1504 ms for the field, 1 ms to cut the line
+```
+
+**One millisecond to cut the line**, against 1.5 seconds to solve the field it came out
+of — which is the whole reason the slice is a view and not a solve. A second bearing over
+the same ground is free.
+
+The signs are the ones the diagram promises: a wind *from* 94° is a headwind on a 90°
+line, so `along` is negative, and turning the line to 180° over the same field moves the
+same air to **+6.5 mph of `cross`**, because west is now the traveller's right.
+
+**The terrain is doing visible work.** On that southward line the ground climbs from
+1621 m to 1648 m and the 10 ft cross-wind runs 7.5 to 11.0 fps along it — a spread of
+nearly half, which the 3 km model wind has no way to express.
+
+**Still not verified:** the same limit as everything downstream of the downscaling —
+**no comparison with a measured wind**. A line-shaped box is a fraction of an HRRR cell
+across, so every station starts from the same model wind and all the variation along the
+line is terrain. The height stack is the log law over that, with no veer.
+
 ## Resolution is a finding, not a setting
 
 1 m DEM comes from quality-level-2-or-better lidar and covers a subset of the country;
@@ -717,18 +815,17 @@ separate domain; Hawaii and the territories have neither and need a different mo
 
 ## Not built yet
 
-The field itself. Terrain and atmosphere can both be fetched, decoded, sampled and — for
-terrain — reduced to the geometry a downscaling model needs, but nothing joins them: no
-`windProfile` is produced. Next, in this order, are terrain-aware downscaling of the
-volume onto those derivatives, and then the slice along an azimuth that BallisticVector
-already consumes. Both inherit the cache keys that are now settled.
+**An HTTP service, and a consumer calling it.** The chain now runs end to end in
+process — a coordinate in, a field out, a line cut out of it, a valid `windProfile` on
+the far side — but there is no endpoint in front of it, no release tag carrying it, and
+nothing in BallisticVector that calls it. Today BV still builds a wind call in the
+browser and has `profile.js` validate it, which is the same contract and none of the
+field. The remaining steps are a tag, a one-line dependency bump in the consumer, and
+the volume endpoint for the callers who have no bearing to give.
 
-**What a caller can rely on today** is `profile.js` — the contract, its validation and
-its sampling — plus `grib2.js`, `nomads.js`, `volume.js`, `cache.js`, `proj.js`,
-`cog.js`, `terrain.js`, `derive.js`, and the request builders in `geo.js`, `dem.js` and `hrrr.js`. `profile.js` is what BallisticVector
-installs and runs in production; it is not a preview. What none of it does yet is
-*produce* a `windProfile`, so a caller still has to bring its own and have it validated,
-which is exactly what BV does with a browser-built wind call.
+Nothing above the surface, either: one level, one valid time. Forecast hours, history,
+climatology and the map's animated field are all downstream of the same cache key and
+none of them exists.
 
 The volume layer is exercised against live NOMADS and against the committed fixture, but
 its sampling has **not** been graded against an independent interpolator the way the
@@ -754,12 +851,16 @@ comparison also only holds on the central meridian — see the note on convergen
 The downscaling is graded factor by factor and bearing by bearing against an independent
 Numpy implementation of Liston & Elder, over four synthetic domains. What that grades is
 the arithmetic, not the physics: **no part of it has been compared with a measured wind**,
-the weights are the paper's defaults rather than anything fitted to this terrain, and no
-real 3DEP domain has been run through it end to end. Nothing consumes any of it yet.
+and the weights are the paper's defaults rather than anything fitted to this terrain.
+Real 3DEP domains do run through it now, over one coordinate and one cycle.
+
+The slice on top of it is graded against PROJ for the geodesic and against `profile.js`
+for the contract, which grades the geometry and the serialisation. It does not grade the
+height stack: the log law is applied and reported, and has been compared with nothing.
 
 **On the version number:** `1.0.0` is the version of the *published contract*, and it is
 deliberately not a claim that the product is finished. A `0.x` package would imply the
 payload may be reshaped without warning, which is the opposite of the promise being made
-— the whole reason the consumer pins a tag is that this shape is stable. The ingestion
-pipeline is unbuilt, and building it should add modules and tags, not change what a
-valid `windProfile` is. If it ever has to, that is a `2.0.0` and a consumer PR.
+— the whole reason the consumer pins a tag is that this shape is stable. Building the
+ingestion pipeline has added modules and will add tags; it has not changed what a
+valid `windProfile` is, and should not. If it ever has to, that is a `2.0.0` and a consumer PR.
