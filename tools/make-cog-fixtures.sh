@@ -77,4 +77,29 @@ gdalinfo "$FIX/cog-trailing-ifd.tif" > /dev/null   # still a TIFF to an independ
 python3 tools/gdal-reference.py \
   "$FIX/cog-lzw-p3" "$FIX/cog-utm13-1m" "$FIX/cog-nodata-hole"
 
+# GDAL's own slope, aspect and roughness over the same pixels, for
+# `tests/derive.test.js`. Same rule as the decoder against ecCodes: a derivative
+# checked against its own arithmetic passes while being wrong by a factor, and
+# every value in a slope raster is a plausible slope.
+#
+# -s 111120 on the geographic rasters is GDAL's model, not ours. It divides both
+# axes by one scale, so it treats a degree of longitude as a degree of latitude;
+# the test reproduces that deliberately to prove the arithmetic matches, and
+# then measures what the assumption costs at 40° north.
+derive_ref() {
+  local src="$1" tag="$2" alg="$3"; shift 3
+  gdaldem "$alg" "$src.tif" "$WORK/gdaldem-$tag-$alg.tif" -q "$@"
+  python3 tools/gdal-reference.py "$WORK/gdaldem-$tag-$alg" > /dev/null
+  mv "$WORK/gdaldem-$tag-$alg.gdal.json" "$WORK/gdaldem-$tag-$alg.gdal.f32" "$FIX/"
+}
+
+# The projected raster is where GDAL's model and ours agree exactly: metres on
+# both axes, no scale option, so any difference is arithmetic. -s is a
+# slope/aspect option — the ruggedness measures are vertical distances in the
+# raster's own z units and take no horizontal scale, so one grading is enough.
+for alg in slope aspect roughness TRI TPI; do derive_ref "$FIX/cog-utm13-1m" utm13 "$alg"; done
+derive_ref "$FIX/cog-lzw-p3" geographic slope -s 111120
+derive_ref "$FIX/cog-lzw-p3" geographic aspect -s 111120
+derive_ref "$FIX/cog-nodata-hole" hole slope -s 111120
+
 echo "fixtures rebuilt in $FIX"

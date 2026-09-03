@@ -16,6 +16,7 @@
     "proj.js",
     "cog.js",
     "terrain.js",
+    "derive.js",
     "README.md"
   ],
   "scripts": {
