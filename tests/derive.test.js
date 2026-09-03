@@ -160,6 +160,11 @@ function syntheticGrid(width, height, z, spacing) {
       values[row * width + col] = z((col + 0.5) * step, (height - row - 0.5) * step);
     }
   }
+  return syntheticGridFrom(values, width, height, step);
+}
+
+/** The same grid, over elevations that came from somewhere else. */
+function syntheticGridFrom(values, width, height, step, originX) {
   const grid = {
     crs: proj.crsFromEpsg(26913),
     width: width,
@@ -167,7 +172,12 @@ function syntheticGrid(width, height, z, spacing) {
     values: values,
     // Placed on the central meridian so grid north is true north and the
     // sheltering bearings are not rotated by convergence.
-    transform: { originX: 500000, originY: 4400000 + height * step, scaleX: step, scaleY: -step }
+    transform: {
+      originX: originX === undefined ? 500000 : originX,
+      originY: 4400000 + height * step,
+      scaleX: step,
+      scaleY: -step
+    }
   };
   grid.bounds = cog.gridBounds(grid);
   return grid;
@@ -440,6 +450,79 @@ describe("curvature, against surfaces whose curvature is known", () => {
     expect(at(grid, cv.total, 10, 10)).toBeCloseTo(0, 12);
     expect(at(grid, cv.profile, 10, 10)).toBeNaN();
     expect(at(grid, cv.plan, 10, 10)).toBeNaN();
+  });
+});
+
+describe("sheltering, against topocalc's horizon angles", () => {
+  /**
+   * The gap left open when the derivatives landed: Sx had no reference but our
+   * own trigonometry. With the search distance run out to the edge of the
+   * domain, Sx *is* the horizon angle — a classical quantity with third-party
+   * implementations. topocalc (USDA-ARS-NWRC, CC0) computes Dozier & Frew's,
+   * and `tools/horizon-reference.py` writes its answers into the fixture this
+   * reads. topocalc is not installed in CI; the fixture is committed and the
+   * regeneration command is in the tool's header.
+   *
+   * Only the four cardinal bearings: along a row or a column both methods land
+   * on the pixel centres, so nothing is left in the difference but the formula.
+   * topocalc reaches the diagonals by skewing and interpolating the raster,
+   * which would compare one interpolation against a different one.
+   */
+  const meta = JSON.parse(fixture("horizon-reference.json").toString("utf8"));
+  const dem = fixture("horizon-bowl.dem.f32");
+  // Straddling the central meridian, where grid north *is* true north.
+  // topocalc walks the raster's own rows and columns and has no notion of
+  // convergence, so anywhere else the two are looking in different directions
+  // — by 0.003 deg here, which is a millimetre of drift per metre travelled and
+  // still enough to move the horizon on ground this smooth.
+  const grid = syntheticGridFrom(
+    new Float32Array(dem.buffer.slice(dem.byteOffset, dem.byteOffset + dem.length)),
+    meta.width, meta.height, meta.spacingM, 500000 - (meta.width * meta.spacingM) / 2
+  );
+  // 900 m runs every ray off the 810 m domain, which is what makes it a
+  // horizon rather than a search within a radius; 10 m steps land on the pixel
+  // centres topocalc reads.
+  const sx = derive.shelter(grid, {
+    sectors: [0, 90, 180, 270], maxDistanceM: 900, stepM: meta.spacingM
+  });
+
+  const NAMES = { 0: "north", 90: "east", 180: "south", 270: "west" };
+
+  test("the rays run down the rows and columns, as topocalc's do", () => {
+    expect(derive.gridConvergenceDeg(grid)).toBeCloseTo(0, 9);
+  });
+
+  for (const sector of sx.sectors) {
+    test("looking " + NAMES[sector.centreDeg] + ", every angle is topocalc's", () => {
+      const raw = fixture("horizon-bowl." + NAMES[sector.centreDeg] + ".f32");
+      const theirs = new Float32Array(raw.buffer.slice(raw.byteOffset, raw.byteOffset + raw.length));
+      let worst = 0;
+      let compared = 0;
+      for (let row = 1; row < meta.height - 1; row++) {
+        for (let col = 1; col < meta.width - 1; col++) {
+          const i = row * meta.width + col;
+          // Ours reports a falling horizon as a negative angle; topocalc floors
+          // it at zero, because a cell that sees nothing above it has its own
+          // pixel as its horizon. Clamp before comparing rather than after.
+          const mine = Math.max(0, sector.sx[i]);
+          worst = Math.max(worst, Math.abs(mine - theirs[i]));
+          compared++;
+        }
+      }
+      expect(compared).toBe((meta.width - 2) * (meta.height - 2));
+      // 1e-4 deg. Both march the same pixel centres; the difference is that
+      // theirs works in float32 and takes an arccosine where we take an
+      // arctangent.
+      expect(worst).toBeLessThan(1e-4);
+    });
+  }
+
+  test("and the domain really does have something to hide behind", () => {
+    // A reference that is zero everywhere would agree with anything.
+    const north = sx.sectors[0].sx;
+    let above = 0;
+    for (let i = 0; i < north.length; i++) if (north[i] > 5) above++;
+    expect(above).toBeGreaterThan(500);
   });
 });
 

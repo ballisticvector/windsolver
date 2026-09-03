@@ -17,6 +17,7 @@
     "cog.js",
     "terrain.js",
     "derive.js",
+    "downscale.js",
     "README.md"
   ],
   "scripts": {

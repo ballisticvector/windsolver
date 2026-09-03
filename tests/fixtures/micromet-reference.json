@@ -1,0 +1,58 @@
+{
+  "source": "Liston & Elder (2006), MicroMet, eqs 15-19",
+  "generator": "tools/micromet-reference.py",
+  "cases": [
+    {
+      "name": "hill",
+      "width": 81,
+      "height": 81,
+      "spacingM": 10.0,
+      "curvatureLengthM": 300.0,
+      "speedMps": 8.0,
+      "fromDeg": 270.0,
+      "gammaSlope": 0.5,
+      "gammaCurvature": 0.5,
+      "maxCurvature": 0.45020319619445925,
+      "maxSlopeDeg": 50.34584238415019
+    },
+    {
+      "name": "hill-se",
+      "width": 81,
+      "height": 81,
+      "spacingM": 10.0,
+      "curvatureLengthM": 300.0,
+      "speedMps": 5.0,
+      "fromDeg": 135.0,
+      "gammaSlope": 0.5,
+      "gammaCurvature": 0.5,
+      "maxCurvature": 0.45020319619445925,
+      "maxSlopeDeg": 50.34584238415019
+    },
+    {
+      "name": "ridge",
+      "width": 81,
+      "height": 81,
+      "spacingM": 10.0,
+      "curvatureLengthM": 300.0,
+      "speedMps": 12.0,
+      "fromDeg": 250.0,
+      "gammaSlope": 0.5,
+      "gammaCurvature": 0.5,
+      "maxCurvature": 0.15002114665370836,
+      "maxSlopeDeg": 40.04465562080369
+    },
+    {
+      "name": "ridge-short",
+      "width": 81,
+      "height": 81,
+      "spacingM": 10.0,
+      "curvatureLengthM": 30.0,
+      "speedMps": 12.0,
+      "fromDeg": 250.0,
+      "gammaSlope": 0.5,
+      "gammaCurvature": 0.5,
+      "maxCurvature": 0.0527317449348781,
+      "maxSlopeDeg": 40.04465562080369
+    }
+  ]
+}
