@@ -18,6 +18,7 @@
     "terrain.js",
     "derive.js",
     "downscale.js",
+    "field.js",
     "README.md"
   ],
   "scripts": {

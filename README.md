@@ -20,8 +20,8 @@ why a `forShot=` parameter is the way it dies.
 - [Modules](#modules)
 - [Using it](#using-it) · [Why the tarball](#why-the-tarball) · [Releasing a contract change](#releasing-a-contract-change)
 - [The `windProfile` contract — v1](#the-windprofile-contract--v1) · [The frame](#the-frame) · [The keys](#the-keys) · [The grids](#the-grids) · [Why it refuses things](#why-it-refuses-things)
-- [Ingestion](#ingestion) · [The network client](#the-network-client) · [The volume and its cache](#the-volume-and-its-cache) · [Terrain, read as windows](#terrain-read-as-windows) · [Terrain derivatives](#terrain-derivatives) · [Downscaling: the model wind over the ground](#downscaling-the-model-wind-over-the-ground)
-- [Measured, not assumed](#measured-not-assumed)
+- [Ingestion](#ingestion) · [The network client](#the-network-client) · [The volume and its cache](#the-volume-and-its-cache) · [Terrain, read as windows](#terrain-read-as-windows) · [Terrain derivatives](#terrain-derivatives) · [Downscaling: the model wind over the ground](#downscaling-the-model-wind-over-the-ground) · [The whole chain: `field.js`](#the-whole-chain-fieldjs)
+- [Measured, not assumed](#measured-not-assumed) · [The whole chain, live over Boulder](#the-whole-chain-live-over-boulder)
 - [Resolution is a finding, not a setting](#resolution-is-a-finding-not-a-setting)
 - [Things that bite](#things-that-bite)
 - [Not built yet](#not-built-yet)
@@ -42,6 +42,7 @@ why a `forShot=` parameter is the way it dies.
 | `terrain.js` | The only other module that makes a request. Turns a box into elevation grids over HTTP range reads |
 | `derive.js` | What the ground does to the wind: slope, aspect, curvature, roughness and directional sheltering over an elevation grid. Pure arithmetic, no network |
 | `downscale.js` | Puts the two halves together: a 3 km model wind × the terrain, giving east/north over every pixel of the domain. Pure arithmetic, no network |
+| `field.js` | The whole chain in one call: a coordinate in, terrain read, derived and cached, live HRRR fetched and cached, an east/north field over the domain out |
 | `profile.js` | The `windProfile` contract: what a field looks like leaving here, and every check it has to pass |
 
 ## Using it
@@ -510,6 +511,46 @@ significant terrain it should be read as a considerably better first guess than 
 3 km model wind rather than as a measured field. A momentum solver (WindNinja's, and its
 GPL-3 question) sits above this, not instead of it.
 
+### The whole chain: `field.js`
+
+Everything above is a stage; `field.js` is the pipe. A coordinate goes in, and a wind
+over the real ground comes out.
+
+```js
+const { createFieldService } = require("@ballisticvector/windsolver/field");
+
+const service = createFieldService();
+const f = await service.get({ lat: 40.015, lon: -105.2705, radiusMiles: 1 });
+
+f.speedMps; f.east; f.north;         // Float32Array over the domain, earth-relative
+f.reference;                         // the model wind it started from
+f.terrain; f.offset; f.validTime;    // what ground, how far off the model's, and when
+```
+
+**The domain read is larger than the domain asked for**, because a pixel's derivatives
+are a function of the ground around it: half a curvature length and the whole shelter
+search are undefined that far in from the edge. `domainOf` pads by the larger of the
+two plus a pixel, so the box the caller asked for comes back filled rather than with a
+ragged undefined border exactly where they were looking.
+
+**The atmospheric request is padded too, and for a different reason.** A two-mile box is
+1.07 HRRR cells across, and the NOMADS filter can answer it with a single column of
+cells — which has no 2 × 2 to interpolate the centre in. The request is widened by one
+cell each way; the *domain* is not.
+
+**Two caches, and only one of them expires.** The prepared ground — grid, derivatives,
+weights — is keyed on the ground alone and stands until USGS reflies it. The atmosphere
+is keyed on `(source, snapped box, level set, variables, valid time)`. The hourly
+update is the arithmetic in between.
+
+**A hole in the finest product falls back to the next one down.** TNM reports 1 m as
+covering Boulder in full and both 1 m projects are nodata over the north of a two-mile
+box, because coverage is computed from tile footprints and a void is a property of the
+pixels. Any hole at all is worth one read of the coarser product: a hole costs more than
+itself, since every derivative within a curvature arm of it is undefined too. What was
+filled and from which product is reported rather than blended away — over Boulder, a
+third of the "1 m" domain is really 10 m ground.
+
 ## Measured, not assumed
 
 Run live against a 2-mile display domain at **36.77, −104.49** — the coordinate from the
@@ -576,6 +617,38 @@ tile without saying so.
 
 The design document's other argument stands regardless: 1 m terrain does not imply a
 1 m computational mesh. Keep the source for display, resample to 10–20 m for the solve.
+
+### The whole chain, live over Boulder
+
+`node tools/field-live.js --lat 40.0150 --lon -105.2705 --radius 1` — a 2-mile domain,
+real 3DEP, a live NOMADS pull and the downscaling, run at two resolutions:
+
+| | 10 m | 1 m |
+| --- | --- | --- |
+| Terrain read | 475 × 472, **4.11 MB in 15 requests** | 3746 × 3730, **34.05 MB in 35 requests** |
+| Void after fallback | 0.12% | 0.00% |
+| Filled from the 10 m product | **35.3%** | **35.3%** |
+| Elevation | 1601–1854 m, mean 1641 | 1600–1831 m, mean 1640 |
+| Model ground vs real | 1670 m, −70 to +183 m | 1670 m, −70 to +161 m |
+| Model wind | 7.93 mph, east −3.54 north 0.21 m/s, **1.07 cells across the box** | same |
+| Downscaled | 6.05–9.79 mph, mean 7.92; factor 0.763–1.234 | 5.40–10.16 mph, mean 7.91; factor 0.681–1.281 |
+| Undefined inside the box | **0.0%** | **0.0%** |
+| Cold / warm | 3.4 s / **15 ms** | 22 s / **22 s** |
+
+**The warm number is the whole argument for the split**, and at 1 m it disappears: a
+3746 × 3730 prepared domain is larger than the terrain cache's entire 512 MB budget, so
+it is refused rather than evicting everything else, and every request re-reads and
+re-derives the ground. 10 m over the same box is 4 MB on the wire and answers in 15 ms.
+Ten metres is the solve resolution; one metre is for display.
+
+**A third of that "1 m" domain is 10 m ground**, filled in from the seamless product
+where both Boulder lidar projects are nodata. It is reported as `coarserDataset` and
+`filledFromCoarser` rather than blended away, for the same reason the chosen dataset has
+to reach the UI: a screen that says 1 m everywhere is lying wherever the lidar is a hole.
+
+**Still not verified:** none of these numbers has been compared with a measured wind. The
+reference wind is one HRRR sample at the domain centre, which is defensible at 1.07 cells
+across and is not for a map-sized domain.
 
 ## Resolution is a finding, not a setting
 

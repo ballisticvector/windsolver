@@ -15,6 +15,7 @@ const fs = require("fs");
 const path = require("path");
 
 const cog = require("../cog.js");
+const dem = require("../dem.js");
 const terrain = require("../terrain.js");
 
 const FIXTURES = path.join(__dirname, "fixtures");
@@ -326,6 +327,49 @@ describe("readTerrain", () => {
       (inHole.north + inHole.south) / 2,
       (inHole.west + inHole.east) / 2
     )).toBeGreaterThan(2000);
+  });
+
+  test("discovers over the injected fetch when no fetchJson is given", async () => {
+    // Without a default the discovery call is made with `undefined`, every
+    // dataset throws the same TypeError, and the per-dataset guard turns that
+    // into "no 3DEP product covers this box" over ground that 3DEP covers.
+    const listing = {
+      total: 1,
+      items: [{
+        title: "USGS 1/3 Arc Second test",
+        format: "GeoTIFF",
+        downloadURL: "https://example.test/a.tif",
+        publicationDate: "2022-01-01",
+        boundingBox: {
+          minX: lzw.bounds.west,
+          maxX: lzw.bounds.east,
+          minY: lzw.bounds.south,
+          maxY: lzw.bounds.north
+        }
+      }]
+    };
+    const tiles = server(lzw.buffer);
+    const fetchImpl = async function (url, init) {
+      if (url.startsWith(dem.TNM_PRODUCTS_URL)) {
+        return { ok: true, status: 200, json: async () => listing };
+      }
+      return tiles(url, init);
+    };
+
+    const out = await terrain.readTerrain(box, { fetch: fetchImpl, level: 0 });
+    expect(out.grids).toHaveLength(1);
+  });
+
+  test("a listing request that fails says so, rather than reading as empty country", async () => {
+    // "The National Map is down" and "there is no lidar here" are the same
+    // answer from the caller's side unless the refusal carries the cause.
+    const fetchImpl = async function () {
+      return { ok: false, status: 503, text: async () => "busy" };
+    };
+    const err = await terrain.readTerrain(box, { fetch: fetchImpl }).catch((e) => e);
+    expect(err.code).toBe("no-terrain");
+    expect(err.considered.every((c) => c.error)).toBe(true);
+    expect(err.message).toMatch(/503/);
   });
 
   test("refuses a box no product covers, and says what it considered", async () => {
