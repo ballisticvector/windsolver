@@ -13,6 +13,9 @@
     "nomads.js",
     "volume.js",
     "cache.js",
+    "proj.js",
+    "cog.js",
+    "terrain.js",
     "README.md"
   ],
   "scripts": {

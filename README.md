@@ -20,7 +20,7 @@ why a `forShot=` parameter is the way it dies.
 - [Modules](#modules)
 - [Using it](#using-it) · [Why the tarball](#why-the-tarball) · [Releasing a contract change](#releasing-a-contract-change)
 - [The `windProfile` contract — v1](#the-windprofile-contract--v1) · [The frame](#the-frame) · [The keys](#the-keys) · [The grids](#the-grids) · [Why it refuses things](#why-it-refuses-things)
-- [Ingestion](#ingestion) · [The network client](#the-network-client) · [The volume and its cache](#the-volume-and-its-cache)
+- [Ingestion](#ingestion) · [The network client](#the-network-client) · [The volume and its cache](#the-volume-and-its-cache) · [Terrain, read as windows](#terrain-read-as-windows)
 - [Measured, not assumed](#measured-not-assumed)
 - [Resolution is a finding, not a setting](#resolution-is-a-finding-not-a-setting)
 - [Things that bite](#things-that-bite)
@@ -37,6 +37,9 @@ why a `forShot=` parameter is the way it dies.
 | `nomads.js` | The only module that makes a request. Fetches a subset and refuses everything NOMADS returns that is not the field that was asked for |
 | `volume.js` | The general atmosphere in memory: a lat/long box × a set of levels at one valid time, earth-relative, with no bearing in it. Sampling and interpolation live here |
 | `cache.js` | Keys a volume on `(bbox, level set, valid time)`, keeps it while it is the newest field there is, and collapses simultaneous callers into one fetch |
+| `proj.js` | UTM ⇄ geographic for the datums 3DEP is published on, graded against PROJ |
+| `cog.js` | Reads a GeoTIFF: directories, tags, LZW and Deflate, the floating-point predictor, and which bytes a lat/long box needs. No network |
+| `terrain.js` | The only other module that makes a request. Turns a box into elevation grids over HTTP range reads |
 | `profile.js` | The `windProfile` contract: what a field looks like leaving here, and every check it has to pass |
 
 ## Using it
@@ -305,6 +308,59 @@ A few decisions worth not undoing:
 - **`buildVolume` rotates grid-relative wind to earth-relative once**, on the way in, so
   nothing downstream can forget to.
 
+### Terrain, read as windows
+
+```js
+const { readTerrain, elevationAt } = require("@ballisticvector/windsolver/terrain");
+
+const t = await readTerrain(box, { fetch, targetResolutionM: 10 });
+elevationAt(t.grids, 39.985, -105.30);  // metres, or null over a void
+```
+
+`dem.js` decides which product covers the domain, `cog.js` decides which bytes of a tile
+are worth asking for, and `terrain.js` is the thin layer that asks. It takes its `fetch`
+as an option, so its own suite is offline; the fixtures are real 3DEP bytes cut down with
+GDAL by `tools/make-cog-fixtures.sh`.
+
+**A window is not a download.** Live over a 2.7 × 3.3 km box west of Boulder, on
+2026-09-08:
+
+| Asked for | Level | Grid | Read | Requests | Of the tiles |
+| --- | --- | --- | --- | --- | --- |
+| 10 m | overview 3 | 432 × 421 | **1.29 MB** | 5 | 0.28% |
+| 1 m | full | 3430 × 3345 | 45.2 MB | 15 | 9.8% |
+
+The two tiles listed over that box weigh **459 MB** between them. `targetResolutionM`
+chooses the overview — the coarsest level still finer than what was asked for — because
+that is the number a caller actually knows: a solver mesh is 10–20 m whatever the source
+is, and reading 1 m terrain in order to average it down is nine tenths of the bytes
+thrown away.
+
+**Graded against GDAL, not against itself**, the same way the decoder is graded against
+ecCodes. `tests/cog.test.js` compares every pixel of every overview level of every
+fixture with `gdal_translate`'s reading of the same file, and the live window above
+agrees with `gdallocationinfo` **to the bit** at five coordinates — which grades the
+projection, the overview choice, the tile arithmetic, the LZW decode and the predictor in
+one number, since any of them being wrong moves the value.
+
+What it refuses, and why each one is a wrong answer rather than an error:
+
+- a server that answers a `Range` with **200 and the whole file** (`no-range-support`) —
+  otherwise a window silently becomes a 400 MB download that only looks slow;
+- a directory chain that is still asking for bytes after several round trips
+  (`header-scattered`), rather than crawling a file one tag at a time;
+- a box that does not touch the tile (`outside-tile`) and one that wraps the antimeridian
+  (`box-crosses-antimeridian`);
+- a compression, predictor, sample format or bit depth it has not been shown
+  (`unsupported-*`), by name;
+- and a read that would exceed its byte budget, counted **across the whole read**
+  (`too-many-bytes`).
+
+Holes stay holes. 3DEP writes `-999999` where a project boundary, water or a void sits;
+`cog.js` turns nodata into `NaN`, `sampleElevation` returns `null` beside one rather than
+interpolating across it, and `elevationAt` moves to the next grid. Interpolating over a
+void invents ground, and invented ground is a wind feature the mountain does not have.
+
 ## Measured, not assumed
 
 Run live against a 2-mile display domain at **36.77, −104.49** — the coordinate from the
@@ -343,12 +399,14 @@ holds forty of them, and that is before anyone else asks for a different mountai
 
 That figure is the cost of *whole-tile* fetching, and it does not have to be paid. Both
 DEM products are Cloud Optimized GeoTIFFs, measured by reading the TIFF headers over
-range requests — 20 tiles, six states, both datasets (`node tools/cog-survey.js`):
+range requests — 30 tiles, six states, both datasets (`node tools/cog-survey.js`):
 
-| | 1 m | 1/3 arc-second |
+| | 1 m — 22 tiles | 1/3 arc-second — 8 tiles |
 | --- | --- | --- |
-| First IFD | byte **192** — 12/12 tiles | byte **192** — 8/8 tiles |
-| Internal tiling | 512 × 512 | 512 × 512 |
+| Directory in the first 4 KB | 22/22 | 8/8 |
+| Internally tiled | 22/22 | 8/8 |
+| Internal tile | 512 × 512 (20), **256 × 256 (2)** | 512 × 512 |
+| Predictor | 3 (20), **1 (2)** | 3 |
 | Overviews | 5 levels | 5 levels |
 | Range requests | 206 | 206 |
 
@@ -357,12 +415,15 @@ it says where the tiles are, and only those tiles are fetched. The overviews mea
 zoomed-out preview is cheaper still. **Mirroring CONUS is therefore optional** — do it
 for resilience if USGS availability becomes a problem, not for speed.
 
-**Do not assume this per tile, though.** The 3DEP catalogue is thousands of separate
-lidar projects converted at different times, and layout is a property of the conversion,
-not of the product. A tile with its directory at the end of a 400 MB file is legal, is
-still windowable, and just costs one extra range request to find the directory — worth
-caching per tile. A reader that assumes a front-loaded IFD will one day fetch a whole
-tile without saying so, which is why `discover` reports `downloadBytes`.
+**The two odd tiles are the point of the table.** The 3DEP catalogue is thousands of
+separate lidar projects converted at different times, and the physical shape of a file
+is a property of its conversion, not of the product: the two 2013 tiles over Boulder are
+256 to a block with no floating-point predictor, next to 2023 tiles over the same ground
+that are 512 and predictor 3. Both are windowable and both are read here; a reader that
+hard-codes either shape reads the other as noise. A directory at the *end* of a 400 MB
+file is legal too — none of these 30 had one, but it costs one extra range request to
+find and `cog.js` handles it, because a reader that assumes otherwise fetches a whole
+tile without saying so.
 
 The design document's other argument stands regardless: 1 m terrain does not imply a
 1 m computational mesh. Keep the source for display, resample to 10–20 m for the solve.
@@ -410,6 +471,20 @@ says when it is needed.
 chosen conservatively and not measured from this codebase. It worked on the live test
 above. If discovery starts returning error pages, raise it first.
 
+**A listed tile can hold no ground at all.** Over the Boulder box above, TNM lists two
+1 m tiles and the *newer* one — a 2023 project — is nodata across the whole domain,
+181,872 pixels out of 181,872; the 2013 project underneath it carries the terrain. So
+"newest per footprint" is the right rule for avoiding superseded data and the wrong rule
+for picking what to read. `readTerrain` returns every intersecting tile, sorted least
+void first, with `voidFraction` on each grid and `allVoid` on the result.
+
+**A nodata sentinel is decimal text, and may not name the pixel it stands for.** The
+2013 3DEP conversions write `GDAL_NODATA` as `-3.4028234e+38` for a pixel that is really
+−3.4028234663852886 × 10³⁸. Compared as written, the two are different numbers, so every
+void in those files reads as ground 3.4 × 10³⁸ metres deep — a value that survives
+averaging, slope and every later stage as a finite float. `cog.js` brings the sentinel
+into float32 before comparing, which is where the file's own arithmetic lives.
+
 **Coverage is sampled, not exact.** `geo.coverageFraction` grids the box and counts hits
 rather than computing a union of rectangles, so an uncovered strip thinner than the
 sample spacing can be missed. It is fine for "is this good enough or fall back", and it
@@ -420,17 +495,16 @@ separate domain; Hawaii and the territories have neither and need a different mo
 
 ## Not built yet
 
-Terrain and the field itself. A live HRRR volume can be fetched, decoded, sampled and
-cached, but nothing here reads a GeoTIFF and no `windProfile` is produced: `dem.discover`
-still returns *what to fetch*. Next, in this order, is the terrain window reader and its
-derivatives — slope, aspect, curvature, roughness, sheltering by sector, computed once
-per domain because they never change; then terrain-aware downscaling of the volume; then
-the slice along an azimuth that BallisticVector already consumes. All three inherit the
-cache key that is now settled.
+The field itself. Terrain and atmosphere can both be fetched, decoded and sampled now,
+but nothing joins them: no `windProfile` is produced. Next, in this order, are the
+terrain derivatives — slope, aspect, curvature, roughness, sheltering by sector, computed
+once per domain because they never change; then terrain-aware downscaling of the volume
+onto them; then the slice along an azimuth that BallisticVector already consumes. All
+three inherit the cache key that is now settled.
 
 **What a caller can rely on today** is `profile.js` — the contract, its validation and
-its sampling — plus `grib2.js`, `nomads.js`, `volume.js`, `cache.js`, and the request
-builders in `geo.js`, `dem.js` and `hrrr.js`. `profile.js` is what BallisticVector
+its sampling — plus `grib2.js`, `nomads.js`, `volume.js`, `cache.js`, `proj.js`,
+`cog.js`, `terrain.js`, and the request builders in `geo.js`, `dem.js` and `hrrr.js`. `profile.js` is what BallisticVector
 installs and runs in production; it is not a preview. What none of it does yet is
 *produce* a `windProfile`, so a caller still has to bring its own and have it validated,
 which is exactly what BV does with a browser-built wind call.
@@ -438,6 +512,13 @@ which is exactly what BV does with a browser-built wind call.
 The volume layer is exercised against live NOMADS and against the committed fixture, but
 its sampling has **not** been graded against an independent interpolator the way the
 decoder was graded against ecCodes, and no vertical level above 80 m has been fetched.
+
+The terrain reader is graded against GDAL, but only on what it has been shown: LZW and
+Deflate with the floating-point predictor, float32, one geographic and one projected CRS,
+both over Colorado. BigTIFF, tiles in other UTM zones, Alaska's projections and any
+compression 3DEP has not used here are refused by name rather than handled, and the
+`no-range-support` and `header-scattered` refusals are proved by fixtures rather than by
+a server that has actually done either.
 
 **On the version number:** `1.0.0` is the version of the *published contract*, and it is
 deliberately not a claim that the product is finished. A `0.x` package would imply the
