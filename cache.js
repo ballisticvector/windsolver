@@ -116,6 +116,10 @@ function cacheKey(spec) {
     s.source || "HRRR",
     [box.west, box.south, box.east, box.north].join(","),
     levels.join("+"),
+    // A volume fetched for wind alone would otherwise answer a request that
+    // also needs the model's surface height, and the missing parameter reads
+    // downstream as "the model has no terrain here" rather than as a miss.
+    s.variables ? s.variables.slice().sort().join(",") : "default",
     new Date(validTimeMs(s.validTime)).toISOString()
   ].join("|");
 }
@@ -564,11 +568,16 @@ function createTerrainSource(opts) {
   const o = opts || {};
   if (typeof o.load !== "function") throw fail("no-loader", "load(spec) is required");
   const cache = o.cache || createStaticCache(o);
+  // `key` because what is cached is not always the derivatives: a caller that
+  // also prepares the downscaling weights has a wider identity (`weightsKey`),
+  // and sharing one key between the two would hand back a domain missing half
+  // of what was asked for.
+  const keyOf = o.key || terrainKey;
   const inFlight = new Map();
   const stats = { coalesced: 0, loads: 0 };
 
   async function get(spec) {
-    const key = terrainKey(spec);
+    const key = keyOf(spec);
     const hit = cache.get(key);
     if (hit) return hit;
 
@@ -595,7 +604,7 @@ function createTerrainSource(opts) {
 
   return {
     get: get,
-    key: terrainKey,
+    key: keyOf,
     cache: cache,
     summary: function () { return Object.assign({ inFlight: inFlight.size }, stats, cache.summary()); }
   };

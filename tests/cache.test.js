@@ -74,7 +74,17 @@ describe("cacheKey", () => {
   test("nothing about a shooter reaches the key", () => {
     const key = cacheModule.cacheKey(spec());
     expect(key).not.toMatch(/azimuth|yard|range|shot/i);
-    expect(key).toBe("HRRR|-105.32,39.98,-105.24,40.04|heightAboveGround:10+heightAboveGround:80|2026-08-26T20:00:00.000Z");
+    expect(key).toBe("HRRR|-105.32,39.98,-105.24,40.04|heightAboveGround:10+heightAboveGround:80|default|2026-08-26T20:00:00.000Z");
+  });
+
+  test("a narrower variable set is a different key, so it cannot answer a wider request", () => {
+    const base = cacheModule.cacheKey(spec());
+    const wind = cacheModule.cacheKey(spec({ variables: ["UGRD", "VGRD"] }));
+    const withGround = cacheModule.cacheKey(spec({ variables: ["UGRD", "VGRD", "HGT"] }));
+    expect(wind).not.toBe(base);
+    expect(withGround).not.toBe(wind);
+    // Order is not identity: the same set asked for two ways is one entry.
+    expect(cacheModule.cacheKey(spec({ variables: ["VGRD", "UGRD"] }))).toBe(wind);
   });
 
   test("accepts an ISO string as readily as a Date, and refuses nonsense", () => {

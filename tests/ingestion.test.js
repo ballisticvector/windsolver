@@ -247,6 +247,20 @@ describe("dem — discovery against an injected fetch", () => {
       expect(res.dataset).toBeNull();
     });
   });
+
+  test("names the products coarser than one that came back full of holes", () => {
+    expect(dem.coarserThan("1m")).toEqual(["one-ninth", "ifsar-5m", "one-third"]);
+    expect(dem.coarserThan("one-third")).toEqual([]);
+    expect(dem.coarserThan(null)).toEqual(dem.DATASETS.map((d) => d.id));
+  });
+
+  test("a missing fetcher is refused, not reported as empty country", async () => {
+    // Every dataset failing the same way is caught by the per-dataset guard
+    // above and reads as "no 3DEP here", which over CONUS is never true.
+    await expect(dem.discover(box, undefined)).rejects.toMatchObject({
+      code: "no-fetch"
+    });
+  });
 });
 
 describe("hrrr — cycle arithmetic", () => {

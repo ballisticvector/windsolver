@@ -23,6 +23,13 @@ const geo = require("./geo");
 
 const TNM_PRODUCTS_URL = "https://tnmaccess.nationalmap.gov/api/v1/products";
 
+function fail(code, message, extra) {
+  const err = new Error(message);
+  err.code = code;
+  if (extra) Object.assign(err, extra);
+  return err;
+}
+
 /**
  * Finest first. `resolutionM` is nominal ground sample distance: arc-second
  * products vary with latitude, and 1/3 arc-second is ~10 m in latitude and
@@ -37,6 +44,21 @@ const DATASETS = [
 
 function datasetById(id) {
   return DATASETS.filter(function (d) { return d.id === id; })[0] || null;
+}
+
+/**
+ * The dataset ids coarser than the one given, finest first.
+ *
+ * For the caller that has read the best product and found holes in it: the
+ * next product down is the one with real ground where this one has none. An
+ * unknown id means "try them all", since a caller with no dataset to be
+ * coarser than has nothing to lose by looking.
+ */
+function coarserThan(id) {
+  const from = datasetById(id);
+  return DATASETS
+    .filter(function (d) { return !from || d.resolutionM > from.resolutionM; })
+    .map(function (d) { return d.id; });
 }
 
 /** Query URL for one dataset over one box. */
@@ -161,7 +183,13 @@ function selectDataset(availability, box, opts) {
   for (const dataset of DATASETS) {
     const entry = (availability || []).filter(function (a) { return a.datasetId === dataset.id; })[0];
     if (!entry || !entry.items || entry.items.length === 0) {
-      considered.push({ datasetId: dataset.id, resolutionM: dataset.resolutionM, coverage: 0, tileCount: 0 });
+      considered.push({
+        datasetId: dataset.id,
+        resolutionM: dataset.resolutionM,
+        coverage: 0,
+        tileCount: 0,
+        error: (entry && entry.error) || null
+      });
       continue;
     }
     const tiles = newestPerFootprint(entry.items).filter(function (t) { return geo.intersects(t.box, box); });
@@ -198,6 +226,13 @@ async function discover(box, fetchJson, opts) {
   const availability = [];
   const minCoverage = o.minCoverage === undefined ? 0.999 : o.minCoverage;
 
+  // Every dataset failing identically is swallowed by the per-dataset guard
+  // below and comes back as "no 3DEP over this box", which is a sentence about
+  // the country rather than about the caller. A missing fetcher fails that way.
+  if (typeof fetchJson !== "function") {
+    throw fail("no-fetch", "discovery needs a fetchJson(url) to ask The National Map with");
+  }
+
   for (const dataset of DATASETS) {
     if (o.only && o.only.indexOf(dataset.id) === -1) continue;
     let parsed = { total: 0, items: [] };
@@ -222,6 +257,7 @@ module.exports = {
   TNM_PRODUCTS_URL,
   DATASETS,
   datasetById,
+  coarserThan,
   productsUrl,
   parseProducts,
   newestPerFootprint,

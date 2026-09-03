@@ -172,6 +172,31 @@ async function readWindow(url, box, opts) {
 }
 
 /**
+ * A JSON reader over the injected `fetch`, for the discovery half.
+ *
+ * `dem.discover` takes its fetcher as an argument so its selection logic is
+ * testable with no network, but a caller that forgets one gets four identical
+ * failures, which discovery is deliberately tolerant of and reports as terrain
+ * that is not there. Defaulting it here keeps the injection and removes the
+ * trap.
+ */
+function jsonReaderFor(opts) {
+  const o = opts || {};
+  const fetchImpl = o.fetch === undefined ? globalThis.fetch : o.fetch;
+  if (typeof fetchImpl !== "function") throw fail("no-fetch", "no fetch implementation is available");
+  return async function (url) {
+    const res = await fetchImpl(url, {
+      headers: { Accept: "application/json" },
+      signal: AbortSignal.timeout(o.timeoutMs === undefined ? DEFAULT_TIMEOUT_MS : o.timeoutMs)
+    });
+    if (!res.ok) {
+      throw fail("http-error", "The National Map answered " + res.status + " for " + url, { status: res.status });
+    }
+    return res.json();
+  };
+}
+
+/**
  * Discover the best product over a box and read a window of it.
  *
  * Terrain arrives as a mosaic — a domain that straddles two 3DEP tiles needs
@@ -181,7 +206,8 @@ async function readWindow(url, box, opts) {
  */
 async function readTerrain(box, opts) {
   const o = opts || {};
-  const found = o.selection || await dem.discover(box, o.fetchJson, o);
+  const found = o.selection ||
+    await dem.discover(box, o.fetchJson || jsonReaderFor(o), o);
   if (!found.dataset) {
     throw fail(
       "no-terrain",
