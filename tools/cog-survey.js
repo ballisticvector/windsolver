@@ -33,6 +33,8 @@ const TAG_HEIGHT = 257;
 const TAG_TILE_WIDTH = 322;
 const TAG_TILE_HEIGHT = 323;
 const TAG_COMPRESSION = 259;
+const TAG_PREDICTOR = 317;
+const TILES_PER_REGION = 4;
 
 async function fetchJson(url) {
   const res = await fetch(url);
@@ -117,6 +119,7 @@ async function layoutOf(url) {
     tiled: Boolean(top[TAG_TILE_WIDTH] && top[TAG_TILE_HEIGHT]),
     tile: top[TAG_TILE_WIDTH] ? top[TAG_TILE_WIDTH] + "x" + top[TAG_TILE_HEIGHT] : "stripped",
     compression: top[TAG_COMPRESSION],
+    predictor: top[TAG_PREDICTOR] || 1,
     size: top[TAG_WIDTH] + "x" + top[TAG_HEIGHT],
     overviews: Math.max(0, chain.length - 1),
     bigTiff: bigTiff
@@ -128,7 +131,10 @@ async function surveyRegion(label, box, rows) {
     let tiles = [];
     try {
       const found = await dem.discover(box, fetchJson, { only: [dataset] });
-      tiles = (found.tiles || []).slice(0, 2);
+      // More than one vintage covers most ground, and a tile's layout is a
+      // property of the project that converted it rather than of the product,
+      // so taking only the newest per footprint surveys one conversion era.
+      tiles = (found.tiles || []).slice(0, TILES_PER_REGION);
     } catch (err) {
       console.log(label, dataset, "discovery failed:", err.message);
       continue;
@@ -151,6 +157,7 @@ async function surveyRegion(label, box, rows) {
           ("ifd@" + l.firstIfd).padEnd(16),
           l.frontLoaded ? "front-loaded" : "AT THE END  ",
           l.tile.padEnd(9),
+          ("pred " + l.predictor).padEnd(7),
           (l.overviews + " overviews").padEnd(13),
           name
         ].join(" "));
@@ -178,6 +185,7 @@ async function main() {
       " | front-loaded " + seen.filter((r) => r.frontLoaded).length + "/" + seen.length +
       " | tiled " + seen.filter((r) => r.tiled).length + "/" + seen.length +
       " | tile sizes " + [...new Set(seen.map((r) => r.tile))].join(", ") +
+      " | predictors " + [...new Set(seen.map((r) => r.predictor))].join(", ") +
       " | overview counts " + [...new Set(seen.map((r) => r.overviews))].join(", ")
     );
   }
