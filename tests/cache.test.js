@@ -13,6 +13,7 @@ const path = require("path");
 const grib2 = require("../grib2.js");
 const volumeModule = require("../volume.js");
 const cacheModule = require("../cache.js");
+const downscale = require("../downscale.js");
 
 const FIXTURE = path.join(__dirname, "fixtures", "hrrr-20260826t20z-f00-boulder.grib2");
 const records = grib2.decode(fs.readFileSync(FIXTURE));
@@ -374,6 +375,43 @@ describe("terrainKey", () => {
     // changes the order of the output fields and nothing about the numbers.
     expect(cacheModule.terrainKey({ box: TERRAIN_BOX, shelter: { sectors: [200, 10, 90] } }))
       .toBe(cacheModule.terrainKey({ box: TERRAIN_BOX, shelter: { sectors: [10, 90, 200] } }));
+  });
+});
+
+describe("weightsKey", () => {
+  test("is the terrain key plus what the downscaling weights turn on", () => {
+    const base = { box: TERRAIN_BOX };
+    expect(cacheModule.weightsKey(base)).toContain(cacheModule.terrainKey(base));
+    expect(cacheModule.weightsKey(base)).not.toBe(cacheModule.terrainKey(base));
+    // 300 m weights and 500 m weights over the same mountain are different
+    // fields, and both look like weights.
+    expect(cacheModule.weightsKey({ box: TERRAIN_BOX, curvatureLengthM: 300 }))
+      .not.toBe(cacheModule.weightsKey(base));
+    expect(cacheModule.weightsKey({ box: TERRAIN_BOX, spacingM: { x: 10, y: 10 } }))
+      .not.toBe(cacheModule.weightsKey(base));
+  });
+
+  test("the default length is written out, and there is still no time in it", () => {
+    expect(cacheModule.weightsKey({ box: TERRAIN_BOX }))
+      .toBe(cacheModule.weightsKey({
+        box: TERRAIN_BOX,
+        curvatureLengthM: downscale.DEFAULT_CURVATURE_LENGTH_M,
+        validTime: new Date()
+      }));
+  });
+
+  test("the gains are not in it, because they are applied per wind", () => {
+    // Ωs, Ωc and Ωx are stored; γs, γc and γx multiply them at request time.
+    // Keying on them would hold one copy of the same terrain per set of gains.
+    expect(cacheModule.weightsKey({ box: TERRAIN_BOX, weights: { slope: 0.9 } }))
+      .toBe(cacheModule.weightsKey({ box: TERRAIN_BOX }));
+  });
+
+  test("sizing them counts the four fields, the elevation and any shelter", () => {
+    const flat = { width: 100, height: 100, shelter: null };
+    expect(cacheModule.weightsBytes(flat)).toBe(5 * 100 * 100 * 4);
+    const sheltered = { width: 100, height: 100, shelter: { sectors: new Array(16) } };
+    expect(cacheModule.weightsBytes(sheltered)).toBe(21 * 100 * 100 * 4);
   });
 });
 

@@ -34,6 +34,7 @@
 
 const volumeModule = require("./volume.js");
 const derive = require("./derive.js");
+const downscale = require("./downscale.js");
 
 /**
  * Snap resolution for cache keys, in degrees. 0.01 degrees is roughly 1.1 km
@@ -421,6 +422,33 @@ function terrainKey(spec) {
 }
 
 /**
+ * The key for the downscaling weights over a domain: the terrain key, plus the
+ * only two things about `downscale.terrainWeights` that change the numbers.
+ *
+ * Separate from `terrainKey` rather than folded into it because the weights are
+ * derived *from* the derivatives and a caller may well hold one and not the
+ * other. The curvature length has to be in it: 300 m weights and 500 m weights
+ * over the same mountain are different fields, and serving one for the other is
+ * the kind of mistake that produces a perfectly plausible wind. The gains are
+ * not, because they are applied per wind, not per domain.
+ */
+function weightsKey(spec) {
+  const s = spec || {};
+  const length = s.curvatureLengthM === undefined
+    ? downscale.DEFAULT_CURVATURE_LENGTH_M
+    : s.curvatureLengthM;
+  return terrainKey(s) + "|w" + length + "/" + (s.spacingM === undefined ? "row" : s.spacingM);
+}
+
+/** What one `terrainWeights` result costs: four fields plus the elevation. */
+function weightsBytes(weights) {
+  const cells = (weights.width || 0) * (weights.height || 0);
+  let fields = 5;
+  if (weights.shelter) fields += weights.shelter.sectors.length;
+  return fields * cells * 4;
+}
+
+/**
  * The sheltering half of a terrain key, with the defaults filled in.
  *
  * `{shelter: true}` and `{shelter: {sectors: 16, maxDistanceM: 300}}` are the
@@ -582,8 +610,10 @@ module.exports = {
   snapBox,
   cacheKey,
   terrainKey,
+  weightsKey,
   approximateBytes,
   derivedBytes,
+  weightsBytes,
   createCache,
   createStaticCache,
   createVolumeSource,

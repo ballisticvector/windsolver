@@ -1,0 +1,14 @@
+{
+  "source": "topocalc 0.5.0, topocalc.horizon.horizon (Dozier & Frew 1990)",
+  "generator": "tools/horizon-reference.py",
+  "width": 81,
+  "height": 81,
+  "spacingM": 10.0,
+  "bearings": {
+    "north": 180.0,
+    "east": 90.0,
+    "south": 0.0,
+    "west": -90.0
+  },
+  "note": "angles are above horizontal, degrees, clamped at zero by topocalc"
+}

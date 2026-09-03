@@ -20,7 +20,7 @@ why a `forShot=` parameter is the way it dies.
 - [Modules](#modules)
 - [Using it](#using-it) · [Why the tarball](#why-the-tarball) · [Releasing a contract change](#releasing-a-contract-change)
 - [The `windProfile` contract — v1](#the-windprofile-contract--v1) · [The frame](#the-frame) · [The keys](#the-keys) · [The grids](#the-grids) · [Why it refuses things](#why-it-refuses-things)
-- [Ingestion](#ingestion) · [The network client](#the-network-client) · [The volume and its cache](#the-volume-and-its-cache) · [Terrain, read as windows](#terrain-read-as-windows) · [Terrain derivatives](#terrain-derivatives)
+- [Ingestion](#ingestion) · [The network client](#the-network-client) · [The volume and its cache](#the-volume-and-its-cache) · [Terrain, read as windows](#terrain-read-as-windows) · [Terrain derivatives](#terrain-derivatives) · [Downscaling: the model wind over the ground](#downscaling-the-model-wind-over-the-ground)
 - [Measured, not assumed](#measured-not-assumed)
 - [Resolution is a finding, not a setting](#resolution-is-a-finding-not-a-setting)
 - [Things that bite](#things-that-bite)
@@ -41,6 +41,7 @@ why a `forShot=` parameter is the way it dies.
 | `cog.js` | Reads a GeoTIFF: directories, tags, LZW and Deflate, the floating-point predictor, and which bytes a lat/long box needs. No network |
 | `terrain.js` | The only other module that makes a request. Turns a box into elevation grids over HTTP range reads |
 | `derive.js` | What the ground does to the wind: slope, aspect, curvature, roughness and directional sheltering over an elevation grid. Pure arithmetic, no network |
+| `downscale.js` | Puts the two halves together: a 3 km model wind × the terrain, giving east/north over every pixel of the domain. Pure arithmetic, no network |
 | `profile.js` | The `windProfile` contract: what a field looks like leaving here, and every check it has to pass |
 
 ## Using it
@@ -418,7 +419,10 @@ Undefined stays undefined, for the same reason holes stay holes:
 Sheltering costs cells × sectors × steps, so it is computed only when asked for. Bearings
 are true north: a UTM grid's columns follow its central meridian rather than the local
 one, which is up to 3° of rotation applied to every sector in the domain, and one
-projection removes it.
+projection removes it. That is also the one thing the topocalc comparison cannot see —
+it walks the raster's rows and columns, so the two agree only where grid north *is* true
+north. Off the central meridian a ray 800 m long lands a few centimetres to the side of
+topocalc's, and on smooth ground that is already a thousandth of a degree of horizon.
 
 **The cache for these has no time in the key.** `cache.terrainKey` is
 `(dataset, snapped box, resolution, sheltering parameters)` — a mountain is the same at
@@ -428,6 +432,83 @@ tag changes. What is in the key is everything that changes the numbers: an Sx se
 in **bytes** rather than entries, because ten float32 fields plus the elevation over a
 432 × 421 domain is 7 MB before any sheltering, and sixteen sectors is another 11 MB —
 256 of those would be five gigabytes, not the ~100 MB the volume cache holds.
+
+### Downscaling: the model wind over the ground
+
+The two halves meet here. HRRR knows the weather and does not know the canyon: its pixel
+is 3 km, so a domain a shooter, a sailor or a fire crew cares about is one or two model
+cells and comes back as a single wind. `downscale.js` spreads that wind over the terrain.
+
+```js
+const { terrainWeights, downscale, windAt } =
+  require("@ballisticvector/windsolver/downscale");
+
+const weights = terrainWeights(derived);              // once per domain, cache it
+const field = downscale(weights, { speedMps: 8, fromDeg: 270 });   // every hour
+
+field.east; field.north;                 // Float32Array, m/s, earth-relative
+windAt(field, 39.985, -105.30);          // { east, north, speedMps, fromDeg, factor }
+```
+
+**The split is the point.** `terrainWeights` is a function of the ground alone — no wind,
+no valid time — so it belongs in the terrain cache beside the derivatives and is computed
+once per domain. `downscale` is then a few multiplications per pixel, which is what makes
+an hourly update cheap. Anything that needs the wind must live in the second half; the
+day something time-dependent leaks into the first, the caching argument is gone.
+
+The scheme is Liston & Elder's MicroMet (*J. Hydrometeorology* 7, 2006, §2.2), the
+empirical downscaling SnowModel has used operationally for two decades, with Winstral's
+Sx as a third term:
+
+```
+W = (1 + γs·Ωs + γc·Ωc) · (1 − γx·Ωx)          θ = θmodel − 0.5·Ωs·sin(2(ξ − θmodel))
+```
+
+| Term | What it is |
+| --- | --- |
+| `Ωs` | The slope in the wind's own direction, `slope·cos(θ − aspect)`, scaled by the steepest slope in the domain into ±0.5. Uphill into the wind speeds up, the lee slows down |
+| `Ωc` | Curvature at a **length scale**, not at the pixel, scaled the same way. Convex ground speeds up |
+| `Ωx` | Sx for the wind's bearing, blended between sectors, scaled by the largest in the domain. Optional, and off unless the domain was derived with shelter |
+| `ξ` | The aspect: the diverting term turns the wind towards the fall line across a slope, and does nothing at all straight up it |
+
+γs = γc = 0.5 are the paper's, which is what bounds `W` in [0.5, 1.5].
+
+**Curvature is measured over hundreds of metres, not over one pixel.** MicroMet's
+curvature is the height above the mean of four opposing pairs of points at a distance of
+roughly half a terrain wavelength — 500 m by default here, as in SnowModel. A 3 × 3
+curvature on a 1 m DEM measures the boulders: on the test ridge it changes sign between
+neighbouring pixels while the 500 m one is smoothly positive along the crest. Using the
+pixel-scale field is the easiest way to ship a wind that is noisy at a scale nobody can
+feel, so `terrainWeights` computes its own rather than reusing `derive.curvature` — and
+the pixels within half a length scale of the edge are `NaN`, because the rose does not
+fit. Read the window with that much padding.
+
+Graded against `tools/micromet-reference.py`, an independent Numpy implementation written
+from the paper: four domains, every pixel of the curvature, the factor and the diverted
+bearing, to 2e-6 on the factor and 2e-4° on the bearing. Flipping the sign of the
+diverting term fails it on all four.
+
+Two rules it keeps that the arithmetic would happily break:
+
+- **Speed and bearing are never interpolated.** `windAt` interpolates east and north and
+  derives the rest, because averaging 350° and 10° gives 180° — the same trap
+  `aspectAt` exists for.
+- **A wind is `{ speedMps, fromDeg }` or `{ east, north }`, and `fromDeg` is where it
+  comes *from*.** Both are accepted, one is refused: `{ speedMps: 8 }` on its own is not
+  a wind, and a negative speed is a bearing error wearing a minus sign.
+
+`terrainOffset(weights, modelElevationM)` reports how far the model's smoothed terrain
+sits from the real ground — over a mountain domain that is easily 100 m, and it is
+*reported and not applied*, because correcting a wind for it needs a vertical profile
+this layer does not have. `heightFactor` is the log law and is there for the caller who
+knows their roughness; both are honest arithmetic, neither is a calibrated correction.
+
+**What this is not.** It is an empirical weighting, not a momentum solver: no
+conservation of mass, no separation, no recirculation in the lee, no thermally driven
+slope flow. It cannot tell you about a rotor behind a ridge, and on a domain with
+significant terrain it should be read as a considerably better first guess than the
+3 km model wind rather than as a measured field. A momentum solver (WindNinja's, and its
+GPL-3 question) sits above this, not instead of it.
 
 ## Measured, not assumed
 
@@ -590,9 +671,18 @@ a server that has actually done either.
 The derivatives are graded against `gdaldem` for the five measures GDAL computes, and
 against analytic surfaces for the three curvatures, which no GDAL tool produces —
 so curvature is checked against theory rather than against a second implementation.
-Sheltering has no independent reference at all: it is checked against synthetic geometry
-whose answer is known by trigonometry, and against no other Sx implementation. Nothing
-consumes any of it yet, so the fields have been validated but not used.
+**Sheltering now has one:** with the search run out to the edge of the domain, Sx is the
+horizon angle, and every interior pixel of a synthetic bowl-and-wall agrees with
+topocalc's to 1e-4°, on all four cardinal bearings. The diagonals do not, and are not
+claimed: topocalc reaches them by skewing and resampling the raster, so a comparison
+there measures one interpolation against another rather than the two formulas. The
+comparison also only holds on the central meridian — see the note on convergence below.
+
+The downscaling is graded factor by factor and bearing by bearing against an independent
+Numpy implementation of Liston & Elder, over four synthetic domains. What that grades is
+the arithmetic, not the physics: **no part of it has been compared with a measured wind**,
+the weights are the paper's defaults rather than anything fitted to this terrain, and no
+real 3DEP domain has been run through it end to end. Nothing consumes any of it yet.
 
 **On the version number:** `1.0.0` is the version of the *published contract*, and it is
 deliberately not a claim that the product is finished. A `0.x` package would imply the
