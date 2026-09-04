@@ -18,6 +18,7 @@
 const cog = require("./cog");
 const dem = require("./dem");
 const geo = require("./geo");
+const listing = require("./listing");
 
 const DEFAULT_MAX_BYTES = 64 * 1024 * 1024;
 const DEFAULT_MAX_ROUND_TRIPS = 8;
@@ -200,6 +201,23 @@ function jsonReaderFor(opts) {
 }
 
 /**
+ * The default discovery fetcher: JSON over the network, through the disk cache.
+ *
+ * Which tiles cover a box is the slowest question in a cold solve and the one
+ * whose answer changes monthly, so it is the one worth keeping. `listingCache:
+ * false` turns it off for a caller that wants to see what TNM says today.
+ */
+function cachedJsonReaderFor(opts) {
+  const o = opts || {};
+  const reader = jsonReaderFor(o);
+  if (o.listingCache === false) return reader;
+  return listing.cachingJsonReader(
+    reader,
+    o.listingCache && o.listingCache.get ? o.listingCache : listing.createListingCache(o.listingCacheOptions)
+  );
+}
+
+/**
  * The products that were tried, as a sentence.
  *
  * The structured list still rides on the error for anything that wants to
@@ -229,7 +247,7 @@ function describeConsidered(considered) {
 async function readTerrain(box, opts) {
   const o = opts || {};
   const found = o.selection ||
-    await dem.discover(box, o.fetchJson || jsonReaderFor(o), o);
+    await dem.discover(box, o.fetchJson || cachedJsonReaderFor(o), o);
   if (!found.dataset) {
     throw fail(
       "no-terrain",
@@ -288,6 +306,8 @@ module.exports = {
   DEFAULT_MAX_BYTES,
   DEFAULT_MAX_ROUND_TRIPS,
   rangeReaderFor,
+  jsonReaderFor,
+  cachedJsonReaderFor,
   openCog,
   readWindow,
   readTerrain,

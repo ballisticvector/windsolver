@@ -91,6 +91,29 @@ describe("geo — coverage", () => {
     ]);
     expect(c).toBe(1);
   });
+
+  test("a snapped box contains the box it came from", () => {
+    const b = { west: -105.2733, south: 40.0121, east: -105.2677, north: 40.0179 };
+    const s = geo.snapBoxOut(b, 0.05);
+    expect(s).toEqual({ west: -105.3, south: 40, east: -105.25, north: 40.05 });
+  });
+
+  test("a box already on the grid is left alone rather than grown a whole cell", () => {
+    // floor(0.3 / 0.1) is 2 in binary floating point. Without the epsilon every
+    // snapped box grows by a cell on each side and the query quietly doubles.
+    const b = { west: -105.3, south: 40.0, east: -105.25, north: 40.05 };
+    expect(geo.snapBoxOut(b, 0.05)).toEqual(b);
+  });
+
+  test("snapping does not push a box off the top of the world", () => {
+    const s = geo.snapBoxOut({ west: 0, south: 89.99, east: 1, north: 89.995 }, 0.05);
+    expect(s.north).toBeLessThanOrEqual(90);
+  });
+
+  test("a step that is not a positive number is refused rather than silently ignored", () => {
+    expect(() => geo.snapBoxOut(box, 0)).toThrow(/positive step/);
+    expect(() => geo.snapBoxOut(box, -1)).toThrow(/positive step/);
+  });
 });
 
 describe("dem — request building", () => {
@@ -109,6 +132,101 @@ describe("dem — request building", () => {
   test("datasets are ordered finest first", () => {
     const res = dem.DATASETS.map(d => d.resolutionM);
     expect(res).toEqual([...res].sort((a, b) => a - b));
+  });
+
+  test("the query box is snapped outward, so it never asks for less than the domain", () => {
+    // Outward is the whole point: a query a sliver narrower than the domain
+    // returns tiles that miss a strip at the edge, and the strip is invisible.
+    const box = { west: -105.2733, south: 40.0121, east: -105.2677, north: 40.0179 };
+    const q = dem.listingBox(box);
+    expect(q.west).toBeLessThanOrEqual(box.west);
+    expect(q.south).toBeLessThanOrEqual(box.south);
+    expect(q.east).toBeGreaterThanOrEqual(box.east);
+    expect(q.north).toBeGreaterThanOrEqual(box.north);
+  });
+
+  test("two pins in the same neighbourhood ask The National Map the same question", () => {
+    // This is what gives the listing cache anything to hit: unsnapped, a pin
+    // moved a hundred metres is a brand new 29-second question.
+    const a = geo.boundingBox(40.0150, -105.2705, 1);
+    const b = geo.boundingBox(40.0155, -105.2709, 1);
+    expect(dem.listingBox(a)).toEqual(dem.listingBox(b));
+  });
+
+  test("a box wide enough to matter is not snapped into a much larger one", () => {
+    // Widening the query cannot widen the answer, but it can cost bytes.
+    const box = geo.boundingBox(40.0150, -105.2705, 4);
+    const q = dem.listingBox(box);
+    expect(q.north - q.south).toBeLessThan((box.north - box.south) + 2 * dem.DEFAULT_LISTING_SNAP_DEG);
+  });
+
+  test("snapping can be turned off for a caller that wants the box exactly", () => {
+    const box = { west: -105.2733, south: 40.0121, east: -105.2677, north: 40.0179 };
+    expect(dem.listingBox(box, 0)).toBe(box);
+  });
+});
+
+describe("dem — paging the listing", () => {
+  const box = { west: 0, south: 0, east: 1, north: 1 };
+  const item = (i) => ({
+    title: "tile " + i,
+    boundingBox: { minX: 0, maxX: 1, minY: 0, maxY: 1 },
+    publicationDate: "2021-01-0" + ((i % 9) + 1)
+  });
+
+  /** A TNM that holds `count` items and honours max/offset. */
+  const pagedFetch = (count, asked) => async (url) => {
+    const params = new URL(url).searchParams;
+    const max = Number(params.get("max"));
+    const offset = Number(params.get("offset") || 0);
+    if (asked) asked.push({ max, offset });
+    const items = [];
+    for (let i = offset; i < Math.min(count, offset + max); i++) items.push(item(i));
+    return { total: count, items: items };
+  };
+
+  test("a listing longer than one page is read to the end", async () => {
+    // The old single max=50 request silently dropped the 51st footprint
+    // onwards, and the coverage computed from the rest came back *low* — which
+    // reads as "partial 1 m" and falls through to a coarser product.
+    const asked = [];
+    const res = await dem.fetchListing("tag", box, pagedFetch(230, asked), { max: 100 });
+    expect(res.items).toHaveLength(230);
+    expect(res.truncated).toBe(false);
+    expect(asked.map(a => a.offset)).toEqual([0, 100, 200]);
+  });
+
+  test("a page that comes back short ends the paging, without one more request", async () => {
+    const asked = [];
+    await dem.fetchListing("tag", box, pagedFetch(30, asked), { max: 100 });
+    expect(asked).toHaveLength(1);
+  });
+
+  test("an exhausted page budget is reported as truncated rather than as the whole list", async () => {
+    const res = await dem.fetchListing("tag", box, pagedFetch(1000), { max: 10, maxPages: 2 });
+    expect(res.items).toHaveLength(20);
+    expect(res.truncated).toBe(true);
+  });
+
+  test("a truncated listing that still covers the domain is a good answer, not a warning", async () => {
+    // Coverage from a partial list is a lower bound. A lower bound that already
+    // clears the threshold cannot be improved by reading further.
+    const res = await dem.discover(box, pagedFetch(1000), { max: 2, maxPages: 1 });
+    expect(res.dataset.id).toBe("1m");
+    expect(res.considered[0].error).toBeNull();
+  });
+
+  test("a truncated listing that falls short says so, instead of reporting bare coverage", async () => {
+    const half = { minX: 0, maxX: 0.5, minY: 0, maxY: 1 };
+    const fetchJson = async () => ({
+      items: [
+        { title: "a", boundingBox: half, publicationDate: "2021-01-01" },
+        { title: "b", boundingBox: half, publicationDate: "2021-01-02" }
+      ]
+    });
+    const res = await dem.discover(box, fetchJson, { max: 2, maxPages: 1 });
+    expect(res.dataset).toBeNull();
+    expect(res.considered[0].error).toMatch(/lower bound/);
   });
 });
 
@@ -207,6 +325,19 @@ describe("dem — choosing a product", () => {
 describe("dem — discovery against an injected fetch", () => {
   const box = { west: 0, south: 0, east: 1, north: 1 };
   const covering = { items: [{ boundingBox: { minX: -1, maxX: 2, minY: -1, maxY: 2 }, title: "t", publicationDate: "2021-01-01" }] };
+
+  test("discovery asks for the snapped box, not the raw one", async () => {
+    const asked = [];
+    await dem.discover(geo.boundingBox(40.0151, -105.2703, 1), async (url) => {
+      asked.push(new URL(url).searchParams.get("bbox"));
+      return covering;
+    });
+    const bbox = asked[0].split(",").map(Number);
+    for (const v of bbox) {
+      const steps = v / dem.DEFAULT_LISTING_SNAP_DEG;
+      expect(Math.abs(steps - Math.round(steps))).toBeLessThan(1e-6);
+    }
+  });
 
   test("stops at the first dataset that covers, without asking for coarser ones", () => {
     const asked = [];

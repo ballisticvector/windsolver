@@ -707,6 +707,31 @@ than in half an hour, because the solve is still running and lands in the cache.
 **It does not make a cold solve faster**; it moves who waits for one, and only for the
 places named. `docs/deploy.md` covers what windsolver.com runs.
 
+### The product listing is kept on disk
+
+The slow part of a cold solve is not the terrain. Reading a window out of a 449 MB COG
+is 5 requests and 1.29 MB; asking `tnmaccess.nationalmap.gov/api/v1/products` *which*
+tiles cover the box was measured at **29 s**, and at 504 in the same minute, for an
+answer that changes when a project is re-flown — monthly at best.
+
+`listing.js` keeps successful listing responses in `~/.cache/windsolver/tnm`
+(`WINDSOLVER_CACHE_DIR` moves it), keyed on the request URL, for 14 days. Three
+properties are the whole point:
+
+- **A failure is never cached.** A 503 from TNM must not become two weeks of "there is
+  no terrain here", which is the one way a cache can turn an outage into a wrong answer.
+- **A cache that cannot be read or written is a miss, not an error.** Corrupt JSON, a
+  half-written file, an unwritable directory and a clock that has gone backwards all
+  fall through to the network.
+- **Two requests for the same URL in flight at once make one call**, so the first two
+  visitors to new ground do not both pay for it.
+
+The listing query is also **snapped outward onto a 0.05° grid** (~5.5 km), so pins a
+few hundred metres apart ask the same question and share the answer. Coverage is still
+measured against the domain that was actually asked for, never against the snapped box.
+
+`listingCache: false` bypasses it for a caller that needs what TNM says right now.
+
 ## Measured, not assumed
 
 Run live against a 2-mile display domain at **36.77, −104.49** — the coordinate from the
