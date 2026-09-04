@@ -644,6 +644,15 @@ describe("the geometry the stub relies on", () => {
   });
 });
 
+describe("the command line", () => {
+  test("a value is its own word, and a misspelling is refused", () => {
+    expect(scoreWind.parse(["--anomaly", "1000"])).toEqual({ anomaly: "1000" });
+    expect(() => scoreWind.parse(["--anomaly=1000"]))
+      .toThrow(/a value is a separate word/);
+    expect(() => scoreWind.parse(["--anomoly", "1000"])).toThrow(/unknown option/);
+  });
+});
+
 describe("the terrain the model already has", () => {
   // A regional ramp the model resolves, with a cone on it that it does not.
   // The anomaly candidate's weights come from the second alone, which is the
@@ -701,6 +710,7 @@ describe("the terrain the model already has", () => {
       hours: 2,
       ablate: true,
       anomaly: o.anomaly === undefined ? ANOMALY : o.anomaly,
+      scales: o.scales || null,
       endMs: END,
       now: function () { return 0; }
     });
@@ -752,6 +762,19 @@ describe("the terrain the model already has", () => {
     expect(anomalyFailures.length).toBe(1);
     expect(anomalyFailures[0].code).toBe("no-products");
     expect(report.stations[0].terrain.anomalyM).toBeUndefined();
+  });
+
+  test("held against a physical scale, the subtraction reaches the weights", async () => {
+    // Normalised against the domain's own extremes, the residual and the
+    // ground it came from each divide by their own largest value, so on real
+    // terrain the weight barely moves. The fixed-scale row is the one that
+    // grades the subtraction rather than the divisor, so it has to differ from
+    // both the fixed-scale ground and the domain-relative anomaly.
+    const scales = { slopeScaleRad: (40 * Math.PI) / 180, curvatureScale: 0.13 };
+    const report = await scored({ scales: scales });
+    const gain = report.stations[0].gain;
+    expect(Math.abs(gain.anomalyFixed - gain.fixedScales)).toBeGreaterThan(0.01);
+    expect(Math.abs(gain.anomalyFixed - gain.anomaly)).toBeGreaterThan(0.01);
   });
 
   test("without --anomaly the report is the rows it always was", async () => {

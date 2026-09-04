@@ -106,12 +106,28 @@ const verify = require("../verify.js");
 
 const HOUR_MS = 3600 * 1000;
 
+// Every flag this tool answers to. A misspelling is checked against it rather
+// than ignored: an unknown flag leaves the candidate it was meant to add out of
+// the report, and a report with a row missing reads exactly like a report where
+// that row had nothing to say.
+const FLAGS = [
+  "stations", "source", "end", "hours", "forecast", "radius", "resolution",
+  "tolerance", "position", "elevation", "roughness", "no-height", "ablate",
+  "shelter", "scales", "anomaly", "anomaly-resolution", "out", "json"
+];
+
 function parse(argv) {
   const out = {};
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
     if (!arg.startsWith("--")) continue;
     const name = arg.slice(2);
+    if (!FLAGS.includes(name)) {
+      throw new Error("unknown option --" + name + "; "
+        + (name.includes("=")
+          ? "a value is a separate word, not --name=value"
+          : "see the header of this file"));
+    }
     const next = argv[i + 1];
     if (next === undefined || next.startsWith("--")) {
       out[name] = true;
@@ -213,6 +229,15 @@ function candidatesFor(opts) {
       { key: "anomalySlopeOnly", label: "anomaly slope only", short: "anomslope",
         options: { weights: { curvature: 0, shelter: 0 } }, anomaly: true }
     );
+    // With the divisor taken from the domain's own extremes, subtracting a
+    // regional surface moves every terrain value and the largest of them
+    // together, so the normalised weight barely changes and the row says
+    // nothing about the hypothesis. Held still against a physical scale, the
+    // subtraction is visible.
+    if (o.scales) {
+      list.push({ key: "anomalyFixed", label: "anomaly, fixed scales", short: "anomfix",
+        options: {}, anomaly: true, scales: o.scales });
+    }
   }
   return list;
 }
@@ -266,6 +291,10 @@ async function anomalyWeightsFor(ground, station, spec) {
   const derived = derive.derive(residual, { curvatureLengthM: spec.curvatureLengthM });
   return {
     weights: downscale.terrainWeights(derived, { curvatureLengthM: spec.curvatureLengthM }),
+    fixedWeights: spec.scales
+      ? downscale.terrainWeights(derived, Object.assign(
+        { curvatureLengthM: spec.curvatureLengthM }, spec.scales))
+      : null,
     derived: derived,
     regional: regional,
     wideDataset: wide.dataset,
@@ -480,7 +509,8 @@ async function buildReport(options) {
             radiusMiles: radiusMiles,
             radiusM: anomaly.radiusM,
             resolutionM: anomaly.resolutionM,
-            curvatureLengthM: field.weights.curvatureLengthM
+            curvatureLengthM: field.weights.curvatureLengthM,
+            scales: o.scales || null
           });
           terrain.anomalyM = round(elevationAt(residual.derived, station.lat, station.lon), 1);
           terrain.anomalySlopeDeg = derive.fieldAt(
@@ -513,9 +543,9 @@ async function buildReport(options) {
             byCandidate[candidate.key] = { speedMps: null, fromDeg: null };
             continue;
           }
-          weights = residual.weights;
+          weights = candidate.scales ? residual.fixedWeights : residual.weights;
         }
-        if (candidate.scales) {
+        if (candidate.scales && !candidate.anomaly) {
           if (!rescaled[candidate.key]) {
             rescaled[candidate.key] = downscale.terrainWeights(field.derived, Object.assign(
               { curvatureLengthM: field.weights.curvatureLengthM }, candidate.scales));
@@ -1017,7 +1047,7 @@ function summarise(report) {
   return out.join("\n");
 }
 
-module.exports = { hoursIn, bearingFrom, buildReport, summarise };
+module.exports = { parse, hoursIn, bearingFrom, buildReport, summarise };
 
 if (require.main === module) {
   main().catch(function (err) {
