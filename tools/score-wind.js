@@ -283,6 +283,18 @@ async function buildReport(options) {
     }
 
     const paired = verify.pair(read.records, samples, { toleranceMs: toleranceMs });
+
+    // How close the tolerance came to admitting the observations it refused.
+    // A RAWS station transmits once an hour on a minute of its own — :27 at
+    // Keyser Ridge, :35 at Rampart Range — so a window tuned to METAR's :53
+    // excludes the whole station, and an empty row looks like a station that
+    // reported nothing rather than one the window missed by seventeen minutes.
+    let nearestUnmatchedMs = null;
+    for (const u of paired.unmatched) {
+      if (u.offsetMs === null) continue;
+      if (nearestUnmatchedMs === null || u.offsetMs < nearestUnmatchedMs) nearestUnmatchedMs = u.offsetMs;
+    }
+
     for (const p of paired.pairs) {
       p.station = station;
       p.terrain = terrain;
@@ -302,6 +314,7 @@ async function buildReport(options) {
       samples: samples.length,
       paired: paired.pairs.length,
       unmatched: paired.unmatched.length,
+      nearestUnmatchedMinutes: nearestUnmatchedMs === null ? null : round(nearestUnmatchedMs / 60000, 1),
       model: tidy(verify.score(paired.pairs, reading(floor, "model"))),
       downscaled: tidy(verify.score(paired.pairs, reading(floor, "fine")))
     });
@@ -498,6 +511,20 @@ function summarise(report) {
     out.push(line(s.id + " " + (t ? t.class : "?"), s.downscaled) +
       (t ? "   tpi" + report.domain.positionRadiusM + " " + fixed(t.positionIndexM, 1) +
         " m, tpi3x3 " + fixed(t.tpi, 2) + " m" : ""));
+  }
+
+  const missed = report.stations.filter(function (s) {
+    return !s.paired && s.nearestUnmatchedMinutes !== null;
+  });
+  if (missed.length) {
+    out.push("");
+    out.push(missed.length + " station(s) reported, and none of it landed inside the " +
+      report.window.toleranceMinutes + " minute window:");
+    for (const s of missed) {
+      out.push("  " + s.id + " " + (s.name || "") + " — nearest model hour " +
+        s.nearestUnmatchedMinutes + " minutes away; --tolerance " +
+        Math.ceil(s.nearestUnmatchedMinutes) + " or more would score it");
+    }
   }
 
   if (report.failures.length) {

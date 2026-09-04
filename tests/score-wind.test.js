@@ -334,6 +334,23 @@ describe("what the run scores", () => {
     expect(report.stations[0].paired + report.stations[0].unmatched)
       .toBe(read.records.length);
   });
+
+  // A RAWS station transmits once an hour on a minute of its own — Keyser Ridge
+  // at :27, Rampart Range at :35 — so a tolerance tuned to METAR's :53 drops the
+  // whole station and the report used to show that as an empty row.
+  test("a station the tolerance excluded says how far its nearest hour was", async () => {
+    const service = stubService(function () {
+      return stubField({ speedMps: 4, fromDeg: 270, referenceMps: 5 });
+    });
+    const report = await scoreWind.buildReport({
+      source: stubSource(), service: service, stations: ["KBDU"], hours: 2, endMs: END,
+      toleranceMs: 60 * 1000
+    });
+    const station = report.stations[0];
+    expect(station.nearestUnmatchedMinutes).toBeGreaterThan(1);
+    expect(scoreWind.summarise(report))
+      .toMatch(/nearest model hour [\d.]+ minutes away; --tolerance \d+ or more would score it/);
+  });
 });
 
 describe("the summary a person reads", () => {
