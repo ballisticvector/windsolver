@@ -104,6 +104,21 @@ function fakeField(opts) {
   });
 }
 
+/**
+ * The default field, built once.
+ *
+ * `fakeField` runs the real `derive` and `downscale` over a 201 x 201 grid, and
+ * inside jest that costs a few hundred milliseconds rather than the ~25 ms it
+ * costs outside it. The concurrency test asks for six fields at once, so
+ * rebuilding per call put the test within a whisker of jest's 5 s ceiling here
+ * and over it on a CI runner. The service only reads a field, so one is enough.
+ */
+let defaultField = null;
+function sharedField() {
+  if (!defaultField) defaultField = fakeField();
+  return defaultField;
+}
+
 /** A field service that answers with a canned field, or throws a canned error. */
 function stubService(opts) {
   const o = opts || {};
@@ -113,7 +128,7 @@ function stubService(opts) {
       this.calls.push(spec);
       if (o.delayMs) await new Promise((r) => setTimeout(r, o.delayMs));
       if (o.error) throw o.error;
-      return o.field || fakeField();
+      return o.field || sharedField();
     }
   };
 }
@@ -482,7 +497,10 @@ describe("limits", () => {
     } finally {
       await app.close();
     }
-  });
+    // Wall-clock headroom, not patience for a slow assertion: this test and the
+    // one below wait on real sockets and real timers, and a shared CI runner
+    // should fail them for being wrong rather than for being busy.
+  }, 30000);
 
   test("a full queue is refused with a Retry-After, not queued forever", async () => {
     const app = await listen({
@@ -503,7 +521,7 @@ describe("limits", () => {
     } finally {
       await app.close();
     }
-  });
+  }, 30000);
 });
 
 describe("the browser calling it", () => {
