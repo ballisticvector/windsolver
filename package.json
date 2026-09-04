@@ -20,10 +20,13 @@
     "downscale.js",
     "field.js",
     "slice.js",
+    "server.js",
+    "tools/serve.js",
     "README.md",
     "CHANGELOG.md"
   ],
   "scripts": {
+    "serve": "node tools/serve.js",
     "test": "jest tests/",
     "lint": "eslint ."
   },

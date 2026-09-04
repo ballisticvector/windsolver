@@ -3,6 +3,18 @@
 Consumers pin a tag, so a release is the only thing they see. Each entry says what a
 caller can now do and what it must not assume.
 
+## Unreleased
+
+**`server.js` — the HTTP service `v1.1.0` said was missing.** `GET /v1/field` answers a
+box with an east/north wind over a lat/long grid and has no bearing in it; `/v1/line` and
+`/v1/windprofile` are views cut out of the same cached field for a caller that has one.
+Bounded for exposure: 2 concurrent solves, 8 queued, a 45 s timeout, an output-cell
+ceiling, and engine codes mapped onto statuses. Started with `npm run serve`.
+
+Unchanged: `profile.js`, and the fact that **nothing here has been compared with a
+measured wind** — every answer carries `modelled: true` and says so. The service has no
+authentication and no per-caller rate limit, and binds `127.0.0.1` for that reason.
+
 ## v1.1.0
 
 The engine arrives. `v1.0.0` was the contract alone; this tag is the first one that can

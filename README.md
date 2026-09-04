@@ -21,6 +21,7 @@ why a `forShot=` parameter is the way it dies.
 - [Using it](#using-it) · [Why the tarball](#why-the-tarball) · [Releasing a contract change](#releasing-a-contract-change)
 - [The `windProfile` contract — v1](#the-windprofile-contract--v1) · [The frame](#the-frame) · [The keys](#the-keys) · [The grids](#the-grids) · [Why it refuses things](#why-it-refuses-things)
 - [Ingestion](#ingestion) · [The network client](#the-network-client) · [The volume and its cache](#the-volume-and-its-cache) · [Terrain, read as windows](#terrain-read-as-windows) · [Terrain derivatives](#terrain-derivatives) · [Downscaling: the model wind over the ground](#downscaling-the-model-wind-over-the-ground) · [The whole chain: `field.js`](#the-whole-chain-fieldjs) · [The line a consumer cuts: `slice.js`](#the-line-a-consumer-cuts-slicejs)
+- [The HTTP service](#the-http-service) · [Routes](#routes) · [What every answer carries](#what-every-answer-carries) · [What it refuses, and with which status](#what-it-refuses-and-with-which-status) · [Running it](#running-it)
 - [Measured, not assumed](#measured-not-assumed) · [The whole chain, live over Boulder](#the-whole-chain-live-over-boulder) · [A line through it, live](#a-line-through-it-live)
 - [Resolution is a finding, not a setting](#resolution-is-a-finding-not-a-setting)
 - [Things that bite](#things-that-bite)
@@ -45,6 +46,7 @@ why a `forShot=` parameter is the way it dies.
 | `field.js` | The whole chain in one call: a coordinate in, terrain read, derived and cached, live HRRR fetched and cached, an east/north field over the domain out |
 | `slice.js` | The view a consumer cuts out of a field: a WGS84 geodesic from a point and a bearing, the wind resolved onto it, stacked over a set of heights, and serialised as a `windProfile`. Pure arithmetic, no network |
 | `profile.js` | The `windProfile` contract: what a field looks like leaving here, and every check it has to pass |
+| `server.js` | The HTTP boundary: the general field over a box, the line view for a caller that has a bearing, and the limits that keep a slow upstream from becoming a hung socket |
 
 ## Using it
 
@@ -54,7 +56,7 @@ reach a caller on a Tuesday:
 ```json
 "dependencies": {
   "@ballisticvector/windsolver":
-    "https://github.com/ballisticvector/windsolver/archive/refs/tags/v1.0.0.tar.gz"
+    "https://github.com/ballisticvector/windsolver/archive/refs/tags/v1.1.0.tar.gz"
 }
 ```
 
@@ -612,6 +614,83 @@ the two resolutions are `null` unless the caller supplies them, rather than defa
 something that reads as a claim. The azimuth it writes is the line's own, so a consumer
 cannot produce an `azimuth-mismatch` by accident.
 
+## The HTTP service
+
+`server.js` is the boundary a consumer calls. It is a plain `http.Server` over
+`field.js` and `slice.js` — no framework, no new dependency — so it is deployed like any
+other node process and started with `npm run serve`.
+
+### Routes
+
+| Route | What it answers |
+| --- | --- |
+| `GET /healthz` | Liveness, the routes it serves, and how many solves are in flight or queued. Touches no engine |
+| `GET /v1/field` | **The general one.** `lat`, `lon`, `radiusMiles`, and an east/north wind over a lat/long grid of the box. No bearing anywhere in it |
+| `GET /v1/line` | The derived view for a caller that has one: `bearingDeg` and `lengthM`, the wind resolved along and across a WGS84 geodesic, optionally stacked over `heightsM` |
+| `GET /v1/windprofile` | The same cut, serialised as a v1 `windProfile` and validated by `profile.js` before it is sent |
+
+**`/v1/field` is the endpoint the other two are views of, and the reason it comes first.**
+A sailor and a fire crew have no bearing to give, and an azimuth in the general route
+would put one in the cache key — the mistake `cache.js` was designed to avoid. `/v1/line`
+and `/v1/windprofile` take a bearing, solve the same cached field, and cut it on the way
+out; a second bearing over the same ground is a millisecond, not a second solve.
+
+The field answers on a **regular lat/long grid**, because a consumer should not have to
+carry a UTM implementation to read a wind. The native projected grid is described
+alongside it — CRS, EPSG, shape and spacing — so a caller that does have one can tell how
+much resampling stands between it and the solve.
+
+### What every answer carries
+
+`validTime`, the source line, the reference wind and its `resolutionM`, the terrain
+dataset and how much of it was void, and the model-versus-terrain elevation offset. Plus,
+on every route:
+
+```json
+"modelled": true,
+"notice": "Modelled, not measured: HRRR downscaled onto 3DEP terrain. ..."
+```
+
+That is not decoration. Nothing here has been compared with a measured wind, and a
+modelled field presented as a measured one is the worst thing either product can ship —
+so the disclaimer travels in the payload, where a UI cannot forget to fetch it.
+
+**A cell the field does not cover is `null`.** `NaN` and `Infinity` are not JSON, and
+`JSON.stringify` writes them as the bare token `NaN`, which is a body a strict parser
+rejects and a lenient one reads as something else. They are converted on the way out.
+
+### What it refuses, and with which status
+
+| Status | When |
+| --- | --- |
+| `400` | The caller's mistake, named: a missing coordinate, a bearing off the compass, heights out of order, a line that leaves the domain |
+| `413` | A grid larger than the output ceiling, with the size that would fit |
+| `502` | An upstream that answered with something other than the field — no terrain, not GRIB, the HTML error page, the whole-continent subregion |
+| `503` | No HRRR cycle available, or the queue is full — with a `Retry-After` |
+| `504` | A solve slower than the timeout |
+| `500` | Anything unrecognised, with nothing of the internals in it |
+
+**Bounded before it is exposed, because the upstream is not.** A cold solve is seconds
+and NOMADS has been measured at 53 s on a bad minute, so the service runs at most
+`maxConcurrent` solves (2), queues `maxQueue` more (8), and gives up on a solve after
+`timeoutMs` (45 s) rather than holding a socket open. The gate is verified by measuring
+peak concurrency, not by asserting the option was read: at 2 the observed peak is 2, at 6
+it is 6.
+
+A timeout abandons the *wait*, not the work — an in-flight fetch runs to completion and
+warms the cache, so the retry after a 504 is usually the fast one.
+
+### Running it
+
+```bash
+npm run serve -- --port 8787 --origins https://windsolver.com
+```
+
+`PORT`, `HOST`, `WINDSOLVER_ORIGINS`, `WINDSOLVER_TIMEOUT_MS`, `WINDSOLVER_MAX_CONCURRENT`
+and `WINDSOLVER_MAX_QUEUE` do the same. It binds `127.0.0.1` by default, so it is behind a
+reverse proxy unless someone deliberately says otherwise, and logs one JSON object per
+line.
+
 ## Measured, not assumed
 
 Run live against a 2-mile display domain at **36.77, −104.49** — the coordinate from the
@@ -815,13 +894,19 @@ separate domain; Hawaii and the territories have neither and need a different mo
 
 ## Not built yet
 
-**An HTTP service, and a consumer calling it.** The chain now runs end to end in
-process — a coordinate in, a field out, a line cut out of it, a valid `windProfile` on
-the far side — but there is no endpoint in front of it, no release tag carrying it, and
-nothing in BallisticVector that calls it. Today BV still builds a wind call in the
-browser and has `profile.js` validate it, which is the same contract and none of the
-field. The remaining steps are a tag, a one-line dependency bump in the consumer, and
-the volume endpoint for the callers who have no bearing to give.
+**A consumer calling the service, and the service facing the public.** There is an
+endpoint now, and it answers live over Boulder — but it is bound to localhost, nothing in
+BallisticVector calls it, and windsolver.com points at a parking page. Today BV still
+builds a wind call in the browser and has `profile.js` validate it, which is the same
+contract and none of the field.
+
+Nor is the service hardened for a public URL: **there is no authentication, no rate limit
+per caller and no request log beyond stdout.** The concurrency gate bounds what the
+process will attempt, which is not the same as bounding what one caller may ask for.
+
+A cold `/v1/field` over a 1-mile box is **~4 s**, measured; the warm path is the field
+cache's. No load test has been run, and a cache hit rate over a real day still needs
+traffic rather than a test.
 
 Nothing above the surface, either: one level, one valid time. Forecast hours, history,
 climatology and the map's animated field are all downstream of the same cache key and

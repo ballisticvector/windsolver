@@ -395,6 +395,7 @@ module.exports = {
   destination,
   stationsAlong,
   boxFor,
+  elevationAt,
   transect,
   plane,
   toWindProfile
