@@ -85,9 +85,28 @@ describe("listing — every failure is a miss", () => {
     // should be is the portable way to provoke that.
     const blocked = path.join(tempDir(), "not-a-directory");
     fs.writeFileSync(blocked, "");
-    const cache = listing.createListingCache({ dir: path.join(blocked, "tnm") });
+    const cache = listing.createListingCache({ dir: path.join(blocked, "tnm"), onWriteError: null });
     expect(await cache.put("u", { items: [] })).toBe(false);
     expect(await cache.get("u")).toBeNull();
+  });
+
+  test("a directory that cannot be written says so, once, and names itself", async () => {
+    // The first deployment of this module wrote nothing for two hours under a
+    // unit with ProtectHome=read-only, and looked exactly like one that was
+    // working. Silence is what made that expensive; the warning is the fix.
+    const blocked = path.join(tempDir(), "not-a-directory");
+    fs.writeFileSync(blocked, "");
+    const said = [];
+    const dir = path.join(blocked, "tnm");
+    const cache = listing.createListingCache({ dir: dir, onWriteError: (d) => said.push(d) });
+
+    await cache.put("u1", { items: [] });
+    await cache.put("u2", { items: [] });
+
+    expect(said).toHaveLength(1);
+    expect(said[0].dir).toBe(dir);
+    expect(said[0].error).toEqual(expect.any(String));
+    expect(cache.stats().writeFails).toBe(2);
   });
 
   test("a failed write leaves no temporary file behind for a reader to find", async () => {
