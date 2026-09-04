@@ -64,6 +64,18 @@ const DEFAULT_MIN_DIRECTION_MPS = 1.0;
  */
 const DEFAULT_TOLERANCE_MS = 10 * 60 * 1000;
 
+/**
+ * How far a landform position has to be from its surroundings, in metres, to
+ * call a station a ridge or a valley rather than the slope between them.
+ *
+ * Weiss (2001) uses ±1 standard deviation of the position index over the
+ * analysis area, which is a per-area number and so a different threshold at
+ * every station; 15 m stands in for it as a fixed figure measured at the
+ * 500 m radius `derive.DEFAULT_POSITION_RADIUS_M` uses. It is a convention,
+ * not a measurement, and the class is only as good as it is.
+ */
+const DEFAULT_POSITION_THRESHOLD_M = 15;
+
 function fail(code, message, detail) {
   const err = new Error(message);
   err.code = code;
@@ -303,13 +315,24 @@ function score(pairs, opts) {
 /**
  * Terrain under a station, in the four words that change what the wind does.
  *
- * Slope and topographic position come from `derive.js`, which is the same
+ * Slope and landform position come from `derive.js`, which is the same
  * arithmetic the downscaling reads, so a station is classified by the terrain
- * the model saw rather than by a label somebody typed. The thresholds are
- * conventional rather than derived: Weiss's TPI classification uses ±1 standard
- * deviation of TPI to separate ridge and valley from slope, and 5° separates
- * flat from sloping in the same scheme. Both are choices, and a score
- * stratified by them is only as meaningful as they are.
+ * the model saw rather than by a label somebody typed.
+ *
+ * **`positionIndexM` has to be measured at the scale of a landform**, which is
+ * `derive.positionIndexAt` and not the `tpi` field. The field is a 3 x 3 index:
+ * at 30 m spacing it describes a 90 m patch, and across ten Colorado RAWS on
+ * named ridges, gulches and passes it ran from -0.3 m to +0.4 m — so every
+ * threshold worth having was unreachable and every station came back `flat` or
+ * `slope`. A classification that cannot return two of its four values is not a
+ * classification, and it is invisible until someone counts.
+ *
+ * The thresholds are conventional rather than derived: Weiss's scheme separates
+ * ridge and valley from slope at ±1 standard deviation of TPI, and flat from
+ * sloping at 5°. `DEFAULT_POSITION_THRESHOLD_M` stands in for that standard
+ * deviation with a fixed 15 m, because a per-domain deviation computed over a
+ * half-mile box would mean a different threshold at every station. Both are
+ * choices, and a score stratified by them is only as meaningful as they are.
  *
  * The point of stratifying at all: an airport in a plain is where a 3 km model
  * is already right, and a canyon is where it is not. One pooled RMSE over a
@@ -320,16 +343,51 @@ function classifyTerrain(terrain, opts) {
   const t = terrain || {};
   const o = opts || {};
   const flatDeg = o.flatDeg === undefined ? 5 : o.flatDeg;
-  const tpiThreshold = o.tpiM === undefined ? 5 : o.tpiM;
+  const threshold = o.positionIndexM === undefined ? DEFAULT_POSITION_THRESHOLD_M : o.positionIndexM;
 
-  if (typeof t.tpi !== "number" || typeof t.slopeDeg !== "number" ||
-      Number.isNaN(t.tpi) || Number.isNaN(t.slopeDeg)) {
+  if (typeof t.positionIndexM !== "number" || typeof t.slopeDeg !== "number" ||
+      Number.isNaN(t.positionIndexM) || Number.isNaN(t.slopeDeg)) {
     return "unknown";
   }
 
-  if (t.tpi >= tpiThreshold) return "ridge";
-  if (t.tpi <= -tpiThreshold) return "valley";
+  if (t.positionIndexM >= threshold) return "ridge";
+  if (t.positionIndexM <= -threshold) return "valley";
   return t.slopeDeg < flatDeg ? "flat" : "slope";
+}
+
+/**
+ * Whether a station's published elevation agrees with the ground under its
+ * published coordinate.
+ *
+ * A station is a name, a coordinate and an elevation typed by three different
+ * people over thirty years, and the coordinate is the one that is silently
+ * wrong: Iowa State's Colorado RWIS feed publishes "Herman's Gulch" at 3,153 m
+ * with a coordinate in downtown Denver. Sampled at that coordinate the terrain
+ * is flat, the classification says `flat`, and the station quietly grades the
+ * downscaling on ground it has never stood on.
+ *
+ * The DEM is the arbiter because it is the thing the model actually used. A
+ * disagreement does not say which of the two is wrong — only that one of them
+ * is, which is enough to keep the station out of a score and off a map.
+ *
+ * The default tolerance is 50 m: coarse enough to absorb a 10 m DEM under a
+ * station on a slope and the difference between geoid and ellipsoid heights,
+ * tight enough that a valley-floor coordinate for a pass station fails it.
+ */
+function elevationCheck(publishedM, demM, opts) {
+  const o = opts || {};
+  const toleranceM = o.toleranceM === undefined ? 50 : o.toleranceM;
+
+  if (typeof publishedM !== "number" || !isFinite(publishedM) ||
+      typeof demM !== "number" || !isFinite(demM)) {
+    return { ok: false, code: "no-elevation", differenceM: null, toleranceM: toleranceM };
+  }
+
+  const difference = publishedM - demM;
+  if (Math.abs(difference) > toleranceM) {
+    return { ok: false, code: "elevation-disagrees", differenceM: difference, toleranceM: toleranceM };
+  }
+  return { ok: true, code: null, differenceM: difference, toleranceM: toleranceM };
 }
 
 /** The same score, cut by whatever `labelOf` says each pair is. */
@@ -347,6 +405,7 @@ function stratify(pairs, labelOf, opts) {
 
 module.exports = {
   DEFAULT_MIN_DIRECTION_MPS,
+  DEFAULT_POSITION_THRESHOLD_M,
   DEFAULT_TOLERANCE_MS,
   angleDifferenceDeg,
   componentsOf,
@@ -355,5 +414,6 @@ module.exports = {
   pair,
   score,
   classifyTerrain,
+  elevationCheck,
   stratify
 };

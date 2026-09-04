@@ -431,6 +431,25 @@ it walks the raster's rows and columns, so the two agree only where grid north *
 north. Off the central meridian a ray 800 m long lands a few centimetres to the side of
 topocalc's, and on smooth ground that is already a thousandth of a degree of horizon.
 
+**`tpi` is a 3 × 3 answer, and a landform is not 3 × 3.** The topographic position
+index in the table above compares a pixel with its eight neighbours, which at 10–30 m
+resolution asks "is this bump higher than the ground it is sitting on" — a question about
+boulders and gullies. Asked of a station on a named ridge it returns tenths of a metre,
+because 30 m either side of a ridge crest is still the crest. `positionIndexAt` asks the
+same question at the scale the wind cares about:
+
+```js
+derive.positionIndexAt(d, 39.4058, -105.7561, { radiusM: 500 });
+// { tpiM: 40.5, radiusM: 500, samples: …, coverage: 1 }   Kenosha Pass RAWS
+```
+
+It is the station's elevation less the mean elevation of a disc around it, and the
+**radius is part of the answer** because the number means nothing without it: Kenosha
+Pass reads +40.5 m over 500 m and +0.28 m over 3 × 3, and both are correct descriptions
+of different things. A disc that runs off the domain returns `null` rather than the mean
+of the half that fits — a half-disc on the downhill side is a ridge whatever the ground
+does — and so does one whose valid pixels fall below `minCoverage` (0.9) of it.
+
 **The cache for these has no time in the key.** `cache.terrainKey` is
 `(dataset, snapped box, resolution, sheltering parameters)` — a mountain is the same at
 06Z as at 18Z, so a derived domain stands until USGS reflies the ground and the dataset
@@ -960,6 +979,67 @@ analysis and a forecast valid at the same moment cannot share a cache entry.
 **What this does not yet support:** a `confidence` number. Five stations, one day, four
 of them flat, and 95 of the 423 observations calm and so carrying no direction at all. It
 is a harness with a first result, not a calibration.
+
+### RAWS, because airports are the wrong ground
+
+The table above is a statement about airports, not about downscaling, so `synoptic.js`
+adds the stations that are not on airports: RAWS and the rest of Synoptic Data's mesonet,
+which are fire-weather and land-management towers put deliberately on ridges, in gulches
+and at passes.
+
+```bash
+export SYNOPTIC_API_TOKEN=…      # customer.synopticdata.com, free; never committed
+node tools/score-wind.js --source synoptic --hours 24 --forecast 6 \
+  --stations CPTC2,KSHC2,LPRC2,PKLC2,BMOC2 --out raws.json
+```
+
+It emits the same normalised observation as `observations.js` — `speedMps`, `fromDeg`,
+`calm`, `gustMps`, a `quality` block — so nothing in the scoring knows which network an
+observation came from. What is specific to Synoptic stays in the provider:
+
+- **the token never reaches an error message.** `redactToken` rewrites it out of every
+  URL before the URL is quoted in a `fail`, because the natural way to write "this
+  request was refused: <url>" publishes the credential to the logs;
+- **`RESPONSE_CODE` is checked, not the HTTP status.** An unknown station is a 200 with
+  `RESPONSE_CODE: 2` and no `STATION` array, and asking for history the account is not
+  entitled to is a 200 with `RESPONSE_CODE: 403`. Both are fixtures;
+- **units are read from the response and refused if they are not the ones expected**,
+  rather than assumed. Station elevation is declared in feet and converted at 0.3048;
+- **`ELEV_DEM` is discarded.** Synoptic publishes its own DEM elevation for each station,
+  and using it would make the elevation check a comparison of Synoptic against Synoptic;
+  the check is against the 3DEP ground this service read for itself;
+- **QC flags are honoured per variable per timestamp**, since a flagged direction does
+  not invalidate the speed beside it.
+
+**RWIS is not RAWS, and the difference decided this.** Iowa State serves Colorado DOT's
+170 road-weather stations with no key at all, and they sit on exactly the passes worth
+scoring — but their direction is quantised to eight compass points, a 13° error floor
+before the model is wrong about anything, and several publish coordinates that do not
+match their names. Synoptic's directions are whole degrees; the fixture test asserts that
+some are not multiples of 45, which is the property RWIS lacks and the reason for the
+token. Speeds are still whole miles per hour — 0.44704 m/s — and that is the floor
+printed above every table.
+
+**Every station is checked against the ground under its own published coordinate**
+before it is scored, and dropped by name if the two disagree by more than 50 m. A station
+whose coordinate is wrong is not a bad sample; it is a sample of somewhere else, and it
+would carry the wrong terrain class into the table it is there to explain.
+
+**Putting real ridges in front of the classifier is what showed the classifier was wrong.**
+`verify.classifyTerrain` used to split on the 3 × 3 `tpi`, and the first RAWS run called
+Kenosha Pass, Carpenter Ridge and Pickle Gulch `flat` or `slope` — the same failure as
+Aspen scoring flat, in a place where the ground is unarguable. It now splits on
+`positionIndexAt`'s 500 m index: ±15 m separates `ridge` and `valley`, and 5° of slope
+separates `slope` from `flat` below that. Both numbers are printed in the report's
+`domain` block and on the summary's terrain heading, because a class is only comparable
+with another class measured at the same radius. The 3 × 3 `tpi` is still carried per
+station, next to the 500 m figure, so the difference between the two scales stays visible
+rather than being a thing you have to know.
+
+Neither threshold is a physical constant. ±15 m at 500 m is a convention chosen to put
+named ridges and gulches on the right side of the line; the honest version is a
+standard deviation over the domain, and that is a change to make once there are enough
+stations to fit one.
 
 ## Resolution is a finding, not a setting
 

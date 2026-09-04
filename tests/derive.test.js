@@ -766,3 +766,89 @@ describe("sampling a derived domain", () => {
     expect(all[0].width).toBe(grid.width);
   });
 });
+
+describe("where a point sits in the landform around it", () => {
+  /**
+   * A 2 km ridge, 100 m from crest to floor, on a 20 m grid.
+   *
+   * The point of the fixture is that the crest and the floor are 500 m apart:
+   * a 3 x 3 index at 20 m spacing sees a smooth surface and reads ~0 at both,
+   * which is exactly the failure this function exists to fix.
+   */
+  function ridge(step) {
+    const n = 101;
+    return syntheticGrid(n, n, function (east) {
+      const from = Math.abs(east - (n * step) / 2);
+      return 2000 + 100 * Math.cos(Math.min(from / 500, 1) * Math.PI) / 2;
+    }, step);
+  }
+
+  function atPixel(grid, col, row) {
+    return proj.toGeographic(grid.crs,
+      grid.transform.originX + (col + 0.5) * grid.transform.scaleX,
+      grid.transform.originY + (row + 0.5) * grid.transform.scaleY);
+  }
+
+  test("a 3 x 3 index cannot see a landform, and a 500 m one can", () => {
+    const grid = ridge(20);
+    const derived = derive.derive(grid);
+    const crest = atPixel(grid, 50, 50);
+    const floor = atPixel(grid, 30, 50);
+
+    // What the neighbourhood index reads at both: nothing worth a threshold.
+    expect(Math.abs(derive.fieldAt(derived, "tpi", crest.lat, crest.lon))).toBeLessThan(0.5);
+    expect(Math.abs(derive.fieldAt(derived, "tpi", floor.lat, floor.lon))).toBeLessThan(0.5);
+
+    const onCrest = derive.positionIndexAt(derived, crest.lat, crest.lon, { radiusM: 500 });
+    const inFloor = derive.positionIndexAt(derived, floor.lat, floor.lon, { radiusM: 500 });
+    expect(onCrest.tpiM).toBeGreaterThan(20);
+    expect(inFloor.tpiM).toBeLessThan(-20);
+    expect(onCrest.radiusM).toBe(500);
+  });
+
+  test("the scale is the answer's, not the caller's memory of it", () => {
+    const grid = ridge(20);
+    const derived = derive.derive(grid);
+    const crest = atPixel(grid, 50, 50);
+    const near = derive.positionIndexAt(derived, crest.lat, crest.lon, { radiusM: 100 });
+    const far = derive.positionIndexAt(derived, crest.lat, crest.lon, { radiusM: 500 });
+    expect(near.tpiM).toBeLessThan(far.tpiM);
+    expect(near.radiusM).toBe(100);
+    expect(far.samples).toBeGreaterThan(near.samples);
+  });
+
+  test("a disc that runs off the domain is refused rather than half-measured", () => {
+    // Half a disc over a hillside averages the half that is there, which reads
+    // as a slope position the ground does not have.
+    const grid = ridge(20);
+    const derived = derive.derive(grid);
+    const edge = atPixel(grid, 2, 50);
+    expect(derive.positionIndexAt(derived, edge.lat, edge.lon, { radiusM: 500 })).toBeNull();
+    expect(derive.positionIndexAt(derived, edge.lat + 1, edge.lon, { radiusM: 100 })).toBeNull();
+  });
+
+  test("a disc mostly in a void is refused, and a few missing pixels are not", () => {
+    const grid = ridge(20);
+    const holed = derive.derive(syntheticGridFrom(
+      Float32Array.from(grid.values, function (z, i) {
+        return i % 97 === 0 ? NaN : z;
+      }), grid.width, grid.height, 20));
+    const voided = derive.derive(syntheticGridFrom(
+      Float32Array.from(grid.values, function (z, i) {
+        return i % 3 === 0 ? z : NaN;
+      }), grid.width, grid.height, 20));
+    const crest = atPixel(grid, 50, 50);
+
+    const patchy = derive.positionIndexAt(holed, crest.lat, crest.lon, { radiusM: 500 });
+    expect(patchy.coverage).toBeGreaterThan(0.98);
+    expect(patchy.tpiM).toBeGreaterThan(20);
+    expect(derive.positionIndexAt(voided, crest.lat, crest.lon, { radiusM: 500 })).toBeNull();
+  });
+
+  test("a radius has to be a distance", () => {
+    const derived = derive.derive(ridge(20));
+    const crest = atPixel(ridge(20), 50, 50);
+    expect(() => derive.positionIndexAt(derived, crest.lat, crest.lon, { radiusM: 0 }))
+      .toThrow(expect.objectContaining({ code: "bad-radius" }));
+  });
+});

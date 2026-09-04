@@ -9,9 +9,11 @@
  *
  *   node tools/score-wind.js --stations KBDU,KFNL,KGXY --hours 12
  *   node tools/score-wind.js --stations KBDU --hours 24 --forecast 6 --out score.json
+ *   node tools/score-wind.js --source synoptic --stations BLPC2,BHRC2 --hours 24
  *
  * Options:
- *   --stations   comma-separated NWS/ICAO station ids (required)
+ *   --stations   comma-separated station ids (required)
+ *   --source     nws (default) or synoptic; synoptic needs $SYNOPTIC_API_TOKEN
  *   --hours      how many whole hours back from --end (default 12)
  *   --end        the newest hour to score, ISO 8601 (default: three hours ago,
  *                which is comfortably behind the HRRR availability lag)
@@ -19,6 +21,9 @@
  *   --radius     domain radius in miles around each station (default 0.5)
  *   --resolution target terrain resolution in metres (default 30)
  *   --tolerance  observation-to-valid-time tolerance in minutes (default 10)
+ *   --elevation  how far a station's published elevation may sit from the 3DEP
+ *                ground under its coordinate before it is dropped, in metres
+ *                (default 50)
  *   --out        write the full result as JSON to this path
  *
  * **It costs one HRRR subset per station per hour** — a few KB each, but each
@@ -40,6 +45,12 @@
  * problem and the fix. RAWS through Synoptic sits where the terrain matters and
  * needs a token; this tool takes its observations from an injected source, so
  * pointing it at that network is a new reader and not a new scorer.
+ *
+ * **A station is dropped if its published elevation disagrees with the ground
+ * under its published coordinate.** One of the two is then wrong, and the
+ * coordinate is the one that decides which hillside the model is sampled on. A
+ * station in the wrong canyon does not fail — it produces a terrain class, a
+ * pairing and a score, all of them about somewhere else.
  */
 
 "use strict";
@@ -51,6 +62,7 @@ const derive = require("../derive.js");
 const downscale = require("../downscale.js");
 const fieldModule = require("../field.js");
 const observationsModule = require("../observations.js");
+const synoptic = require("../synoptic.js");
 const verify = require("../verify.js");
 
 const HOUR_MS = 3600 * 1000;
@@ -85,6 +97,15 @@ function hoursIn(endMs, count) {
   const times = [];
   for (let i = count - 1; i >= 0; i--) times.push(new Date(top - i * HOUR_MS));
   return times;
+}
+
+/** Score options: which candidate wind to read, and the observer's rounding. */
+function reading(floor, which) {
+  return {
+    read: function (p) { return p.sample[which]; },
+    speedStepMps: floor.speedStepMps,
+    dirStepDeg: floor.dirStepDeg
+  };
 }
 
 /** The 3DEP ground under a coordinate, from an already-derived domain. */
@@ -154,6 +175,15 @@ async function buildReport(options) {
   const radiusMiles = o.radiusMiles === undefined ? 0.5 : o.radiusMiles;
   const resolutionM = o.resolutionM === undefined ? 30 : o.resolutionM;
   const toleranceMs = o.toleranceMs === undefined ? verify.DEFAULT_TOLERANCE_MS : o.toleranceMs;
+  const elevationToleranceM = o.elevationToleranceM === undefined ? 50 : o.elevationToleranceM;
+  const positionRadiusM = o.positionRadiusM === undefined
+    ? derive.DEFAULT_POSITION_RADIUS_M : o.positionRadiusM;
+
+  // The ruler the observations were written with. A METAR is a whole knot and
+  // 10°; a RAWS is a whole mile per hour and 1°. Scoring RAWS against a METAR's
+  // floor would credit the model with 2.9° of the observer's rounding that this
+  // observer did not do.
+  const floor = o.floor || {};
   const now = o.now || Date.now;
 
   if (!isFinite(o.endMs)) throw new Error("endMs is required: the newest hour to score");
@@ -162,6 +192,7 @@ async function buildReport(options) {
   const stations = [];
   const allPairs = [];
   const failures = [];
+  const dropped = [];
 
   for (const id of ids) {
     const station = await source.station(id);
@@ -196,9 +227,18 @@ async function buildReport(options) {
       const reference = field.reference;
 
       if (!terrain) {
+        // The landform the station sits in, measured over a disc rather than
+        // over the three pixels either side of it. `tpi` is kept alongside it
+        // to show the difference: on a named ridge the 3 x 3 index reads a
+        // fraction of a metre, which is why it classified everything as flat.
+        const position = derive.positionIndexAt(
+          field.derived, station.lat, station.lon, { radiusM: positionRadiusM });
         terrain = {
           slopeDeg: derive.fieldAt(field.derived, "slopeDeg", station.lat, station.lon),
           tpi: derive.fieldAt(field.derived, "tpi", station.lat, station.lon),
+          positionIndexM: position ? round(position.tpiM, 1) : null,
+          positionRadiusM: position ? position.radiusM : positionRadiusM,
+          positionCoverage: position ? round(position.coverage, 3) : null,
           demElevationM: elevationAt(field.derived, station.lat, station.lon),
           modelOffsetM: field.offset ? round(field.offset.meanM, 1) : null,
           dataset: field.terrain.dataset,
@@ -221,6 +261,27 @@ async function buildReport(options) {
       });
     }
 
+    // The published elevation against the 3DEP ground under the published
+    // coordinate. A disagreement means one of them is wrong and the score built
+    // on the pair is about the wrong hillside, so the station is dropped and
+    // counted rather than quietly weighted into a terrain class. A station with
+    // no elevation on one side or the other cannot be checked; it is scored,
+    // and the report says the check did not run.
+    const elevation = verify.elevationCheck(
+      station.elevationM, terrain ? terrain.demElevationM : null, { toleranceM: elevationToleranceM });
+
+    if (elevation.code === "elevation-disagrees") {
+      dropped.push({
+        station: station.id,
+        name: station.name,
+        code: elevation.code,
+        publishedM: round(station.elevationM, 1),
+        demElevationM: round(terrain ? terrain.demElevationM : null, 1),
+        differenceM: round(elevation.differenceM, 1)
+      });
+      continue;
+    }
+
     const paired = verify.pair(read.records, samples, { toleranceMs: toleranceMs });
     for (const p of paired.pairs) {
       p.station = station;
@@ -234,25 +295,31 @@ async function buildReport(options) {
       lat: station.lat,
       lon: station.lon,
       elevationM: station.elevationM,
+      elevation: elevation,
       terrain: terrain,
       observations: read.counts,
       rejected: read.rejected.length,
       samples: samples.length,
       paired: paired.pairs.length,
       unmatched: paired.unmatched.length,
-      model: tidy(verify.score(paired.pairs, { read: function (p) { return p.sample.model; } })),
-      downscaled: tidy(verify.score(paired.pairs, { read: function (p) { return p.sample.fine; } }))
+      model: tidy(verify.score(paired.pairs, reading(floor, "model"))),
+      downscaled: tidy(verify.score(paired.pairs, reading(floor, "fine")))
     });
   }
 
+  // Both candidates are stratified, not just the downscaled one. "The
+  // downscaling scores 6.2 on slopes" is unreadable on its own: the question is
+  // whether it beat the model it started from on that terrain, and that needs
+  // the same split on both sides.
+  const classOf = function (p) { return p.terrain ? p.terrain.class : "unknown"; };
   const byTerrain = {};
+  const modelByTerrain = verify.stratify(allPairs, classOf, reading(floor, "model"));
   for (const [label, scored] of Object.entries(
-    verify.stratify(allPairs, function (p) { return p.terrain ? p.terrain.class : "unknown"; },
-      { read: function (p) { return p.sample.fine; } })
-  )) byTerrain[label] = tidy(scored);
+    verify.stratify(allPairs, classOf, reading(floor, "fine"))
+  )) byTerrain[label] = { model: tidy(modelByTerrain[label]), downscaled: tidy(scored) };
 
   const report = {
-    schemaVersion: 1,
+    schemaVersion: 2,
     generated: new Date(started).toISOString(),
     window: {
       from: validTimes[0].toISOString(),
@@ -261,9 +328,18 @@ async function buildReport(options) {
       forecastHour: forecastHour,
       toleranceMinutes: toleranceMs / 60000
     },
-    domain: { radiusMiles: radiusMiles, targetResolutionM: resolutionM },
+    domain: {
+      radiusMiles: radiusMiles,
+      targetResolutionM: resolutionM,
+      // The scale the terrain class was read at. A ridge measured over 100 m
+      // and a ridge measured over 500 m are different claims, so the number
+      // travels with the report rather than living in someone's memory.
+      positionRadiusM: positionRadiusM,
+      positionThresholdM: verify.DEFAULT_POSITION_THRESHOLD_M
+    },
     source: {
-      observations: "NWS api.weather.gov station observations (ASOS/AWOS METAR)",
+      observations: o.observationSource ||
+        "NWS api.weather.gov station observations (ASOS/AWOS METAR)",
       model: "HRRR via NOMADS",
       terrain: "USGS 3DEP",
       independence: forecastHour === 0
@@ -272,10 +348,12 @@ async function buildReport(options) {
     },
     stations: stations,
     overall: {
-      model: tidy(verify.score(allPairs, { read: function (p) { return p.sample.model; } })),
-      downscaled: tidy(verify.score(allPairs, { read: function (p) { return p.sample.fine; } }))
+      model: tidy(verify.score(allPairs, reading(floor, "model"))),
+      downscaled: tidy(verify.score(allPairs, reading(floor, "fine")))
     },
     byTerrain: byTerrain,
+    droppedStations: dropped,
+    elevationToleranceM: elevationToleranceM,
     failures: failures,
     elapsedMs: now() - started
   };
@@ -296,17 +374,24 @@ async function main() {
   const endMs = args.end ? Date.parse(String(args.end)) : Date.now() - 3 * HOUR_MS;
   if (Number.isNaN(endMs)) throw new Error("--end is not a time: " + args.end);
 
+  const ids = String(args.stations).split(",")
+    .map(function (s) { return s.trim().toUpperCase(); })
+    .filter(Boolean);
+  const chosen = sourceFor(args.source, ids);
+
   const report = await buildReport({
-    source: observationsModule.createObservationSource({}),
+    source: chosen.source,
+    observationSource: chosen.label,
+    floor: chosen.floor,
     service: fieldModule.createFieldService({}),
-    stations: String(args.stations).split(",")
-      .map(function (s) { return s.trim().toUpperCase(); })
-      .filter(Boolean),
+    stations: ids,
     hours: number(args.hours, 12, "hours"),
     forecastHour: number(args.forecast, 0, "forecast"),
     radiusMiles: number(args.radius, 0.5, "radius"),
     resolutionM: number(args.resolution, 30, "resolution"),
     toleranceMs: number(args.tolerance, 10, "tolerance") * 60 * 1000,
+  positionRadiusM: number(args.position, derive.DEFAULT_POSITION_RADIUS_M, "position"),
+    elevationToleranceM: number(args.elevation, 50, "elevation"),
     endMs: endMs
   });
 
@@ -316,6 +401,33 @@ async function main() {
 
   process.stdout.write(summarise(report) + "\n");
   if (args.json) process.stdout.write(JSON.stringify(report, null, 2) + "\n");
+}
+
+/**
+ * The reader named on the command line.
+ *
+ * The token comes from the environment and never from an argument: an argument
+ * is in the shell history, in `ps`, and in the transcript of whatever ran it.
+ */
+function sourceFor(name, ids) {
+  const which = name === undefined || name === true ? "nws" : String(name).toLowerCase();
+  if (which === "nws") {
+    return {
+      source: observationsModule.createObservationSource({}),
+      label: "NWS api.weather.gov station observations (ASOS/AWOS METAR)",
+      floor: {}
+    };
+  }
+  if (which === "synoptic") {
+    const token = process.env.SYNOPTIC_API_TOKEN;
+    if (!token) throw new Error("--source synoptic needs SYNOPTIC_API_TOKEN in the environment");
+    return {
+      source: synoptic.createSynopticSource({ token: token, stids: ids }),
+      label: "Synoptic Data stations (RAWS and other mesonets), 1° directions, QC-flagged rows dropped",
+      floor: synoptic.RAWS_QUANTISATION
+    };
+  }
+  throw new Error("--source is nws or synoptic, not " + JSON.stringify(name));
 }
 
 function line(label, score) {
@@ -351,23 +463,41 @@ function summarise(report) {
     "",
     "speed and vector errors are m/s, direction degrees; a perfect model scores " +
       fixed(report.overall.downscaled.floor.speedRmseMps, 2) + " m/s and " +
-      fixed(report.overall.downscaled.floor.dirRmseDeg, 1) + "° against a rounded METAR",
+      fixed(report.overall.downscaled.floor.dirRmseDeg, 1) + "° against these " +
+      "observations' rounding alone",
     "obs is observations scored; hrs is the model hours behind them — a station " +
       "reporting every five minutes contributes several obs to one sample",
     ""
   ];
 
   if (Object.keys(report.byTerrain).length > 1) {
-    out.push("downscaled, by the terrain under the station:");
+    out.push("by the terrain under the station, model then downscaled" +
+      " (position read over a " + report.domain.positionRadiusM + " m disc, ±" +
+      report.domain.positionThresholdM + " m separates ridge and valley from slope):");
     out.push(head);
-    for (const [label, score] of Object.entries(report.byTerrain)) out.push(line(label, score));
+    for (const [label, both] of Object.entries(report.byTerrain)) {
+      out.push(line(label + " hrrr", both.model));
+      out.push(line(label + " down", both.downscaled));
+    }
+    out.push("");
+  }
+
+  if (report.droppedStations && report.droppedStations.length) {
+    out.push(report.droppedStations.length + " station(s) dropped, published elevation against 3DEP:");
+    for (const d of report.droppedStations) {
+      out.push("  " + d.station + " " + (d.name || "") + " published " + d.publishedM +
+        " m, ground " + d.demElevationM + " m, out by " + d.differenceM + " m");
+    }
     out.push("");
   }
 
   out.push("by station (downscaled):");
   out.push(head);
   for (const s of report.stations) {
-    out.push(line(s.id + " " + (s.terrain ? s.terrain.class : "?"), s.downscaled));
+    const t = s.terrain;
+    out.push(line(s.id + " " + (t ? t.class : "?"), s.downscaled) +
+      (t ? "   tpi" + report.domain.positionRadiusM + " " + fixed(t.positionIndexM, 1) +
+        " m, tpi3x3 " + fixed(t.tpi, 2) + " m" : ""));
   }
 
   if (report.failures.length) {

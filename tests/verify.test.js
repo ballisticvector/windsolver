@@ -235,17 +235,29 @@ describe("the floor under any score", () => {
 
 describe("terrain under a station", () => {
   test("position beats slope: a ridge is a ridge however gently it rises", () => {
-    expect(verify.classifyTerrain({ tpi: 9, slopeDeg: 2 })).toBe("ridge");
-    expect(verify.classifyTerrain({ tpi: -9, slopeDeg: 2 })).toBe("valley");
-    expect(verify.classifyTerrain({ tpi: 0.2, slopeDeg: 1 })).toBe("flat");
-    expect(verify.classifyTerrain({ tpi: 0.2, slopeDeg: 17 })).toBe("slope");
+    expect(verify.classifyTerrain({ positionIndexM: 22, slopeDeg: 2 })).toBe("ridge");
+    expect(verify.classifyTerrain({ positionIndexM: -22, slopeDeg: 2 })).toBe("valley");
+    expect(verify.classifyTerrain({ positionIndexM: 0.2, slopeDeg: 1 })).toBe("flat");
+    expect(verify.classifyTerrain({ positionIndexM: 0.2, slopeDeg: 17 })).toBe("slope");
   });
 
   test("terrain nobody read is unknown, not flat", () => {
     // NaN is how a void arrives from `derive.js`, and calling it flat would put
     // every hole in the DEM into the class the model finds easiest.
-    expect(verify.classifyTerrain({ tpi: NaN, slopeDeg: NaN })).toBe("unknown");
+    expect(verify.classifyTerrain({ positionIndexM: NaN, slopeDeg: NaN })).toBe("unknown");
     expect(verify.classifyTerrain(null)).toBe("unknown");
+    // A 3 x 3 `tpi` is not a landform position and must not be read as one:
+    // ten real RAWS on named ridges and gulches all sat inside ±0.4 m of it.
+    expect(verify.classifyTerrain({ tpi: 9, slopeDeg: 2 })).toBe("unknown");
+  });
+
+  test("the ridge threshold is a landform-scale one, not the 3 x 3 field's", () => {
+    // A station 9 m above its 500 m surroundings is on the shoulder, not the
+    // crest; the old ±5 m was calibrated for an index that never reaches it.
+    expect(verify.DEFAULT_POSITION_THRESHOLD_M).toBe(15);
+    expect(verify.classifyTerrain({ positionIndexM: 9, slopeDeg: 12 })).toBe("slope");
+    expect(verify.classifyTerrain({ positionIndexM: 9, slopeDeg: 12 }, { positionIndexM: 5 }))
+      .toBe("ridge");
   });
 
   test("a score splits by class, and each class keeps its own count", () => {
@@ -259,5 +271,35 @@ describe("terrain under a station", () => {
     expect(bands.valley.n).toBe(1);
     expect(bands.valley.speed.biasMps).toBeCloseTo(2, 9);
     expect(bands.flat.speed.biasMps).toBeCloseTo(0.5, 9);
+  });
+});
+
+describe("a station's published elevation against the ground under it", () => {
+  test("agreement is within the tolerance, and the difference is reported either way", () => {
+    const agree = verify.elevationCheck(3179.5, 3172.0);
+    expect(agree.ok).toBe(true);
+    expect(agree.differenceM).toBeCloseTo(7.5, 6);
+  });
+
+  test("a station a kilometre above its own terrain has the wrong coordinate", () => {
+    // The failure this exists for: a pass station published at 3,153 m whose
+    // coordinate plots in a city. Sampled there the terrain is flat, the class
+    // is `flat`, and the station grades the downscaling on ground it has never
+    // stood on — which is a wrong number that looks like a right one.
+    const wrong = verify.elevationCheck(3153, 1609);
+    expect(wrong.ok).toBe(false);
+    expect(wrong.code).toBe("elevation-disagrees");
+    expect(wrong.differenceM).toBeCloseTo(1544, 6);
+  });
+
+  test("no elevation on either side is not agreement", () => {
+    expect(verify.elevationCheck(null, 1600).ok).toBe(false);
+    expect(verify.elevationCheck(1600, NaN).code).toBe("no-elevation");
+  });
+
+  test("the tolerance is a choice, and it is stated in the result", () => {
+    expect(verify.elevationCheck(3153, 3060, { toleranceM: 100 }).ok).toBe(true);
+    expect(verify.elevationCheck(3153, 3060, { toleranceM: 100 }).toleranceM).toBe(100);
+    expect(verify.elevationCheck(3153, 3060).ok).toBe(false);
   });
 });

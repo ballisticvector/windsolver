@@ -49,6 +49,17 @@ const DEFAULT_SECTORS = 16;
  */
 const DEFAULT_MAX_SHELTER_DISTANCE_M = 300;
 
+/**
+ * The neighbourhood a landform position is measured over, in metres.
+ *
+ * 500 m is the scale of the features that bend a surface wind — a ridge line,
+ * a gulch, a saddle — and it fits inside the half-mile domain the verification
+ * runs read. It is a default and not a constant of nature: `positionIndexAt`
+ * returns the radius it used, because a position index quoted without its
+ * scale says nothing.
+ */
+const DEFAULT_POSITION_RADIUS_M = 500;
+
 function fail(code, message, detail) {
   const err = new Error(message);
   err.code = code;
@@ -494,6 +505,82 @@ function fieldAt(derived, name, lat, lon) {
 }
 
 /**
+ * Where a coordinate sits in the landform around it: its elevation minus the
+ * mean elevation of a disc of a named radius, in metres.
+ *
+ * This is the same quantity as the `tpi` field and a different measurement.
+ * The field is GDAL's: centre minus the mean of the eight touching pixels, so
+ * at 30 m spacing it describes a 90 m patch. A ridge is not a 90 m feature —
+ * across ten Colorado RAWS on named ridges, gulches and passes the 3 x 3 index
+ * ran from -0.3 m to +0.4 m, which is roughness, and every one of them
+ * classified as `flat` or `slope` because ±5 m is unreachable at that scale.
+ * Landform position needs a neighbourhood the size of the landform: Weiss
+ * (2001), "Topographic position and landforms analysis", uses hundreds of
+ * metres to kilometres and reads the class off the scale it was measured at.
+ *
+ * So the radius is in the answer as well as in the call. A position index
+ * without its scale is not comparable with anything, including itself.
+ *
+ * Returns null rather than a number when the disc does not fit inside the
+ * domain: half a disc over a hillside averages only the half that is there and
+ * reports a slope position the ground does not have, which is worse than
+ * refusing because it looks like an answer.
+ */
+function positionIndexAt(derived, lat, lon, opts) {
+  const o = opts || {};
+  const radiusM = o.radiusM === undefined ? DEFAULT_POSITION_RADIUS_M : o.radiusM;
+  const minCoverage = o.minCoverage === undefined ? 0.9 : o.minCoverage;
+  if (!(radiusM > 0)) throw fail("bad-radius", "radiusM must be a positive distance");
+
+  const grid = {
+    crs: derived.crs,
+    width: derived.width,
+    height: derived.height,
+    transform: derived.transform,
+    values: derived.elevation
+  };
+  const centre = cog.sampleElevation(grid, lat, lon);
+  if (centre === null) return null;
+
+  const m = proj.fromGeographic(grid.crs, lat, lon);
+  const px = (m.x - grid.transform.originX) / grid.transform.scaleX - 0.5;
+  const py = (m.y - grid.transform.originY) / grid.transform.scaleY - 0.5;
+  const step = spacingAt(grid, Math.max(0, Math.min(grid.height - 1, Math.round(py))));
+  const rx = radiusM / step.x;
+  const ry = radiusM / step.y;
+
+  const x0 = Math.floor(px - rx);
+  const x1 = Math.ceil(px + rx);
+  const y0 = Math.floor(py - ry);
+  const y1 = Math.ceil(py + ry);
+  if (x0 < 0 || y0 < 0 || x1 > grid.width - 1 || y1 > grid.height - 1) return null;
+
+  let sum = 0;
+  let used = 0;
+  let inDisc = 0;
+  for (let y = y0; y <= y1; y++) {
+    for (let x = x0; x <= x1; x++) {
+      const dx = (x - px) / rx;
+      const dy = (y - py) / ry;
+      if (dx * dx + dy * dy > 1) continue;
+      inDisc++;
+      const z = grid.values[y * grid.width + x];
+      if (Number.isNaN(z)) continue;
+      sum += z;
+      used++;
+    }
+  }
+  if (!used || used / inDisc < minCoverage) return null;
+
+  return {
+    tpiM: centre - sum / used,
+    radiusM: radiusM,
+    samples: used,
+    coverage: used / inDisc
+  };
+}
+
+/**
  * Downhill bearing at a coordinate, interpolated through the gradient rather
  * than through the angle, so a hillside facing due north does not average to
  * due south. Returns null off the grid, in a void, or on flat ground.
@@ -564,6 +651,7 @@ function valueAt(deriveds, name, lat, lon) {
 module.exports = {
   DEFAULT_SECTORS,
   DEFAULT_MAX_SHELTER_DISTANCE_M,
+  DEFAULT_POSITION_RADIUS_M,
   spacingAt,
   gridConvergenceDeg,
   slopeAspect,
@@ -573,6 +661,7 @@ module.exports = {
   derive,
   deriveAll,
   fieldAt,
+  positionIndexAt,
   aspectAt,
   shelterAt,
   valueAt
