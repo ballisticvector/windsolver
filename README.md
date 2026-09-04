@@ -1020,6 +1020,29 @@ some are not multiples of 45, which is the property RWIS lacks and the reason fo
 token. Speeds are still whole miles per hour — 0.44704 m/s — and that is the floor
 printed above every table.
 
+**A RAWS anemometer is 6.1 m up; HRRR's surface wind is at 10 m.** 20 ft is the NFDRS
+standard height for a fire-weather station, so this is not an occasional mismatch — it
+is every RAWS in the network, and it is one-directional: the model is quoted at a level
+where the wind is faster than the level the station measured. Over short grass the
+neutral log law puts 8.5% between the two: on the 15-station f06 run below that is
+0.37 m/s of a 1.62 m/s speed bias — about a quarter of it — removed by measuring the
+same air at the same height rather than by changing the model at all. `metadataUrl`
+therefore asks for `sensorvars=1` and the
+station carries `sensorHeightM`, and `tools/score-wind.js` moves the model wind to the
+station's height with `downscale.heightFactor` before scoring it. Three deliberate
+limits on that correction:
+
+- **speed only.** A log law is a statement about the magnitude of a neutral profile and
+  says nothing about the veering between 6 m and 10 m, so the direction is scored
+  unmoved and the report says so;
+- **the model moves, not the observation**, because the observation is the thing being
+  treated as true;
+- **a station that publishes no height is scored unmoved and named as such.** An ASOS is
+  at 10 m by federal standard and would need no correction anyway, but `observations.js`
+  reports `sensorHeightM: null` rather than 10, because a default is indistinguishable
+  from a measurement and this whole correction exists because a default was invisible.
+  `--no-height` turns the correction off, and `--roughness` is the z0 it assumes.
+
 **Every station is checked against the ground under its own published coordinate**
 before it is scored, and dropped by name if the two disagree by more than 50 m. A station
 whose coordinate is wrong is not a bad sample; it is a sample of somewhere else, and it
@@ -1040,6 +1063,39 @@ Neither threshold is a physical constant. ±15 m at 500 m is a convention chosen
 named ridges and gulches on the right side of the line; the honest version is a
 standard deviation over the domain, and that is a change to make once there are enough
 stations to fit one.
+
+### What 15 RAWS stations said
+
+24 hours, f06, 15 Colorado RAWS, 30-minute pairing window, model wind moved to each
+station's 6.1 m anemometer:
+
+```text
+candidate        obs   hrs  spd bias  spd rmse  dir bias  dir rmse  vec rmse
+HRRR alone       360   360      1.25      2.30       7.9      60.4      3.25
+downscaled       360   360      1.57      2.55       8.2      60.7      3.50
+
+ridge hrrr       264   264      1.20      2.27       4.1      57.0      3.14
+ridge down       264   264      1.58      2.57       4.4      57.3      3.46
+slope hrrr        48    48      2.60      3.02      43.6      61.0      4.02
+slope down        48    48      2.68      3.15      43.9      61.2      4.11
+flat hrrr         48    48      0.23      1.54       5.6      75.4      2.94
+flat down         48    48      0.40      1.63       5.7      75.6      3.04
+```
+
+**The downscaling is worse than the model it starts from on every stratum here**, which
+is the opposite of the result the airport run was supposed to be hiding. Read it as a
+finding to chase rather than a verdict: 15 stations in one state over one day, the
+observations within a station are correlated, there is no `valley` stratum at all
+because none of these 15 sit in one, and the remaining +1.25 m/s says the model is still
+being quoted faster than the ground measures — some of which is siting, since a RAWS
+tower stands in brush and its own roughness is not the 0.03 m the correction assumes.
+The direction bias of 43.6° on the `slope` pair is two stations, not a property of
+slopes.
+
+What it does establish is that the harness now scores the terrain the downscaling is
+about, at the height the wind was measured, with the pieces that were previously
+confounded — landform scale, sensor height, pairing window — each visible in the report
+rather than baked into the number.
 
 ## Resolution is a finding, not a setting
 

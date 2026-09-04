@@ -1,0 +1,696 @@
+{
+ "STATION": [
+  {
+   "ID": "1961",
+   "STID": "CPTC2",
+   "NAME": "CARPENTER RIDGE",
+   "ELEVATION": "8124.0",
+   "LATITUDE": "38.459640",
+   "LONGITUDE": "-109.047310",
+   "STATUS": "ACTIVE",
+   "MNET_ID": "2",
+   "STATE": "CO",
+   "COUNTRY": "US",
+   "TIMEZONE": "America/Denver",
+   "ELEV_DEM": "8192.3",
+   "NWSZONE": "CO020",
+   "NWSFIREZONE": "GJT290",
+   "GACC": "GBCC",
+   "SHORTNAME": "RAWS",
+   "LONGNAME": "Interagency Remote Automatic Weather Stations",
+   "URL": null,
+   "PROGRAM": null,
+   "CITATION": null,
+   "SGID": "GB32",
+   "COUNTY": "Montrose",
+   "WIMS_ID": "53808",
+   "CWA": "GJT",
+   "PERIOD_OF_RECORD": {
+    "start": "1999-05-15T00:00:00Z",
+    "end": "2026-09-04T15:09:00Z"
+   },
+   "PROVIDERS": [
+    {
+     "name": "Bureau of Land Management",
+     "url": "http://www.blm.gov"
+    },
+    {
+     "name": "USDA Forest Service",
+     "url": "http://www.fs.fed.us"
+    }
+   ],
+   "SITING": [],
+   "SENSOR_VARIABLES": {
+    "air_temp": {
+     "air_temp_1": {
+      "position": "2.0",
+      "dimension": {},
+      "summary": "air_temp_2_meter",
+      "PERIOD_OF_RECORD": {
+       "start": "1999-05-15T00:00:00Z",
+       "end": "2026-09-04T15:09:00Z"
+      }
+     }
+    },
+    "dew_point_temperature": {
+     "dew_point_temperature_1": {
+      "position": null,
+      "dimension": {},
+      "summary": "dew_point_temperature",
+      "PERIOD_OF_RECORD": {
+       "start": "1999-05-15T00:00:00Z",
+       "end": "2009-05-07T09:09:00Z"
+      }
+     }
+    },
+    "relative_humidity": {
+     "relative_humidity_1": {
+      "position": "2.0",
+      "dimension": {},
+      "summary": "relative_humidity_2_meter",
+      "PERIOD_OF_RECORD": {
+       "start": "1999-05-15T00:00:00Z",
+       "end": "2026-09-04T15:09:00Z"
+      }
+     }
+    },
+    "wind_speed": {
+     "wind_speed_1": {
+      "position": "6.1",
+      "dimension": {},
+      "summary": "wind_speed_6.1_meter",
+      "PERIOD_OF_RECORD": {
+       "start": "1999-05-15T00:00:00Z",
+       "end": "2026-09-04T15:09:00Z"
+      }
+     }
+    },
+    "wind_direction": {
+     "wind_direction_1": {
+      "position": "6.1",
+      "dimension": {},
+      "summary": "wind_direction_6.1_meter",
+      "PERIOD_OF_RECORD": {
+       "start": "1999-05-15T00:00:00Z",
+       "end": "2026-09-04T15:09:00Z"
+      }
+     }
+    },
+    "wind_gust": {
+     "wind_gust_1": {
+      "position": "6.1",
+      "dimension": {},
+      "summary": "wind_gust_6.1_meter",
+      "PERIOD_OF_RECORD": {
+       "start": "1999-05-15T00:00:00Z",
+       "end": "2026-09-04T15:09:00Z"
+      }
+     }
+    },
+    "solar_radiation": {
+     "solar_radiation_1": {
+      "position": "2.0",
+      "dimension": {},
+      "summary": "solar_radiation_2_meter",
+      "PERIOD_OF_RECORD": {
+       "start": "1999-05-15T00:00:00Z",
+       "end": "2026-09-04T15:09:00Z"
+      }
+     }
+    },
+    "precip_accum": {
+     "precip_accum_1": {
+      "position": "0.0",
+      "dimension": {},
+      "summary": "precip_accum_0_meter",
+      "PERIOD_OF_RECORD": {
+       "start": "1999-05-15T00:00:00Z",
+       "end": "2026-09-04T15:09:00Z"
+      }
+     }
+    },
+    "water_temp": {
+     "water_temp_1": {
+      "position": null,
+      "dimension": {},
+      "summary": "water_temp",
+      "PERIOD_OF_RECORD": {
+       "start": "1999-05-15T00:00:00Z",
+       "end": "2006-10-18T21:25:00Z"
+      }
+     }
+    },
+    "qc": {
+     "qc_1": {
+      "position": null,
+      "dimension": {},
+      "summary": "qc",
+      "PERIOD_OF_RECORD": {
+       "start": "1999-05-15T00:00:00Z",
+       "end": "2014-10-06T23:09:00Z"
+      }
+     }
+    },
+    "peak_wind_speed": {
+     "peak_wind_speed_1": {
+      "position": null,
+      "dimension": {},
+      "summary": "peak_wind_speed",
+      "PERIOD_OF_RECORD": {
+       "start": "1999-05-15T00:00:00Z",
+       "end": "2026-09-04T15:09:00Z"
+      }
+     }
+    },
+    "fuel_temp": {
+     "fuel_temp_1": {
+      "position": "0.3",
+      "dimension": {},
+      "summary": "fuel_temp_0.3_meter",
+      "PERIOD_OF_RECORD": {
+       "start": "1999-05-15T00:00:00Z",
+       "end": "2026-09-04T15:09:00Z"
+      }
+     }
+    },
+    "fuel_moisture": {
+     "fuel_moisture_1": {
+      "position": "0.3",
+      "dimension": {},
+      "summary": "fuel_moisture_0.3_meter",
+      "PERIOD_OF_RECORD": {
+       "start": "1999-05-15T00:00:00Z",
+       "end": "2026-09-04T15:09:00Z"
+      }
+     }
+    },
+    "soil_moisture": {
+     "soil_moisture_1": {
+      "position": null,
+      "dimension": {},
+      "summary": "soil_moisture",
+      "PERIOD_OF_RECORD": {
+       "start": "1999-05-15T00:00:00Z",
+       "end": "2010-05-21T19:09:00Z"
+      }
+     }
+    },
+    "volt": {
+     "volt_1": {
+      "position": null,
+      "dimension": {},
+      "summary": "volt",
+      "PERIOD_OF_RECORD": {
+       "start": "1999-05-15T00:00:00Z",
+       "end": "2026-09-04T15:09:00Z"
+      }
+     }
+    },
+    "snow_interval": {
+     "snow_interval_1": {
+      "position": null,
+      "dimension": {},
+      "summary": "snow_interval",
+      "PERIOD_OF_RECORD": {
+       "start": "1999-05-15T00:00:00Z",
+       "end": "2011-05-09T17:09:00Z"
+      }
+     }
+    },
+    "peak_wind_direction": {
+     "peak_wind_direction_1": {
+      "position": null,
+      "dimension": {},
+      "summary": "peak_wind_direction",
+      "PERIOD_OF_RECORD": {
+       "start": "1999-05-15T00:00:00Z",
+       "end": "2026-09-04T15:09:00Z"
+      }
+     }
+    }
+   },
+   "UNITS": {
+    "position": "m",
+    "elevation": "ft"
+   },
+   "RESTRICTED": false,
+   "RESTRICTED_METADATA": false
+  },
+  {
+   "ID": "2001",
+   "STID": "STOC2",
+   "NAME": "STORM KING MOUNTAIN",
+   "ELEVATION": "8793.0",
+   "LATITUDE": "39.586940",
+   "LONGITUDE": "-107.404440",
+   "STATUS": "ACTIVE",
+   "MNET_ID": "2",
+   "STATE": "CO",
+   "COUNTRY": "US",
+   "TIMEZONE": "America/Denver",
+   "ELEV_DEM": "8631.9",
+   "NWSZONE": "CO013",
+   "NWSFIREZONE": "GJT205",
+   "GACC": "RMCC",
+   "SHORTNAME": "RAWS",
+   "LONGNAME": "Interagency Remote Automatic Weather Stations",
+   "URL": null,
+   "PROGRAM": null,
+   "CITATION": null,
+   "SGID": "RM15",
+   "COUNTY": "Garfield",
+   "WIMS_ID": "51508",
+   "CWA": "GJT",
+   "PERIOD_OF_RECORD": {
+    "start": "1998-07-30T00:00:00Z",
+    "end": "2026-09-04T14:58:00Z"
+   },
+   "PROVIDERS": [
+    {
+     "name": "Bureau of Land Management",
+     "url": "http://www.blm.gov"
+    },
+    {
+     "name": "National Interagency Fire Center",
+     "url": "http://www.nifc.gov"
+    }
+   ],
+   "SITING": [],
+   "SENSOR_VARIABLES": {
+    "altimeter": {
+     "altimeter_1": {
+      "position": "1.5",
+      "dimension": {},
+      "summary": "altimeter_1.5_meter",
+      "PERIOD_OF_RECORD": {
+       "start": "1998-07-30T00:00:00Z",
+       "end": "2014-09-02T22:12:00Z"
+      }
+     }
+    },
+    "air_temp": {
+     "air_temp_1": {
+      "position": "2.0",
+      "dimension": {},
+      "summary": "air_temp_2_meter",
+      "PERIOD_OF_RECORD": {
+       "start": "1998-07-30T00:00:00Z",
+       "end": "2026-09-04T14:58:00Z"
+      }
+     }
+    },
+    "relative_humidity": {
+     "relative_humidity_1": {
+      "position": "2.0",
+      "dimension": {},
+      "summary": "relative_humidity_2_meter",
+      "PERIOD_OF_RECORD": {
+       "start": "1998-07-30T00:00:00Z",
+       "end": "2026-09-04T14:58:00Z"
+      }
+     }
+    },
+    "wind_speed": {
+     "wind_speed_1": {
+      "position": "6.1",
+      "dimension": {},
+      "summary": "wind_speed_6.1_meter",
+      "PERIOD_OF_RECORD": {
+       "start": "1998-07-30T00:00:00Z",
+       "end": "2026-09-04T14:58:00Z"
+      }
+     }
+    },
+    "wind_direction": {
+     "wind_direction_1": {
+      "position": "6.1",
+      "dimension": {},
+      "summary": "wind_direction_6.1_meter",
+      "PERIOD_OF_RECORD": {
+       "start": "1998-07-30T00:00:00Z",
+       "end": "2026-09-04T14:58:00Z"
+      }
+     }
+    },
+    "wind_gust": {
+     "wind_gust_1": {
+      "position": "6.1",
+      "dimension": {},
+      "summary": "wind_gust_6.1_meter",
+      "PERIOD_OF_RECORD": {
+       "start": "1998-07-30T00:00:00Z",
+       "end": "2026-09-04T14:58:00Z"
+      }
+     }
+    },
+    "solar_radiation": {
+     "solar_radiation_1": {
+      "position": "2.0",
+      "dimension": {},
+      "summary": "solar_radiation_2_meter",
+      "PERIOD_OF_RECORD": {
+       "start": "1998-07-30T00:00:00Z",
+       "end": "2026-09-04T14:58:00Z"
+      }
+     }
+    },
+    "precip_accum": {
+     "precip_accum_1": {
+      "position": "0.0",
+      "dimension": {},
+      "summary": "precip_accum_0_meter",
+      "PERIOD_OF_RECORD": {
+       "start": "1998-07-30T00:00:00Z",
+       "end": "2026-09-04T14:58:00Z"
+      }
+     }
+    },
+    "water_temp": {
+     "water_temp_1": {
+      "position": null,
+      "dimension": {},
+      "summary": "water_temp",
+      "PERIOD_OF_RECORD": {
+       "start": "1998-07-30T00:00:00Z",
+       "end": "2006-10-18T21:10:00Z"
+      }
+     }
+    },
+    "qc": {
+     "qc_1": {
+      "position": null,
+      "dimension": {},
+      "summary": "qc",
+      "PERIOD_OF_RECORD": {
+       "start": "1998-07-30T00:00:00Z",
+       "end": "2014-10-06T22:58:00Z"
+      }
+     }
+    },
+    "peak_wind_speed": {
+     "peak_wind_speed_1": {
+      "position": null,
+      "dimension": {},
+      "summary": "peak_wind_speed",
+      "PERIOD_OF_RECORD": {
+       "start": "1998-07-30T00:00:00Z",
+       "end": "2026-09-04T14:58:00Z"
+      }
+     }
+    },
+    "fuel_temp": {
+     "fuel_temp_1": {
+      "position": "0.3",
+      "dimension": {},
+      "summary": "fuel_temp_0.3_meter",
+      "PERIOD_OF_RECORD": {
+       "start": "1998-07-30T00:00:00Z",
+       "end": "2012-10-23T22:12:00Z"
+      }
+     }
+    },
+    "fuel_moisture": {
+     "fuel_moisture_1": {
+      "position": "0.3",
+      "dimension": {},
+      "summary": "fuel_moisture_0.3_meter",
+      "PERIOD_OF_RECORD": {
+       "start": "1998-07-30T00:00:00Z",
+       "end": "2012-10-24T00:12:00Z"
+      }
+     }
+    },
+    "volt": {
+     "volt_1": {
+      "position": null,
+      "dimension": {},
+      "summary": "volt",
+      "PERIOD_OF_RECORD": {
+       "start": "1998-07-30T00:00:00Z",
+       "end": "2026-09-04T14:58:00Z"
+      }
+     }
+    },
+    "snow_interval": {
+     "snow_interval_1": {
+      "position": null,
+      "dimension": {},
+      "summary": "snow_interval",
+      "PERIOD_OF_RECORD": {
+       "start": "1998-07-30T00:00:00Z",
+       "end": "2011-05-09T17:12:00Z"
+      }
+     }
+    },
+    "peak_wind_direction": {
+     "peak_wind_direction_1": {
+      "position": null,
+      "dimension": {},
+      "summary": "peak_wind_direction",
+      "PERIOD_OF_RECORD": {
+       "start": "1998-07-30T00:00:00Z",
+       "end": "2026-09-04T14:58:00Z"
+      }
+     }
+    }
+   },
+   "UNITS": {
+    "position": "m",
+    "elevation": "ft"
+   },
+   "RESTRICTED": false,
+   "RESTRICTED_METADATA": false
+  },
+  {
+   "ID": "31841",
+   "STID": "KBDU",
+   "NAME": "Boulder Municipal Airport",
+   "ELEVATION": "5288.0",
+   "LATITUDE": "40.0394297",
+   "LONGITUDE": "-105.2258217",
+   "STATUS": "ACTIVE",
+   "MNET_ID": "1",
+   "STATE": "CO",
+   "COUNTRY": "US",
+   "TIMEZONE": "America/Denver",
+   "ELEV_DEM": "5324.8",
+   "NWSZONE": "CO039",
+   "NWSFIREZONE": "BOU239",
+   "GACC": "RMCC",
+   "SHORTNAME": "ASOS/AWOS",
+   "LONGNAME": "ASOS/AWOS",
+   "URL": null,
+   "PROGRAM": null,
+   "CITATION": null,
+   "SGID": "RM12",
+   "COUNTY": "Boulder",
+   "WIMS_ID": null,
+   "CWA": "BOU",
+   "PERIOD_OF_RECORD": {
+    "start": "2011-10-27T00:00:00Z",
+    "end": "2026-09-04T15:15:00Z"
+   },
+   "PROVIDERS": [
+    {
+     "name": "National Weather Service",
+     "url": "http://www.weather.gov"
+    }
+   ],
+   "SITING": [],
+   "SENSOR_VARIABLES": {
+    "altimeter": {
+     "altimeter_1": {
+      "position": "2.0",
+      "dimension": {},
+      "summary": "altimeter_2_meter",
+      "PERIOD_OF_RECORD": {
+       "start": "2011-10-27T00:00:00Z",
+       "end": "2026-09-04T15:15:00Z"
+      }
+     }
+    },
+    "air_temp": {
+     "air_temp_1": {
+      "position": "2.0",
+      "dimension": {},
+      "summary": "air_temp_2_meter",
+      "PERIOD_OF_RECORD": {
+       "start": "2011-10-27T00:00:00Z",
+       "end": "2026-09-04T15:15:00Z"
+      }
+     }
+    },
+    "dew_point_temperature": {
+     "dew_point_temperature_1": {
+      "position": null,
+      "dimension": {},
+      "summary": "dew_point_temperature",
+      "PERIOD_OF_RECORD": {
+       "start": "2011-10-27T00:00:00Z",
+       "end": "2026-09-04T15:15:00Z"
+      }
+     }
+    },
+    "relative_humidity": {
+     "relative_humidity_1": {
+      "position": "2.0",
+      "dimension": {},
+      "summary": "relative_humidity_2_meter",
+      "PERIOD_OF_RECORD": {
+       "start": "2011-10-27T00:00:00Z",
+       "end": "2026-09-04T15:15:00Z"
+      }
+     }
+    },
+    "wind_speed": {
+     "wind_speed_1": {
+      "position": "10.0",
+      "dimension": {},
+      "summary": "wind_speed_10_meter",
+      "PERIOD_OF_RECORD": {
+       "start": "2011-10-27T00:00:00Z",
+       "end": "2026-09-04T15:15:00Z"
+      }
+     }
+    },
+    "wind_direction": {
+     "wind_direction_1": {
+      "position": "10.0",
+      "dimension": {},
+      "summary": "wind_direction_10_meter",
+      "PERIOD_OF_RECORD": {
+       "start": "2011-10-27T00:00:00Z",
+       "end": "2026-09-04T15:15:00Z"
+      }
+     }
+    },
+    "wind_gust": {
+     "wind_gust_1": {
+      "position": "10.0",
+      "dimension": {},
+      "summary": "wind_gust_10_meter",
+      "PERIOD_OF_RECORD": {
+       "start": "2011-10-27T00:00:00Z",
+       "end": "2026-09-03T15:55:00Z"
+      }
+     }
+    },
+    "weather_cond_code": {
+     "weather_cond_code_1": {
+      "position": "3.0",
+      "dimension": {},
+      "summary": "weather_cond_code_3_meter",
+      "PERIOD_OF_RECORD": {
+       "start": "2011-10-27T00:00:00Z",
+       "end": "2026-09-01T06:35:00Z"
+      }
+     }
+    },
+    "cloud_layer_3_code": {
+     "cloud_layer_3_code_1": {
+      "position": "1.0",
+      "dimension": {},
+      "summary": "cloud_layer_3_code_1_meter",
+      "PERIOD_OF_RECORD": {
+       "start": "2011-10-27T00:00:00Z",
+       "end": "2026-09-01T06:35:00Z"
+      }
+     }
+    },
+    "precip_accum_one_hour": {
+     "precip_accum_one_hour_1": {
+      "position": "0.0",
+      "dimension": {},
+      "summary": "precip_accum_one_hour_0_meter",
+      "PERIOD_OF_RECORD": {
+       "start": "2011-10-27T00:00:00Z",
+       "end": "2026-09-03T15:55:00Z"
+      }
+     }
+    },
+    "cloud_layer_1_code": {
+     "cloud_layer_1_code_1": {
+      "position": "1.0",
+      "dimension": {},
+      "summary": "cloud_layer_1_code_1_meter",
+      "PERIOD_OF_RECORD": {
+       "start": "2011-10-27T00:00:00Z",
+       "end": "2026-09-04T15:15:00Z"
+      }
+     }
+    },
+    "cloud_layer_2_code": {
+     "cloud_layer_2_code_1": {
+      "position": "1.0",
+      "dimension": {},
+      "summary": "cloud_layer_2_code_1_meter",
+      "PERIOD_OF_RECORD": {
+       "start": "2011-10-27T00:00:00Z",
+       "end": "2026-09-03T01:55:00Z"
+      }
+     }
+    },
+    "visibility": {
+     "visibility_1": {
+      "position": "3.0",
+      "dimension": {},
+      "summary": "visibility_3_meter",
+      "PERIOD_OF_RECORD": {
+       "start": "2011-10-27T00:00:00Z",
+       "end": "2026-09-04T15:15:00Z"
+      }
+     }
+    },
+    "metar_remark": {
+     "metar_remark_1": {
+      "position": null,
+      "dimension": {},
+      "summary": "metar_remark",
+      "PERIOD_OF_RECORD": {
+       "start": null,
+       "end": null
+      }
+     }
+    },
+    "metar": {
+     "metar_1": {
+      "position": null,
+      "dimension": {},
+      "summary": "metar",
+      "PERIOD_OF_RECORD": {
+       "start": "2016-07-22T20:40:00Z",
+       "end": "2026-09-04T15:15:00Z"
+      }
+     }
+    },
+    "ceiling": {
+     "ceiling_1": {
+      "position": "1.0",
+      "dimension": {},
+      "summary": "ceiling_1_meter",
+      "PERIOD_OF_RECORD": {
+       "start": "2011-10-27T00:00:00Z",
+       "end": "2026-09-02T23:35:00Z"
+      }
+     }
+    }
+   },
+   "UNITS": {
+    "position": "m",
+    "elevation": "ft"
+   },
+   "RESTRICTED": false,
+   "RESTRICTED_METADATA": false
+  }
+ ],
+ "SUMMARY": {
+  "NUMBER_OF_OBJECTS": 3,
+  "RESPONSE_CODE": 1,
+  "RESPONSE_MESSAGE": "OK",
+  "METADATA_QUERY_TIME": "5.7 ms",
+  "METADATA_PARSE_TIME": "0.6 ms",
+  "TOTAL_METADATA_TIME": "6.3 ms",
+  "TOTAL_TIME": "6.3 ms",
+  "VERSION": "v2.39.4"
+ }
+}

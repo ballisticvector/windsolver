@@ -24,6 +24,10 @@
  *   --elevation  how far a station's published elevation may sit from the 3DEP
  *                ground under its coordinate before it is dropped, in metres
  *                (default 50)
+ *   --roughness  roughness length for the sensor-height correction, in metres
+ *                (default 0.03, short grass)
+ *   --no-height  score the model at its own level instead of moving it to the
+ *                anemometer's height
  *   --out        write the full result as JSON to this path
  *
  * **It costs one HRRR subset per station per hour** — a few KB each, but each
@@ -45,6 +49,15 @@
  * problem and the fix. RAWS through Synoptic sits where the terrain matters and
  * needs a token; this tool takes its observations from an injected source, so
  * pointing it at that network is a new reader and not a new scorer.
+ *
+ * **A RAWS anemometer is 6.1 m up and HRRR's surface wind is at 10 m.** 20 ft
+ * is the NFDRS standard height for a fire-weather station, and Synoptic
+ * publishes the position of every sensor, so this is a measurable difference
+ * rather than an assumption: over short grass (z0 0.03 m) the log law puts 8.5%
+ * of the wind between the two heights, all of it in the direction that makes the
+ * model look too fast. The model wind is brought down to whatever height the station says
+ * before it is scored, and the factor is in the report. An ASOS is at 10 m and
+ * moves by nothing, which is why the airport scores in #28 did not need this.
  *
  * **A station is dropped if its published elevation disagrees with the ground
  * under its published coordinate.** One of the two is then wrong, and the
@@ -178,6 +191,9 @@ async function buildReport(options) {
   const elevationToleranceM = o.elevationToleranceM === undefined ? 50 : o.elevationToleranceM;
   const positionRadiusM = o.positionRadiusM === undefined
     ? derive.DEFAULT_POSITION_RADIUS_M : o.positionRadiusM;
+  const roughnessM = o.roughnessM === undefined
+    ? downscale.DEFAULT_ROUGHNESS_M : o.roughnessM;
+  const useSensorHeight = o.sensorHeight === undefined ? true : !!o.sensorHeight;
 
   // The ruler the observations were written with. A METAR is a whole knot and
   // 10°; a RAWS is a whole mile per hour and 1°. Scoring RAWS against a METAR's
@@ -204,6 +220,20 @@ async function buildReport(options) {
     const samples = [];
     let terrain = null;
 
+    // The model is asked for a level; the station measures at whatever height
+    // its mast is. Where those differ the log law moves the model to the
+    // station rather than the station to the model, because the observation is
+    // the thing being treated as true. Speed only: a log law is a statement
+    // about a neutral profile's magnitude and says nothing about the veering a
+    // real profile does between 6 m and 10 m.
+    let height = {
+      sensorHeightM: typeof station.sensorHeightM === "number" ? station.sensorHeightM : null,
+      fieldHeightAglM: null,
+      roughnessM: roughnessM,
+      factor: 1,
+      applied: false
+    };
+
     for (const validTime of validTimes) {
       let field;
       try {
@@ -225,6 +255,19 @@ async function buildReport(options) {
 
       const fine = downscale.windAt(field, station.lat, station.lon);
       const reference = field.reference;
+
+      if (height.fieldHeightAglM === null) {
+        const fieldHeight = typeof field.heightAglM === "number" ? field.heightAglM : null;
+        const wanted = useSensorHeight ? height.sensorHeightM : null;
+        const factor = fieldHeight !== null && wanted !== null
+          ? downscale.heightFactor(fieldHeight, wanted, roughnessM)
+          : 1;
+        height = Object.assign({}, height, {
+          fieldHeightAglM: fieldHeight,
+          factor: factor,
+          applied: factor !== 1
+        });
+      }
 
       if (!terrain) {
         // The landform the station sits in, measured over a disc rather than
@@ -251,11 +294,13 @@ async function buildReport(options) {
       samples.push({
         timeMs: validTime.getTime(),
         // The downscaled wind at the station, which is what the service answers.
-        fine: fine ? { speedMps: fine.speedMps, fromDeg: fine.fromDeg } : { speedMps: null, fromDeg: null },
+        fine: fine
+          ? { speedMps: fine.speedMps * height.factor, fromDeg: fine.fromDeg }
+          : { speedMps: null, fromDeg: null },
         // The single HRRR wind the whole domain was downscaled from: the
         // baseline this engine has to beat to be worth running.
         model: {
-          speedMps: Math.hypot(reference.east, reference.north),
+          speedMps: Math.hypot(reference.east, reference.north) * height.factor,
           fromDeg: bearingFrom(reference.east, reference.north)
         }
       });
@@ -309,6 +354,7 @@ async function buildReport(options) {
       elevationM: station.elevationM,
       elevation: elevation,
       terrain: terrain,
+      height: Object.assign({}, height, { factor: round(height.factor, 4) }),
       observations: read.counts,
       rejected: read.rejected.length,
       samples: samples.length,
@@ -348,7 +394,8 @@ async function buildReport(options) {
       // and a ridge measured over 500 m are different claims, so the number
       // travels with the report rather than living in someone's memory.
       positionRadiusM: positionRadiusM,
-      positionThresholdM: verify.DEFAULT_POSITION_THRESHOLD_M
+      positionThresholdM: verify.DEFAULT_POSITION_THRESHOLD_M,
+      roughnessM: roughnessM
     },
     source: {
       observations: o.observationSource ||
@@ -405,6 +452,8 @@ async function main() {
     toleranceMs: number(args.tolerance, 10, "tolerance") * 60 * 1000,
   positionRadiusM: number(args.position, derive.DEFAULT_POSITION_RADIUS_M, "position"),
     elevationToleranceM: number(args.elevation, 50, "elevation"),
+    roughnessM: number(args.roughness, downscale.DEFAULT_ROUGHNESS_M, "roughness"),
+    sensorHeight: !args["no-height"],
     endMs: endMs
   });
 
@@ -460,6 +509,39 @@ function fixed(value, places) {
   return value === null || value === undefined ? "—" : value.toFixed(places);
 }
 
+/**
+ * One line about the height the model was moved to, per height in the run.
+ *
+ * Grouped rather than per station because a whole network shares a standard —
+ * every RAWS is at 6.1 m, every ASOS at 10 m — and fifteen identical lines
+ * would bury the one station that is different.
+ */
+function heights(report) {
+  const groups = new Map();
+  for (const s of report.stations) {
+    const h = s.height || {};
+    const key = h.sensorHeightM === null || h.sensorHeightM === undefined
+      ? "unpublished" : String(h.sensorHeightM);
+    if (!groups.has(key)) groups.set(key, { height: h, ids: [] });
+    groups.get(key).ids.push(s.id);
+  }
+
+  const parts = [];
+  for (const group of groups.values()) {
+    const h = group.height;
+    if (h.sensorHeightM === null || h.sensorHeightM === undefined) {
+      parts.push(group.ids.length +
+        " publish no sensor height, scored at the model's own level");
+    } else {
+      parts.push(group.ids.length + " at " + h.sensorHeightM + " m AGL, model moved by x" +
+        fixed(h.factor, 3));
+    }
+  }
+  if (!parts.length) return "measurement height: no stations scored";
+  return "measurement height: " + parts.join("; ") +
+    " (log law, z0 " + report.domain.roughnessM + " m; speed only, no veering)";
+}
+
 function summarise(report) {
   const head = ["candidate".padEnd(14), "obs".padStart(5), "hrs".padStart(5), "spd bias".padStart(9),
     "spd rmse".padStart(9), "dir bias".padStart(9), "dir rmse".padStart(9),
@@ -480,6 +562,7 @@ function summarise(report) {
       "observations' rounding alone",
     "obs is observations scored; hrs is the model hours behind them — a station " +
       "reporting every five minutes contributes several obs to one sample",
+    heights(report),
     ""
   ];
 
