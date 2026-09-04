@@ -33,6 +33,11 @@
  *   --scales     also score the downscaling normalised against fixed physical
  *                scales instead of against each domain's own extremes, as
  *                `slopeDeg,curvature` (default 40,0.13 with a bare --scales)
+ *   --anomaly    also score the downscaling driven by the terrain the model
+ *                could not resolve — the DEM minus a wide DEM smoothed to the
+ *                model's own scale — as a radius in metres (default 3000)
+ *   --anomaly-resolution  metres for the wide read the smoothing runs over
+ *                (default 100)
  *   --out        write the full result as JSON to this path
  *
  * **It costs one HRRR subset per station per hour** — a few KB each, but each
@@ -94,11 +99,22 @@ const cog = require("../cog.js");
 const derive = require("../derive.js");
 const downscale = require("../downscale.js");
 const fieldModule = require("../field.js");
+const geo = require("../geo.js");
 const observationsModule = require("../observations.js");
 const synoptic = require("../synoptic.js");
 const verify = require("../verify.js");
 
 const HOUR_MS = 3600 * 1000;
+
+// Every flag this tool answers to. A misspelling is checked against it rather
+// than ignored: an unknown flag leaves the candidate it was meant to add out of
+// the report, and a report with a row missing reads exactly like a report where
+// that row had nothing to say.
+const FLAGS = [
+  "stations", "source", "end", "hours", "forecast", "radius", "resolution",
+  "tolerance", "position", "elevation", "roughness", "no-height", "ablate",
+  "shelter", "scales", "anomaly", "anomaly-resolution", "out", "json"
+];
 
 function parse(argv) {
   const out = {};
@@ -106,6 +122,12 @@ function parse(argv) {
     const arg = argv[i];
     if (!arg.startsWith("--")) continue;
     const name = arg.slice(2);
+    if (!FLAGS.includes(name)) {
+      throw new Error("unknown option --" + name + "; "
+        + (name.includes("=")
+          ? "a value is a separate word, not --name=value"
+          : "see the header of this file"));
+    }
     const next = argv[i + 1];
     if (next === undefined || next.startsWith("--")) {
       out[name] = true;
@@ -151,6 +173,7 @@ function reading(floor, which) {
  */
 function candidatesFor(opts) {
   const o = opts || {};
+  const anomaly = o.anomaly;
   const list = [
     { key: "model", label: "HRRR alone", short: "hrrr", reference: true },
     { key: "downscaled", label: "downscaled", short: "down", options: {} }
@@ -193,7 +216,98 @@ function candidatesFor(opts) {
         options: { weights: { slope: 0, shelter: 0 } }, scales: o.scales }
     );
   }
+  // The same downscaling over the ground the model does not already have. If
+  // the ridge penalty is a double-count, this is the row where it goes away;
+  // if the penalty survives it, the correction is wrong about ridges for some
+  // other reason and subtracting the model's terrain is not the fix.
+  if (anomaly) {
+    list.push(
+      { key: "anomaly", label: "terrain anomaly", short: "anom", options: {}, anomaly: true },
+      // Slope is the term the subtraction actually moves: a 3 km surface
+      // carries a mountainside and carries almost none of the 500 m curvature,
+      // so the pair says which half of the change did anything.
+      { key: "anomalySlopeOnly", label: "anomaly slope only", short: "anomslope",
+        options: { weights: { curvature: 0, shelter: 0 } }, anomaly: true }
+    );
+    // With the divisor taken from the domain's own extremes, subtracting a
+    // regional surface moves every terrain value and the largest of them
+    // together, so the normalised weight barely changes and the row says
+    // nothing about the hypothesis. Held still against a physical scale, the
+    // subtraction is visible.
+    if (o.scales) {
+      list.push({ key: "anomalyFixed", label: "anomaly, fixed scales", short: "anomfix",
+        options: {}, anomaly: true, scales: o.scales });
+    }
+  }
   return list;
+}
+
+/** The elevation grid a derived domain was built from, in the shape a reader wants. */
+function gridOf(derived) {
+  return {
+    crs: derived.crs,
+    width: derived.width,
+    height: derived.height,
+    transform: derived.transform,
+    bounds: derived.bounds,
+    resolutionM: derived.resolutionM,
+    values: derived.elevation
+  };
+}
+
+/**
+ * The domain re-derived from the landform a coarse model could not resolve.
+ *
+ * A wide, coarse DEM is smoothed with a disc of `radiusM` — that is the ground
+ * a model with cells that size effectively stands on — and subtracted from the
+ * fine domain. The wide read has to reach a full radius beyond the fine box or
+ * the disc does not fit around its edge cells and the anomaly is void there,
+ * which is why the read is a good deal wider than the domain it serves.
+ *
+ * Returns null when the wide ground cannot be read. A failed read is not a flat
+ * anomaly: scoring the station against uncorrected terrain and calling the row
+ * "anomaly" would put a candidate's name on the candidate it is being compared
+ * with.
+ */
+async function anomalyWeightsFor(ground, station, spec) {
+  const wideRadiusMiles = spec.radiusMiles + (spec.radiusM * 1.05) / geo.METERS_PER_MILE;
+  const domain = fieldModule.domainOf({
+    lat: station.lat,
+    lon: station.lon,
+    radiusMiles: wideRadiusMiles
+  });
+  const wide = await ground.get({
+    box: domain.readBox,
+    targetResolutionM: spec.resolutionM,
+    resolutionM: spec.resolutionM
+  });
+
+  const regional = derive.smooth(wide.grid, { radiusM: spec.radiusM });
+  const residual = derive.anomaly(gridOf(spec.derived), regional);
+  if (!residual.definedCount) {
+    throw fail("anomaly-void", "the smoothed wide terrain does not cover this domain");
+  }
+
+  const derived = derive.derive(residual, { curvatureLengthM: spec.curvatureLengthM });
+  return {
+    weights: downscale.terrainWeights(derived, { curvatureLengthM: spec.curvatureLengthM }),
+    fixedWeights: spec.scales
+      ? downscale.terrainWeights(derived, Object.assign(
+        { curvatureLengthM: spec.curvatureLengthM }, spec.scales))
+      : null,
+    derived: derived,
+    regional: regional,
+    wideDataset: wide.dataset,
+    wideResolutionM: spec.resolutionM,
+    radiusM: spec.radiusM,
+    definedFraction: residual.definedCount / (residual.width * residual.height)
+  };
+}
+
+function fail(code, message) {
+  const err = new Error(message);
+  err.code = code;
+  return err;
 }
 
 /** The 3DEP ground under a coordinate, from an already-derived domain. */
@@ -271,8 +385,17 @@ async function buildReport(options) {
     ? downscale.DEFAULT_ROUGHNESS_M : o.roughnessM;
   const useSensorHeight = o.sensorHeight === undefined ? true : !!o.sensorHeight;
   const useShelter = !!o.shelter;
+  const anomaly = o.anomaly || null;
   const candidates = o.candidates || candidatesFor({
-    ablate: o.ablate, shelter: useShelter, scales: o.scales });
+    ablate: o.ablate, shelter: useShelter, scales: o.scales, anomaly: !!anomaly });
+  const wantsAnomaly = candidates.some(function (c) { return c.anomaly; });
+  // The wide, coarse read the smoothing runs over. It is the same terrain cache
+  // the fine domains come from, so a second station in the same valley pays for
+  // it once.
+  const ground = o.ground || (service && service.ground) || null;
+  if (wantsAnomaly && !ground) {
+    throw new Error("an anomaly candidate needs a terrain source to read the wider ground from");
+  }
 
   // The ruler the observations were written with. A METAR is a whole knot and
   // 10°; a RAWS is a whole mile per hour and 1°. Scoring RAWS against a METAR's
@@ -304,6 +427,8 @@ async function buildReport(options) {
     // average and still be multiplying a ridge by 1.3.
     const gains = {};
     let terrain = null;
+    let residual = null;
+    let residualFailed = false;
 
     // The model is asked for a level; the station measures at whatever height
     // its mast is. Where those differ the log law moves the model to the
@@ -377,6 +502,33 @@ async function buildReport(options) {
         terrain.class = verify.classifyTerrain(terrain);
       }
 
+      if (wantsAnomaly && !residual && !residualFailed) {
+        try {
+          residual = await anomalyWeightsFor(ground, station, {
+            derived: field.derived,
+            radiusMiles: radiusMiles,
+            radiusM: anomaly.radiusM,
+            resolutionM: anomaly.resolutionM,
+            curvatureLengthM: field.weights.curvatureLengthM,
+            scales: o.scales || null
+          });
+          terrain.anomalyM = round(elevationAt(residual.derived, station.lat, station.lon), 1);
+          terrain.anomalySlopeDeg = derive.fieldAt(
+            residual.derived, "slopeDeg", station.lat, station.lon);
+          terrain.anomalyRadiusM = residual.radiusM;
+          terrain.anomalyDataset = residual.wideDataset;
+        } catch (err) {
+          // A terrain read that failed is not an anomaly of zero. The station
+          // keeps its other rows and its anomaly rows stay empty, so a gap in
+          // 3DEP cannot be read later as the candidate having nothing to say.
+          residualFailed = true;
+          failures.push({
+            station: id, validTime: validTime.toISOString(), stage: "anomaly",
+            code: err.code || null, error: err.message
+          });
+        }
+      }
+
       // Every candidate is the same domain re-weighted, so the terrain read and
       // the HRRR subset are paid once and the comparison between two rows is
       // one gain and nothing else.
@@ -386,7 +538,14 @@ async function buildReport(options) {
         // curvature, so it is done once per candidate per domain rather than
         // once per hour; the derived domain is the same object all hour.
         let weights = field.weights;
-        if (candidate.scales) {
+        if (candidate.anomaly) {
+          if (!residual) {
+            byCandidate[candidate.key] = { speedMps: null, fromDeg: null };
+            continue;
+          }
+          weights = candidate.scales ? residual.fixedWeights : residual.weights;
+        }
+        if (candidate.scales && !candidate.anomaly) {
           if (!rescaled[candidate.key]) {
             rescaled[candidate.key] = downscale.terrainWeights(field.derived, Object.assign(
               { curvatureLengthM: field.weights.curvatureLengthM }, candidate.scales));
@@ -540,7 +699,12 @@ async function buildReport(options) {
       // Null means every term was divided by the largest value inside the box,
       // which makes the answer partly a fact about the request. Two reports
       // cannot be compared without knowing which of the two this was.
-      fixedScales: o.scales || null
+      fixedScales: o.scales || null,
+      // The scale the anomaly candidates called "the model's own terrain". It
+      // is a choice, not a measurement: HRRR's cells are 3 km and the ground
+      // its dynamics feel is some multiple of that, so a row scored at 3 km and
+      // a row scored at 7.5 km are answers to different questions.
+      anomaly: anomaly
     },
     source: {
       observations: o.observationSource ||
@@ -559,7 +723,8 @@ async function buildReport(options) {
         short: c.short || c.key,
         weights: c.reference ? null : Object.assign({}, downscale.DEFAULT_WEIGHTS,
           (c.options && c.options.weights) || {}),
-        divert: c.reference ? null : !(c.options && c.options.divert === false)
+        divert: c.reference ? null : !(c.options && c.options.divert === false),
+        terrain: c.anomaly ? "anomaly" : "absolute"
       };
     }),
     shelter: useShelter,
@@ -590,6 +755,28 @@ function fixedScales(value) {
     throw new Error("--scales is slopeDeg,curvature, both positive: " + value);
   }
   return { slopeScaleRad: (parts[0] * Math.PI) / 180, curvatureScale: parts[1] };
+}
+
+/**
+ * `--anomaly`, as the radius in metres of the disc that stands for the model's
+ * own terrain, with `--anomaly-resolution` for the wide read under it.
+ *
+ * 3 km by default because that is HRRR's cell, which is the smallest scale it
+ * could possibly resolve and so the most conservative claim about what it has
+ * already applied. A model does not resolve a feature it can only just sample —
+ * four to six cells is the usual figure — so the honest test is a range and not
+ * this number, and the report carries whichever was used.
+ */
+function anomalyOf(args) {
+  if (!args.anomaly) return null;
+  const radiusM = args.anomaly === true ? 3000 : Number(args.anomaly);
+  const resolutionM = args["anomaly-resolution"] === undefined
+    ? 100 : Number(args["anomaly-resolution"]);
+  if (!(radiusM > 0)) throw new Error("--anomaly is a radius in metres: " + args.anomaly);
+  if (!(resolutionM > 0)) {
+    throw new Error("--anomaly-resolution is metres: " + args["anomaly-resolution"]);
+  }
+  return { radiusM: radiusM, resolutionM: resolutionM };
 }
 
 async function main() {
@@ -628,6 +815,7 @@ async function main() {
     ablate: !!args.ablate,
     shelter: !!args.shelter,
     scales: fixedScales(args.scales),
+    anomaly: anomalyOf(args),
     endMs: endMs
   });
 
@@ -859,7 +1047,7 @@ function summarise(report) {
   return out.join("\n");
 }
 
-module.exports = { hoursIn, bearingFrom, buildReport, summarise };
+module.exports = { parse, hoursIn, bearingFrom, buildReport, summarise };
 
 if (require.main === module) {
   main().catch(function (err) {
