@@ -23,6 +23,7 @@ If you are picking this up cold: `downscale.js` is the module in question,
 - [Things that would poison the answer](#things-that-would-poison-the-answer)
 - [Worth exploring, unranked](#worth-exploring-unranked)
 - [What is not known](#what-is-not-known)
+- [Claude's review](#claudes-review) — appended, per the review convention in `AGENTS.md`
 
 ## The question
 
@@ -279,3 +280,201 @@ Ideas that have not been costed and may be bad.
   currently acting as an accidental proxy for something else.
 - What a defensible `confidence` number would be. It is still `null`, and on this
   evidence it should stay `null`.
+
+---
+
+# Claude's review
+
+Added by Claude Code on top of the working note above, per the review convention in
+`AGENTS.md`. Same standard applies: every claim says whether it was measured or reasoned
+about. Nothing above this line was changed — where I disagree with it, I say so here, so
+the original claim and the correction stay side by side.
+
+**Verdict: the measurements are sound, and the note is harder on the downscaling than
+its own data supports.** Two changes to the hypotheses. Numbers 3 and 4 are one
+hypothesis rather than two, and it is about length scale rather than normalisation —
+the code says so. And the diversion row does not say what the note reads off it.
+
+## The headline comes from the one table that cannot see terrain
+
+"No better than raw HRRR overall and clearly worse on ridges" is drawn from
+[Measurement 1](#measurement-1-the-terms-one-at-a-time), which the note then explains is
+a ranking of gains. [Measurement 2](#measurement-2-the-same-scores-with-each-candidates-own-bias-removed)
+is the only table carrying terrain information, and there the downscaling **wins** —
+2.56 against 2.60 vector RMSE, with curvature carrying it. That is weak, in-sample, and
+not validation. It is also not a negative result, and the title reads as one.
+
+The valley result is the strongest evidence in the document and it is buried in
+Measurement 3. HRRR is +2.09 m/s too fast in valleys and +0.30 on ridges, and that
+stratum pattern is itself terrain-shaped: a 3 km model cannot shelter a gulch. The
+downscaling cut valley error 3.80 to 3.46 *while its mean gain was above 1* — it found a
+reduction on the ground that needed one, against the direction of its own bias. Nothing
+in a gain artifact does that.
+
+*Reasoned from the note's own tables. No new run.*
+
+## The three terms are measured at three different length scales
+
+| Term | Measured over | Where |
+| --- | --- | --- |
+| curvature | **500 m** | `scaleCurvature`, `DEFAULT_CURVATURE_LENGTH_M` |
+| slope | **~60 m** | Horn 3 x 3 in `derive.js`, at the 30 m `--resolution` default |
+| diversion | **~60 m** | the same `os` and the same `aspectDeg` |
+
+`downscale.js` argues this case itself, for curvature alone:
+
+> at 1 m or 10 m spacing a 3 x 3 curvature measures the boulder, not the ridge
+
+That argument applies verbatim to slope and aspect and was never applied to them. It
+also predicts the ablation table: the one term measured at a terrain scale is the one
+with skill, and the two measured at a boulder scale are the two without.
+
+So "slope only reproduces raw HRRR to three figures" is not inertness, it is
+cancellation. The along-wind cosine at a 60 m baseline is a zero-mean perturbation
+across stations and hours — it adds noise and no bias, which is exactly a gain of
+x1.007 with the error columns unmoved.
+
+**This changes what hypothesis 3 implies.** Swapping the domain extreme for
+`slopeScaleRad` while the term is still measured over 60 m makes it *larger* without
+making it more meaningful, and the fixed-scale run would then look worse than the broken
+one and be read as evidence against the term. Scale and normalisation have to move
+together.
+
+*Measured: the three length scales, read from `downscale.js`, `derive.js` and the
+`--resolution` default in `tools/score-wind.js`. Reasoned, not measured: that the band
+mismatch is why those two terms score as they do.*
+
+## The diversion row does not say what the note reads off it
+
+The note reads the direction column as 70.5 degrees with the turning off and 70.8 with
+it on. The table does not say that. Read against the candidate definitions in
+`tools/score-wind.js`:
+
+| candidate | divert | speed weights | dir rmse |
+| --- | --- | --- | --- |
+| HRRR alone | — | — | 70.5 |
+| no diverting | **off** | all on | 70.5 |
+| diverting only | **on** | all zero | **70.5** |
+| slope only | on | slope | 70.8 |
+| curvature only | on | curvature | 70.8 |
+| downscaled | on | all on | 70.8 |
+
+`divertOnly` sets every gain to zero but leaves `divert` at its default of true, and the
+diverting angle does not depend on the gains at all. So the row that isolates the
+turning has the turning **on**, and it costs nothing. 70.8 appears exactly when
+diversion *and* a non-zero speed weight are both active.
+
+The likely mechanism is `windAt`: it interpolates east/north bilinearly, so once
+neighbouring cells carry different speeds the sampled bearing is pulled toward the
+faster one. Diversion alone rotates neighbouring cells almost equally and survives the
+interpolation; diversion plus a speed weighting does not.
+
+Whichever mechanism it is, **"diversion has no measured support and a small measured
+cost" is not supported by these rows** — the row that isolates it shows no cost. Do not
+retire the term on this evidence. If it is to be judged, it needs a direction score
+taken at the cell rather than through a speed-weighted interpolation.
+
+*Measured: the candidate definitions and the gain-independence of the diverting angle,
+read from the code. Reasoned, not measured: the interpolation mechanism.*
+
+## Hypothesis 1 is right, and the anomaly variant is the correct fix
+
+Curvature at 500 m cannot tell a 500 m ridge from a 5 km one — both have positive crest
+curvature, so the term fires on ground HRRR has already resolved, and
+[Measurement 4](#measurement-4-the-ground-the-model-thinks-it-is-blowing-over) puts a
+number on how much: 41 m of ridge. On a DEM-minus-model-orography surface, a broad ridge
+the model already carries has near-zero anomaly and takes near-zero correction, which is
+the wanted behaviour. `downscale.terrainOffset` already computes the scalar form of that
+difference, so the machinery is half-built.
+
+## Roughness cannot carry hypothesis 2
+
+The log law as `downscale.heightFactor` applies it, HRRR's 10 m wind brought to a 6.1 m
+sensor:
+
+| z0 | surface | 10 m to 6.1 m | residual bias |
+| --- | --- | --- | --- |
+| 0.03 m | mown grass (current default) | x0.915 | x1.54 |
+| 0.10 m | rough pasture | x0.893 | x1.51 |
+| 0.50 m | tall brush, scattered trees | x0.835 | x1.41 |
+| 1.00 m | open forest | x0.785 | x1.33 |
+| 3.00 m | city centre / tall forest | x0.589 | x1.00 |
+
+Closing the x1.688 bias by roughness alone needs **z0 around 3 m**, which is not a RAWS
+site in Colorado. Moving from mown grass to brush buys 8 points of a 69-point gap. A
+per-station roughness is worth having for its own sake, but it is not the explanation
+for the bias, and hypothesis 2 should not sit second on the strength of it. The residual
+is model bias, sensor exposure, or averaging — RAWS publish 10-minute means against a
+near-instantaneous grid value.
+
+*Measured: the log law, at the heights and roughness the harness actually uses. The z0
+labels are conventional values, not a land-cover lookup.*
+
+## The missing cell, and it is nearly free
+
+The report carries `debiased` fitted over `allPairs`, and `byTerrain` scored raw. It
+does not carry **debiased by stratum**, which is the cell that decides whether the ridge
+penalty is real physics or the same gain artifact that Measurement 2 showed contaminates
+everything else. Both primitives already exist and `stratify` passes its options
+straight to `score`:
+
+```js
+const scale = verify.debiasScale(allPairs, opts);   // fitted on ALL pairs
+verify.stratify(allPairs, classOf, Object.assign({}, opts, { scale: scale }));
+```
+
+**Fit the scale globally, not per stratum.** A per-stratum scale would divide out the
+very stratum differences the table exists to show. The global scale asks the right
+question: once each candidate's overall gain is granted, does it put the wind in the
+right place on a ridge?
+
+This should run before the anomaly variant. If the ridge penalty does not survive
+debiasing, hypothesis 1 is fixing something that is not broken.
+
+## The consumer drops the honesty fields
+
+Cross-repo, and relevant to the note's closing line that `confidence` should stay
+`null`. In `ballisticvector`, `windProfile.terrainResolutionM`, `windSourceResolutionM`
+and `confidence` are accepted in the payload and **read by nothing** — not
+`buildWindField`, not the solver's result, not the SPA. `AGENTS.md` there says these are
+the engine being honest about what it knows and that BallisticVector displays them. The
+contract says carried; the code drops them.
+
+Worth closing regardless of how this note resolves, because on present evidence the
+honest output is a band and not a point estimate. Three solves at the field's bounds
+gives a shooter something to plan a follow-up around, instead of false precision resting
+on one state and one day.
+
+*Measured: grepped `lib/`, `public/` and `tests/` in `ballisticvector`.*
+
+## Suggested order
+
+1. **Debiased by stratum.** Hours of work, no new data, and it gates the next item.
+2. **The terrain-anomaly variant**, as the note proposes. Still the right fix for the
+   double counting, assuming step 1 leaves a ridge penalty to fix.
+3. **Band-limit slope and aspect to the curvature's 500 m** and re-ablate, moving scale
+   and normalisation together. If slope shows nothing at the right scale, that is when
+   to retire it.
+4. **Wire the AWS HRRR archive** (`noaa-hrrr-bdp-pds`). Everything here is one state and
+   one day, and NOMADS' two-day window makes every repeat a race. This is the enabler
+   for every "does it repeat" question in the note and should start in parallel.
+5. **Per-station roughness**, downgraded from second to fifth, and bounded at about 8
+   points of the bias.
+
+Diversion is deliberately not on this list. It should not be touched until it has been
+scored in a way that isolates it.
+
+## What I did not verify
+
+- **I ran none of the scoring.** Every number quoted from Measurements 1-4 is the note's;
+  I re-read them against the code but did not reproduce a single station-hour.
+- The roughness table is arithmetic on the log law, not a measurement of any station's
+  actual roughness. It bounds what roughness *could* explain; it does not measure what
+  it *does* explain.
+- The band-mismatch explanation for slope and diversion is a reading of the code against
+  the note's table. It predicts the observed pattern, which is not the same as having
+  been tested — item 3 above is the test.
+- The `windAt` interpolation mechanism for the 70.5/70.8 split is reasoned. The pattern
+  it explains is measured; the explanation is not.
+- No claim here about 3DEP coverage, HRRR skill or WindNinja. I read neither the
+  ingestion path nor `verify.js` beyond `score`, `stratify` and `debiasScale`.
