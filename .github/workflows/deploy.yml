@@ -68,6 +68,8 @@ jobs:
           tar tzf windsolver.tgz | grep -qx './tools/serve.js'
           tar tzf windsolver.tgz | grep -qx './public/map.js'
           tar tzf windsolver.tgz | grep -qx './package-lock.json'
+          # The unit the box is checked against travels with the release.
+          tar tzf windsolver.tgz | grep -qx './deploy/windsolver.service'
 
       - name: Copy it to the droplet
         uses: appleboy/scp-action@v0.1.7
@@ -90,6 +92,23 @@ jobs:
           script: |
             set -e
             cd /home/deploy/windsolver
+
+            # Before anything is unpacked, so a refusal leaves the box exactly
+            # as it was rather than on new code under an old process.
+            echo "==> Checking the unit on the box against the one in the repo..."
+            tar xzOf /tmp/windsolver.tgz ./deploy/windsolver.service > /tmp/windsolver.service.repo
+            if ! diff -u /etc/systemd/system/windsolver.service /tmp/windsolver.service.repo; then
+              echo ""
+              echo "The unit on the droplet is not the one in this release." >&2
+              echo "Left is the box, right is the repo. Install it by hand:" >&2
+              echo "  sudo install -m 0644 deploy/windsolver.service /etc/systemd/system/" >&2
+              echo "  sudo systemctl daemon-reload" >&2
+              echo "" >&2
+              echo "Deliberately not done here: a deploy that can write a unit" >&2
+              echo "and restart it is a deploy key that is root on this box." >&2
+              exit 1
+            fi
+            echo "    identical."
 
             echo "==> Unpacking..."
             tar xzf /tmp/windsolver.tgz

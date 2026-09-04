@@ -32,6 +32,29 @@ There is no staging tier and therefore no staged-commit gate like
 BallisticVector's. The button is the whole ceremony. Add one before there are
 users who would notice a bad minute.
 
+### The unit is in the repository; installing it is not the deploy's job
+
+`deploy/windsolver.service` is the source of truth, and the first thing the
+deploy does on the box is `diff` it against `/etc/systemd/system/windsolver.service`
+and refuse the release if they differ — before unpacking, so a refusal leaves
+the droplet exactly as it was. `tests/unit-file.test.js` grades the file itself:
+hardening that closes `~/.cache` has to name a cache directory systemd creates,
+`ExecStart` has to name a file this repository ships, and so on. Both of those
+exist because the configuration that broke the listing cache lived in one place,
+had no history, and could not be reviewed.
+
+Installing a change is deliberately a person's job:
+
+```
+sudo install -m 0644 deploy/windsolver.service /etc/systemd/system/
+sudo systemctl daemon-reload && sudo systemctl restart windsolver
+```
+
+A deploy that could write a unit and restart it could write any `ExecStart` it
+liked — that is root on the droplet wearing a service account's name, handed to
+anyone who can read one GitHub secret. Refusing to release is the safe half of
+the loop: drift becomes impossible to miss without widening what the key can do.
+
 ### What the repository needs before it can run
 
 Three secrets on the `production` environment, the same values BallisticVector
@@ -101,7 +124,9 @@ because the listing query is snapped to 0.05°, and a repeat is 0.06 s.
 
 If a future unit loses the cache directory the service now says so once, on
 stderr, naming the directory and the errno — a silent cache is the failure that
-cost a deployment here.
+cost a deployment here. It is also the reason the unit is in the repository and
+graded by a test: one stderr line nobody is watching for is a poor last line of
+defence against a config nobody can review.
 
 Losing the directory costs one slow solve per box, not correctness: an entry
 that cannot be read is a miss, and failures were never written in the first
