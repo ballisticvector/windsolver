@@ -370,6 +370,11 @@ describe("readTerrain", () => {
     expect(err.code).toBe("no-terrain");
     expect(err.considered.every((c) => c.error)).toBe(true);
     expect(err.message).toMatch(/503/);
+    // Each dataset's reason is quoted inside this one sentence, so a product
+    // search carrying its own query string puts 300 characters of URL in front
+    // of a person. The listing URL belongs on the error, not in the prose.
+    expect(err.message).not.toMatch(/https?:\/\//);
+    expect(err.considered[0].error).not.toMatch(/https?:\/\//);
   });
 
   test("refuses a box no product covers, and says what it considered", async () => {

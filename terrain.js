@@ -190,7 +190,10 @@ function jsonReaderFor(opts) {
       signal: AbortSignal.timeout(o.timeoutMs === undefined ? DEFAULT_TIMEOUT_MS : o.timeoutMs)
     });
     if (!res.ok) {
-      throw fail("http-error", "The National Map answered " + res.status + " for " + url, { status: res.status });
+      // The URL rides in the detail rather than the sentence: this message is
+      // quoted verbatim inside a no-terrain refusal, and a 300-character
+      // product-search query in red text is the JSON dump wearing a hat.
+      throw fail("http-error", "The National Map answered " + res.status, { status: res.status, url: url });
     }
     return res.json();
   };
