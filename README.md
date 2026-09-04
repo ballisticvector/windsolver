@@ -691,6 +691,22 @@ and `WINDSOLVER_MAX_QUEUE` do the same. It binds `127.0.0.1` by default, so it i
 reverse proxy unless someone deliberately says otherwise, and logs one JSON object per
 line.
 
+### Keeping named places warm
+
+```bash
+npm run serve -- --prewarm "40.0150,-105.2705;36.77,-104.49,2"
+```
+
+`WINDSOLVER_PREWARM` does the same: semicolon-separated `lat,lon[,radiusMiles]`. After it
+starts listening the service sends itself the `/v1/field` request a browser would send,
+one place at a time so a visitor never queues behind the warming, and repeats every 30
+minutes — a new HRRR cycle gives every cached field a new valid time, so a place warmed
+once is cold again within the hour. A place that times out is retried in a minute rather
+than in half an hour, because the solve is still running and lands in the cache.
+
+**It does not make a cold solve faster**; it moves who waits for one, and only for the
+places named. `docs/deploy.md` covers what windsolver.com runs.
+
 ## Measured, not assumed
 
 Run live against a 2-mile display domain at **36.77, −104.49** — the coordinate from the
