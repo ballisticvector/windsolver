@@ -177,13 +177,15 @@ function summarise(body) {
   lines.push(body.source || "WindSolver");
   if (body.validTime) lines.push("Valid " + body.validTime);
 
+  // Two decimals: a resampled spacing is 7.996805191693154 m in the payload,
+  // and the digits past the centimetre are arithmetic rather than information.
   const resolutions = [];
   if (Number.isFinite(terrain.resolutionM)) {
-    resolutions.push("terrain " + terrain.resolutionM + " m" +
+    resolutions.push("terrain " + round(terrain.resolutionM, 2) + " m" +
       (terrain.dataset ? " (3DEP " + terrain.dataset + ")" : ""));
   }
   if (Number.isFinite(reference.resolutionM)) {
-    resolutions.push("weather model " + reference.resolutionM + " m");
+    resolutions.push("weather model " + round(reference.resolutionM, 2) + " m");
   }
   if (resolutions.length) lines.push(resolutions.join(", "));
 

@@ -377,6 +377,24 @@ describe("readTerrain", () => {
       selection: { dataset: null, tiles: [], considered: [{ datasetId: "1m", coverage: 0 }] }
     })).rejects.toMatchObject({ code: "no-terrain" });
   });
+
+  test("what it considered reads as a sentence, with the list still on the error", async () => {
+    // The refusal reaches a person — it is the text a UI shows — so the message
+    // is prose and the machine-readable list rides alongside it rather than
+    // being stringified into the middle of it.
+    const considered = [
+      { datasetId: "1m", coverage: 0.12 },
+      { datasetId: "1/3 arc-second", error: "The National Map answered 503" }
+    ];
+    const err = await terrain.readTerrain(box, {
+      selection: { dataset: null, tiles: [], considered: considered }
+    }).catch((e) => e);
+
+    expect(err.message).toContain("1m 12% covered");
+    expect(err.message).toContain("1/3 arc-second (The National Map answered 503)");
+    expect(err.message).not.toContain("{");
+    expect(err.considered).toEqual(considered);
+  });
 });
 
 describe("elevationAt", () => {

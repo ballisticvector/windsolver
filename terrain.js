@@ -197,6 +197,25 @@ function jsonReaderFor(opts) {
 }
 
 /**
+ * The products that were tried, as a sentence.
+ *
+ * The structured list still rides on the error for anything that wants to
+ * reason about it; this is the half a person reads, and a refusal that reads
+ * as a JSON dump is one nobody finishes reading. A dataset that threw is named
+ * with its reason, because "The National Map is down" and "there is no lidar
+ * here" are different answers.
+ */
+function describeConsidered(considered) {
+  if (!Array.isArray(considered) || !considered.length) return "nothing";
+  return considered.map(function (c) {
+    const name = c.datasetId || "unnamed";
+    if (c.error) return name + " (" + c.error + ")";
+    if (Number.isFinite(c.coverage)) return name + " " + Math.round(c.coverage * 100) + "% covered";
+    return name;
+  }).join(", ");
+}
+
+/**
  * Discover the best product over a box and read a window of it.
  *
  * Terrain arrives as a mosaic — a domain that straddles two 3DEP tiles needs
@@ -212,7 +231,7 @@ async function readTerrain(box, opts) {
     throw fail(
       "no-terrain",
       "no 3DEP product covers this box well enough to use " +
-      "(best was " + JSON.stringify(found.considered) + ")",
+      "(considered " + describeConsidered(found.considered) + ")",
       { considered: found.considered }
     );
   }

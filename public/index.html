@@ -52,9 +52,14 @@
   a { color:#58a6ff; }
   .leaflet-container { background:#0b0e12; }
   @media (max-width: 860px) {
-    #app { flex-direction:column-reverse; }
+    /* The page scrolls here rather than filling the viewport. A column-reverse
+       column overflows at its *top*, which no scrollbar reaches: the answer
+       ends up above the fold with no way down to it. */
+    html, body { height:auto; }
+    #app { flex-direction:column; height:auto; min-height:100%; }
     #map { height:55vh; flex:none; }
-    aside { flex:none; height:auto; border-left:none; border-top:1px solid var(--line); }
+    aside { flex:none; height:auto; overflow:visible;
+            border-left:none; border-top:1px solid var(--line); }
   }
 </style>
 </head>

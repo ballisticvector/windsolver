@@ -165,6 +165,15 @@ describe("summarise", () => {
     expect(s.modelled).toBe(true);
   });
 
+  test("a resampled resolution is rounded to the centimetre, not printed raw", () => {
+    // The payload carries 7.996805191693154 m; the digits past the centimetre
+    // are arithmetic, and on screen they read as false precision.
+    const body = answer({ terrain: { dataset: "1m", resolutionM: 7.996805191693154 } });
+    const joined = lib.summarise(body).lines.join(" | ");
+    expect(joined).toContain("terrain 8 m (3DEP 1m)");
+    expect(joined).not.toContain("7.99680");
+  });
+
   test("says the ground it covers and how much of it is missing", () => {
     const joined = lib.summarise(answer()).lines.join(" | ");
     expect(joined).toContain("Ground 1601 to 1700 m");
@@ -228,5 +237,49 @@ describe("fieldQuery", () => {
     const q = lib.fieldQuery({ lat: 40.01500000001, lon: -105.27049999999, radiusMiles: 2 });
     expect(q).toContain("lat=40.015");
     expect(q).toContain("lon=-105.2705");
+  });
+});
+
+describe("the parts of the page a unit test cannot run", () => {
+  // map.js is Leaflet, a canvas and the DOM, so these are read off the source.
+  // Both guard a failure that was measured in a browser and that looks entirely
+  // correct in the file: neither shows up as an error anywhere.
+  const fs = require("fs");
+  const path = require("path");
+  const js = fs.readFileSync(path.join(__dirname, "..", "public", "map.js"), "utf8");
+  const clearField = /function clearField\(\) \{([\s\S]*?)\n {2}\}/.exec(js);
+
+  test("clearing the field abandons the answer still on its way", () => {
+    // Otherwise a solve that lands after the pin has moved paints a field for
+    // the old box under a heading that says "At the pin".
+    expect(clearField).not.toBeNull();
+    expect(clearField[1]).toContain("inFlight.abort()");
+  });
+
+  test("a Leaflet that never loaded is said out loud, not left blank", () => {
+    expect(js).toMatch(/typeof L === "undefined"/);
+  });
+});
+
+describe("the page's narrow layout", () => {
+  const fs = require("fs");
+  const path = require("path");
+  const html = fs.readFileSync(path.join(__dirname, "..", "public", "index.html"), "utf8");
+  const narrow = /@media \(max-width: 860px\) \{([\s\S]*?)\n {2}\}/.exec(html);
+
+  test("has a rule for narrow screens at all", () => {
+    expect(narrow).not.toBeNull();
+  });
+
+  test("never stacks the column in reverse", () => {
+    // A column-reverse flex column overflows at its top, where no scrollbar
+    // reaches: on a phone the controls and the answer went above the fold with
+    // no way back down to them. Measured in Chrome at 500 CSS px.
+    expect(narrow[1]).not.toMatch(/flex-direction:\s*column-reverse/);
+  });
+
+  test("lets the page grow past the viewport instead of pinning it", () => {
+    expect(narrow[1]).toMatch(/html, body \{ height:auto; \}/);
+    expect(narrow[1]).toMatch(/#app \{[^}]*height:auto/);
   });
 });

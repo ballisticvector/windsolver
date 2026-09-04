@@ -32,6 +32,21 @@
 
   const START = { lat: 40.0150, lon: -105.2705, zoom: 13 };
 
+  // Leaflet comes from a CDN, and a page whose map silently fails to draw reads
+  // as a broken service rather than as a blocked script. There is no local copy
+  // to fall back to, so the least this can do is say which one it is.
+  if (typeof L === "undefined") {
+    const status = $("status");
+    if (status) {
+      status.className = "error";
+      status.textContent = "The map library did not load — unpkg.com is unreachable from " +
+        "this browser. The service itself is unaffected: /v1/field still answers.";
+    }
+    const solve = $("solve");
+    if (solve) solve.disabled = true;
+    return;
+  }
+
   const map = L.map("map", { zoomControl: true, attributionControl: true })
     .setView([START.lat, START.lon], START.zoom);
 
@@ -216,7 +231,7 @@
 
     fieldLayer.setField(body);
 
-    if (domainOutline) map.removeLayer(domainOutline);
+    clearDomain();
     domainOutline = L.rectangle(
       [[body.domain.south, body.domain.west], [body.domain.north, body.domain.east]],
       { color: "#58a6ff", weight: 1, fill: false, dashArray: "4 4", interactive: false }
@@ -224,6 +239,28 @@
   }
 
   let inFlight = null;
+
+  function clearDomain() {
+    if (!domainOutline) return;
+    map.removeLayer(domainOutline);
+    domainOutline = null;
+  }
+
+  /**
+   * Everything drawn for one answer, taken off the map together — including
+   * the answer still on its way.
+   *
+   * A solve that lands after the pin has moved paints a field for the box it
+   * was asked about, under a heading that says "At the pin", and the pin is
+   * somewhere else. Clearing the canvas cannot help with that: the request has
+   * to be abandoned, not just the pixels.
+   */
+  function clearField() {
+    if (inFlight) inFlight.abort();
+    fieldLayer.clear();
+    clearDomain();
+    $("result").hidden = true;
+  }
 
   async function solve() {
     const lat = Number($("lat").value);
@@ -268,8 +305,7 @@
       // The service's own words, kept. A refusal it took the trouble to name is
       // more useful to whoever is looking at this than anything invented here.
       const explained = lib.explain(body, response.status);
-      fieldLayer.clear();
-      $("result").hidden = true;
+      clearField();
       return setStatus(explained.text, "error");
     }
 
@@ -284,8 +320,7 @@
     if (opts && opts.pan) map.panTo([lat, lon]);
     // The old field belongs to the old pin. Leaving it on screen under a moved
     // marker is a wind attributed to ground it was never solved over.
-    fieldLayer.clear();
-    $("result").hidden = true;
+    clearField();
     renderApiExample(lat, lon, Number($("radius").value));
     setStatus("Pin moved. Solve to read the wind here.", "");
   }
@@ -311,8 +346,7 @@
 
   for (const id of ["radius", "cols"]) {
     $(id).addEventListener("change", function () {
-      fieldLayer.clear();
-      $("result").hidden = true;
+      clearField();
       renderApiExample(Number($("lat").value), Number($("lon").value), Number($("radius").value));
       setStatus("Box changed. Solve to read it.", "");
     });
