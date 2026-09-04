@@ -216,11 +216,24 @@
 
     fieldLayer.setField(body);
 
-    if (domainOutline) map.removeLayer(domainOutline);
+    clearDomain();
     domainOutline = L.rectangle(
       [[body.domain.south, body.domain.west], [body.domain.north, body.domain.east]],
       { color: "#58a6ff", weight: 1, fill: false, dashArray: "4 4", interactive: false }
     ).addTo(map);
+  }
+
+  function clearDomain() {
+    if (!domainOutline) return;
+    map.removeLayer(domainOutline);
+    domainOutline = null;
+  }
+
+  /** Everything drawn for one answer, taken off the map together. */
+  function clearField() {
+    fieldLayer.clear();
+    clearDomain();
+    $("result").hidden = true;
   }
 
   let inFlight = null;
@@ -268,8 +281,7 @@
       // The service's own words, kept. A refusal it took the trouble to name is
       // more useful to whoever is looking at this than anything invented here.
       const explained = lib.explain(body, response.status);
-      fieldLayer.clear();
-      $("result").hidden = true;
+      clearField();
       return setStatus(explained.text, "error");
     }
 
@@ -284,8 +296,7 @@
     if (opts && opts.pan) map.panTo([lat, lon]);
     // The old field belongs to the old pin. Leaving it on screen under a moved
     // marker is a wind attributed to ground it was never solved over.
-    fieldLayer.clear();
-    $("result").hidden = true;
+    clearField();
     renderApiExample(lat, lon, Number($("radius").value));
     setStatus("Pin moved. Solve to read the wind here.", "");
   }
@@ -311,8 +322,7 @@
 
   for (const id of ["radius", "cols"]) {
     $(id).addEventListener("change", function () {
-      fieldLayer.clear();
-      $("result").hidden = true;
+      clearField();
       renderApiExample(Number($("lat").value), Number($("lon").value), Number($("radius").value));
       setStatus("Box changed. Solve to read it.", "");
     });
