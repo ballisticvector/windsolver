@@ -14,6 +14,8 @@
  *   cog-deflate      the same pixels, Deflate instead of LZW
  *   cog-utm13-1m     128 x 96, EPSG:26913, 1 m lidar, same area
  *   cog-nodata-hole  cog-lzw-p3 with a rectangle punched out
+ *   cog-lzw-p2       128 x 96, EPSG:26913, 1 m lidar cut from a project that
+ *                    writes float32 with horizontal differencing
  *
  * `<name>.gdal.json` is the metadata and `<name>.gdal.f32` is every level's
  * pixels as little-endian float32, full resolution first. The header fixtures
@@ -122,7 +124,8 @@ describe("the real 3DEP headers USGS serves", () => {
   const cases = [
     ["usgs-13-n40w106-header.bin", 4269, 10812, 6, 10.29, 512, 3, -999999],
     ["usgs-1m-x47y443-header.bin", 26913, 10012, 6, 1, 512, 3, -999999],
-    ["usgs-1m-x47y443-2013-header.bin", 26913, 10012, 6, 1, 256, 1, -3.4028234e38]
+    ["usgs-1m-x47y443-2013-header.bin", 26913, 10012, 6, 1, 256, 1, -3.4028234e38],
+    ["usgs-1m-x39y437-p2-header.bin", 26913, 10012, 6, 1, 512, 2, -999999]
   ];
 
   test.each(cases)(
@@ -174,7 +177,7 @@ describe("the real 3DEP headers USGS serves", () => {
 });
 
 describe("decoding, against GDAL", () => {
-  test.each([["cog-lzw-p3"], ["cog-utm13-1m"], ["cog-nodata-hole"]])(
+  test.each([["cog-lzw-p3"], ["cog-utm13-1m"], ["cog-nodata-hole"], ["cog-lzw-p2"]])(
     "%s decodes bit for bit, at every level",
     (name) => {
       const { header, buffer } = openWhole(name);
@@ -232,6 +235,54 @@ describe("decoding, against GDAL", () => {
     const tile = cog.decodeTile(bytes, level, { littleEndian: true, nodata: asWritten });
     expect(tile[0]).toBeNaN();
     expect(tile[1]).toBeCloseTo(2189.5, 3);
+  });
+
+  test("horizontal differencing on float32 is a real 3DEP conversion, not a hypothetical", () => {
+    // CO_SanLuisJuanMiguel_2020_D20 writes Float32 with predictor 2, which is a
+    // fourth shape after the three in the survey. cog-lzw-p2 is a window out of
+    // it and is graded pixel for pixel above; this only pins the combination, so
+    // that a reader narrowed back to "predictor 2 means integers" fails here
+    // with the reason rather than in a terrain read.
+    const { header } = openWhole("cog-lzw-p2");
+    expect(header.levels[0].predictor).toBe(2);
+    expect(header.levels[0].bitsPerSample).toBe(32);
+    expect(header.levels[0].sampleFormat).toBe(3);
+  });
+
+  test("a wide sample is accumulated whole, not byte by byte", () => {
+    // Two pixels: 1.0, then a difference whose low bytes carry. The carry is
+    // what separates the two readings — accumulated per byte it is lost, and
+    // the pixel that comes out is still a plausible elevation.
+    const level = {
+      tileWidth: 2, tileHeight: 1, samplesPerPixel: 1, bitsPerSample: 32,
+      compression: 1, predictor: 2
+    };
+    const bytes = Buffer.alloc(8);
+    bytes.writeUInt32LE(0x3f800000, 0);
+    bytes.writeUInt32LE(0x0080017f, 4);
+
+    const tile = cog.decodeTile(bytes, level, { littleEndian: true, nodata: -999999 });
+    const want = Buffer.alloc(4);
+    want.writeUInt32LE(0x4000017f, 0);
+    expect(tile[0]).toBe(1);
+    expect(tile[1]).toBe(want.readFloatLE(0));
+  });
+
+  test("the accumulator wraps at the sample width instead of growing", () => {
+    // libtiff adds into an unsigned 32-bit register, so a sum past 2^32 wraps.
+    // Letting it grow in a JavaScript number writes a different pixel.
+    const level = {
+      tileWidth: 2, tileHeight: 1, samplesPerPixel: 1, bitsPerSample: 32,
+      compression: 1, predictor: 2
+    };
+    const bytes = Buffer.alloc(8);
+    bytes.writeUInt32LE(0xf0000000, 0);
+    bytes.writeUInt32LE(0x20000001, 4);
+
+    const tile = cog.decodeTile(bytes, level, { littleEndian: true, nodata: -999999 });
+    const want = Buffer.alloc(4);
+    want.writeUInt32LE(0x10000001, 0);
+    expect(tile[1]).toBe(want.readFloatLE(0));
   });
 
   test("refuses a compression it has no fixture for, rather than approximating it", () => {

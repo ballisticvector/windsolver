@@ -799,6 +799,15 @@ file is legal too — none of these 30 had one, but it costs one extra range req
 find and `cog.js` handles it, because a reader that assumes otherwise fetches a whole
 tile without saying so.
 
+**A fourth conversion is not in the table at all**, which is the other half of the same
+point: CO_SanLuisJuanMiguel_2020_D20 writes float32 with *horizontal* differencing,
+predictor 2, and none of the 30 sampled tiles did. Horizontal differencing is a byte-wise
+operation on 8-bit imagery and a whole-sample one on anything wider — libtiff accumulates
+a 32-bit sample as an unsigned integer regardless of the sample format, wrapping at 2^32
+rather than adding as floats — so a reader that treats it as bytes decodes 8-bit files
+correctly and turns every float raster into noise. Sampling 30 files says what is common,
+not what exists.
+
 The design document's other argument stands regardless: 1 m terrain does not imply a
 1 m computational mesh. Keep the source for display, resample to 10–20 m for the solve.
 
