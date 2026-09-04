@@ -115,6 +115,17 @@ describe("the production unit — what it is allowed to reach", () => {
     expect(env.HOST).toBe("127.0.0.1");
   });
 
+  test("it carries no API key, because a key in a repository is a published key", () => {
+    // The one setting the tracked unit deliberately does not hold. The deploy's
+    // drift check is blind to this line for the same reason, so nothing here
+    // forces a secret into git to keep the release green.
+    expect(env.WINDSOLVER_API_KEYS).toBeUndefined();
+    expect(text).toMatch(/WINDSOLVER_API_KEYS/); // documented, as a comment
+    for (const line of text.split("\n")) {
+      expect(line.trim().startsWith("Environment=WINDSOLVER_API_KEYS")).toBe(false);
+    }
+  });
+
   test("the places kept warm parse as places", () => {
     // A typo here is not an error; prewarm skips what it cannot read and the
     // demo is cold with nothing in the log to say why.

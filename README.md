@@ -941,9 +941,18 @@ BallisticVector calls it, and windsolver.com points at a parking page. Today BV 
 builds a wind call in the browser and has `profile.js` validate it, which is the same
 contract and none of the field.
 
-Nor is the service hardened for a public URL: **there is no authentication, no rate limit
-per caller and no request log beyond stdout.** The concurrency gate bounds what the
-process will attempt, which is not the same as bounding what one caller may ask for.
+Nor is the service fully hardened for a public URL. `/v1/` takes a shared API key —
+`WINDSOLVER_API_KEYS=name:secret,…` in the environment, `Authorization: Bearer <key>` or
+`X-API-Key` on the request, off entirely when no key is configured — but **there is no
+per-key quota, no issuance beyond editing the unit, and no request log beyond stdout.**
+The rate limit is per IP at the edge and the concurrency gate bounds what the process
+will attempt, neither of which is a bound on what one named caller may ask for.
+
+And a key cannot protect the map page's own calls, because the page runs in a stranger's
+browser and any key in it is in view-source. The page is let through on
+`Sec-Fetch-Site: same-origin`, which a browser sets and page script cannot — **a door,
+not a wall**, since `curl` can send it too. `WINDSOLVER_PAGE_NEEDS_KEY=1` shuts it, and
+shuts the page with it. See `docs/deploy.md`.
 
 A cold `/v1/field` over a 1-mile box is **~4 s**, measured; the warm path is the field
 cache's. No load test has been run, and a cache hit rate over a real day still needs

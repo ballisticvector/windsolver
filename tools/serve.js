@@ -11,7 +11,9 @@
  *   PORT, HOST, WINDSOLVER_ORIGINS (comma-separated), WINDSOLVER_TIMEOUT_MS,
  *   WINDSOLVER_MAX_CONCURRENT, WINDSOLVER_MAX_QUEUE, WINDSOLVER_STATIC_DIR,
  *   WINDSOLVER_PREWARM (lat,lon[,radiusMiles] entries separated by ;),
- *   WINDSOLVER_PREWARM_INTERVAL_MS
+ *   WINDSOLVER_PREWARM_INTERVAL_MS,
+ *   WINDSOLVER_API_KEYS (name:secret pairs; empty means no authentication),
+ *   WINDSOLVER_PAGE_NEEDS_KEY (set to close /v1/ to the map page as well)
  *
  * The map page in `public/` is served by default, so one process is the whole
  * product and a deploy is one copy. `--no-static` turns it off for a box that
@@ -28,6 +30,7 @@ const nodePath = require("path");
 const http = require("http");
 
 const server = require("../server.js");
+const auth = require("../auth.js");
 const prewarm = require("../prewarm.js");
 
 const BUNDLED_PAGE = nodePath.join(__dirname, "..", "public");
@@ -49,6 +52,10 @@ function args(argv) {
   return out;
 }
 
+function truthy(value) {
+  return value !== undefined && value !== "" && !/^(0|no|off|false)$/i.test(String(value));
+}
+
 function num(value, fallback) {
   const n = Number(value);
   return Number.isFinite(n) ? n : fallback;
@@ -64,7 +71,28 @@ const staticDir = a["no-static"] || process.env.WINDSOLVER_STATIC_DIR === ""
   ? null
   : (typeof a.static === "string" ? a.static : process.env.WINDSOLVER_STATIC_DIR || BUNDLED_PAGE);
 
+// Refuse to start on a key list that does not parse, rather than starting open
+// while an operator believes the service is closed. The message names the
+// problem and never the secret.
+let keys;
+try {
+  keys = auth.parseKeys(process.env.WINDSOLVER_API_KEYS);
+} catch (err) {
+  process.stderr.write(JSON.stringify({
+    t: new Date().toISOString(),
+    level: "error",
+    message: "WINDSOLVER_API_KEYS: " + err.message
+  }) + "\n");
+  process.exit(1);
+}
+
+const gatekeeper = auth.createAuth({
+  keys: keys,
+  allowPage: !truthy(process.env.WINDSOLVER_PAGE_NEEDS_KEY)
+});
+
 const options = {
+  auth: gatekeeper,
   origins: origins,
   staticDir: staticDir,
   timeoutMs: num(a.timeout, num(process.env.WINDSOLVER_TIMEOUT_MS, server.DEFAULT_TIMEOUT_MS)),
@@ -88,6 +116,10 @@ srv.listen(port, host, function () {
     port: port,
     origins: origins,
     staticDir: staticDir,
+    // Names, never secrets. This line is the one place an operator can see
+    // whether the service came up open or closed.
+    apiKeys: gatekeeper.enabled ? gatekeeper.names : "none — /v1/ is open",
+    pageNeedsKey: !gatekeeper.allowPage,
     timeoutMs: options.timeoutMs,
     maxConcurrent: options.maxConcurrent,
     maxQueue: options.maxQueue,
@@ -104,7 +136,12 @@ srv.listen(port, host, function () {
       log: options.log,
       fetchPath: function (path) {
         return new Promise(function (resolve, reject) {
-          const req = http.get({ host: host, port: port, path: path }, function (res) {
+          // The prewarm is a caller like any other, so once keys are on it
+          // needs one: the first configured key, which is on this box already.
+          // Without this the demo goes cold the moment the service is closed,
+          // and the log says 401 rather than saying why.
+          const headers = keys.length ? { authorization: "Bearer " + keys[0].secret } : {};
+          const req = http.get({ host: host, port: port, path: path, headers: headers }, function (res) {
             res.resume();
             res.on("end", function () { resolve(res.statusCode); });
           });
