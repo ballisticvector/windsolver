@@ -113,7 +113,14 @@ function buildUrl(path, params, token) {
   return url.toString();
 }
 
-/** Station metadata for a set of ids, or for a whole network in a state. */
+/**
+ * Station metadata for a set of ids, or for a whole network in a state.
+ *
+ * `sensorvars=1` is not optional here: without it the response carries no
+ * sensor positions, and the height an anemometer stands at is the difference
+ * between comparing like with like and charging a model 8.5% of the wind for a
+ * mast that is 3.9 m shorter than the level it was asked for.
+ */
 function metadataUrl(query, token) {
   const q = query || {};
   return buildUrl("/stations/metadata", {
@@ -121,7 +128,8 @@ function metadataUrl(query, token) {
     state: q.state,
     network: q.network,
     status: q.status,
-    bbox: Array.isArray(q.bbox) ? q.bbox.join(",") : q.bbox
+    bbox: Array.isArray(q.bbox) ? q.bbox.join(",") : q.bbox,
+    sensorvars: 1
   }, token);
 }
 
@@ -219,6 +227,26 @@ function metresFrom(value, unit, where) {
   }
 }
 
+/**
+ * How far above the ground the anemometer whose series is read stands.
+ *
+ * `wind_speed_1` and not whichever sensor sorts first: a timeseries is read
+ * from `wind_speed_set_1`, and a station with a second anemometer at another
+ * height has a second set that nothing here looks at. Naming a height that
+ * belongs to a series nobody scored would be worse than having none.
+ *
+ * A station that does not publish a position gets `null` rather than 10 m. The
+ * default is the mistake this function exists to stop.
+ */
+function sensorHeightOf(station, units, id) {
+  const vars = station && typeof station.SENSOR_VARIABLES === "object"
+    ? station.SENSOR_VARIABLES : null;
+  const speed = vars && typeof vars.wind_speed === "object" ? vars.wind_speed : null;
+  const sensor = speed && typeof speed.wind_speed_1 === "object" ? speed.wind_speed_1 : null;
+  if (!sensor || sensor.position === undefined || sensor.position === null) return null;
+  return metresFrom(sensor.position, units.position, id + " wind sensor position");
+}
+
 function numberOf(value, where) {
   const n = typeof value === "number" ? value : Number(value);
   if (!isFinite(n)) throw fail("bad-station", where + " is not a number: " + JSON.stringify(value));
@@ -250,6 +278,7 @@ function parseStations(json) {
       name: typeof s.NAME === "string" ? s.NAME : null,
       lat: lat,
       lon: lon,
+      sensorHeightM: sensorHeightOf(s, units, id),
       elevationM: metresFrom(s.ELEVATION, units.elevation, id + " elevation"),
       demElevationM: metresFrom(s.ELEV_DEM, units.elevation, id + " DEM elevation"),
       network: s.MNET_ID === undefined ? null : Number(s.MNET_ID),

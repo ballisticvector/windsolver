@@ -200,7 +200,13 @@ function parseStation(json) {
     name: typeof props.name === "string" ? props.name : null,
     lat: lat,
     lon: lon,
-    elevationM: props.elevation ? elevationMetres(props.elevation) : null
+    elevationM: props.elevation ? elevationMetres(props.elevation) : null,
+    // api.weather.gov does not publish the height of the anemometer. An ASOS
+    // is 10 m by federal standard and so happens to match HRRR's surface
+    // level, but that is knowledge about the network rather than something
+    // this station said, and writing 10 here would make the two
+    // indistinguishable.
+    sensorHeightM: null
   };
 }
 

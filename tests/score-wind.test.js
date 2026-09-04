@@ -18,6 +18,7 @@ const fs = require("fs");
 const path = require("path");
 
 const cog = require("../cog.js");
+const downscale = require("../downscale.js");
 const proj = require("../proj.js");
 const scoreWind = require("../tools/score-wind.js");
 const observationsModule = require("../observations.js");
@@ -129,6 +130,92 @@ function stubService(fieldFor) {
     }
   };
 }
+
+describe("the height the wind was measured at", () => {
+  // A RAWS anemometer stands 6.1 m up — 20 ft, the NFDRS standard — and HRRR's
+  // surface wind is at 10 m. Scoring one against the other without moving
+  // either charges the model for a difference the log law already explains,
+  // and it does it in one direction: the model always looks too fast.
+  function atHeight(heightM) {
+    return stubSource({
+      station: async function () {
+        return Object.assign({}, station, { sensorHeightM: heightM });
+      }
+    });
+  }
+
+  test("the model wind is brought down to the anemometer before it is scored", async () => {
+    const service = stubService(function () {
+      return stubField({ speedMps: 5, fromDeg: 270, referenceMps: 5 });
+    });
+    const report = await scoreWind.buildReport({
+      source: atHeight(6.1), service: service, stations: ["KBDU"], hours: 4, endMs: END
+    });
+
+    const expected = downscale.heightFactor(10, 6.1, downscale.DEFAULT_ROUGHNESS_M);
+    const s = report.stations[0];
+    expect(expected).toBeLessThan(1);
+    expect(s.height.sensorHeightM).toBeCloseTo(6.1, 6);
+    expect(s.height.fieldHeightAglM).toBe(10);
+    expect(s.height.factor).toBeCloseTo(expected, 4);
+    // 5 m/s of model wind at 10 m is 4.5-ish at the anemometer, so the bias
+    // against the same observations moves by exactly that much.
+    const flat = await scoreWind.buildReport({
+      source: atHeight(10), service: stubService(function () {
+        return stubField({ speedMps: 5, fromDeg: 270, referenceMps: 5 });
+      }), stations: ["KBDU"], hours: 4, endMs: END
+    });
+    expect(s.model.speed.modelledMeanMps)
+      .toBeCloseTo(flat.stations[0].model.speed.modelledMeanMps * expected, 3);
+    expect(s.downscaled.speed.modelledMeanMps)
+      .toBeCloseTo(flat.stations[0].downscaled.speed.modelledMeanMps * expected, 3);
+  });
+
+  test("a sensor at the model's own height changes nothing", async () => {
+    const report = await scoreWind.buildReport({
+      source: atHeight(10),
+      service: stubService(function () {
+        return stubField({ speedMps: 5, fromDeg: 270, referenceMps: 5 });
+      }),
+      stations: ["KBDU"], hours: 4, endMs: END
+    });
+    expect(report.stations[0].height.factor).toBe(1);
+  });
+
+  test("a station that does not publish a height is scored unmoved, and says so", async () => {
+    // Guessing 10 m for a station that never said would hide the mismatch
+    // again, and the whole point of the field is that it is visible.
+    const report = await scoreWind.buildReport({
+      source: stubSource(),
+      service: stubService(function () {
+        return stubField({ speedMps: 5, fromDeg: 270, referenceMps: 5 });
+      }),
+      stations: ["KBDU"], hours: 4, endMs: END
+    });
+    expect(report.stations[0].height.sensorHeightM).toBeNull();
+    expect(report.stations[0].height.factor).toBe(1);
+    expect(scoreWind.summarise(report)).toMatch(/height/i);
+  });
+
+  test("the direction is left alone, because a log law says nothing about veering", async () => {
+    const report = await scoreWind.buildReport({
+      source: atHeight(6.1),
+      service: stubService(function () {
+        return stubField({ speedMps: 5, fromDeg: 270, referenceMps: 5 });
+      }),
+      stations: ["KBDU"], hours: 4, endMs: END
+    });
+    const flat = await scoreWind.buildReport({
+      source: atHeight(10),
+      service: stubService(function () {
+        return stubField({ speedMps: 5, fromDeg: 270, referenceMps: 5 });
+      }),
+      stations: ["KBDU"], hours: 4, endMs: END
+    });
+    expect(report.stations[0].model.direction.biasDeg)
+      .toBeCloseTo(flat.stations[0].model.direction.biasDeg, 6);
+  });
+});
 
 describe("what the run asks for", () => {
   test("it asks for whole hours ending where it was told, oldest first", async () => {

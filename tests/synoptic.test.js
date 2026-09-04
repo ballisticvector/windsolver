@@ -20,6 +20,9 @@
  *   curl -o tests/fixtures/synoptic-timeseries-flagged.json \
  *     "https://api.synopticdata.com/v2/stations/timeseries?stid=CENU1&start=202608281200&end=202608290000&vars=wind_speed,wind_direction&obtimezone=UTC&units=metric&qc=on&qc_checks=all&qc_flags=on&qc_remove_data=off&token=$SYNOPTIC_API_TOKEN"
  *
+ *   curl -o tests/fixtures/synoptic-metadata-sensorvars.json \
+ *     "https://api.synopticdata.com/v2/stations/metadata?stids=CPTC2,STOC2,KBDU&sensorvars=1&complete=1&token=$SYNOPTIC_API_TOKEN"
+ *
  * `synoptic-invalid-token.json`, `synoptic-no-stations.json` and
  * `synoptic-history-refused.json` are the three refusals, captured the same
  * way: a deliberately wrong token, the station id `ZZZZ9`, and a window older
@@ -43,6 +46,7 @@ const FLAGGED = fixture("synoptic-timeseries-flagged");
 const INVALID_TOKEN = fixture("synoptic-invalid-token");
 const NO_STATIONS = fixture("synoptic-no-stations");
 const HISTORY_REFUSED = fixture("synoptic-history-refused");
+const SENSORVARS = fixture("synoptic-metadata-sensorvars");
 
 /** A one-station timeseries with whatever this test wants to say about it. */
 function series(observations, extra) {
@@ -94,6 +98,11 @@ describe("the URLs", () => {
     const url = new URL(synoptic.timeseriesUrl({ stids: ["BLPC2"] }, "t"));
     expect(url.searchParams.get("qc")).toBe("on");
     expect(url.searchParams.get("qc_remove_data")).toBe("off");
+  });
+
+  test("metadata asks for the sensor positions, because the height is not a constant", () => {
+    const url = new URL(synoptic.metadataUrl({ stids: ["CPTC2"] }, "t"));
+    expect(url.searchParams.get("sensorvars")).toBe("1");
   });
 
   test("a whole network in a state is one query", () => {
@@ -171,6 +180,59 @@ describe("station metadata", () => {
       }]
     };
     expect(() => synoptic.parseStations(json)).toThrow(/cubits/);
+  });
+
+  test("a RAWS anemometer is 6.1 m up and an airport's is 10 m, and the metadata says so", () => {
+    // 6.1 m is 20 ft, the NFDRS standard height for a fire-weather station, and
+    // it is the whole reason a RAWS reads slower than HRRR's 10 m wind. KBDU is
+    // in the same fixture as the control: the airports scored in #28 were at
+    // the model's own height, so that comparison was fair and this one was not.
+    const stations = synoptic.parseStations(SENSORVARS);
+    const byId = new Map(stations.map(function (s) { return [s.id, s]; }));
+    expect(byId.get("CPTC2").sensorHeightM).toBeCloseTo(6.1, 6);
+    expect(byId.get("STOC2").sensorHeightM).toBeCloseTo(6.1, 6);
+    expect(byId.get("KBDU").sensorHeightM).toBeCloseTo(10, 6);
+  });
+
+  test("the height is the one belonging to the series that is read, sensor 1", () => {
+    // `wind_speed_set_1` in a timeseries is `wind_speed_1` here. A station with
+    // a second anemometer at another height has a second set, which nothing
+    // reads, so taking its position would describe wind nobody scored.
+    const json = {
+      SUMMARY: { RESPONSE_CODE: 1 },
+      STATION: [{
+        STID: "TEST1", LATITUDE: "39.5", LONGITUDE: "-106.2", ELEVATION: "3000",
+        UNITS: { position: "m", elevation: "ft" },
+        SENSOR_VARIABLES: {
+          wind_speed: {
+            wind_speed_1: { position: "6.1" },
+            wind_speed_2: { position: "30.0" }
+          }
+        }
+      }]
+    };
+    expect(synoptic.parseStations(json)[0].sensorHeightM).toBeCloseTo(6.1, 6);
+  });
+
+  test("a station that does not publish a sensor position says null rather than 10", () => {
+    // The metadata fixture without `sensorvars=1` has no positions at all, and
+    // a default of 10 m would silently reinstate the mismatch this exists to
+    // find.
+    for (const station of synoptic.parseStations(METADATA)) {
+      expect(station.sensorHeightM).toBeNull();
+    }
+  });
+
+  test("a sensor position in a unit this reader does not know throws", () => {
+    const json = {
+      SUMMARY: { RESPONSE_CODE: 1 },
+      STATION: [{
+        STID: "TEST1", LATITUDE: "39.5", LONGITUDE: "-106.2", ELEVATION: "3000",
+        UNITS: { position: "fathoms", elevation: "ft" },
+        SENSOR_VARIABLES: { wind_speed: { wind_speed_1: { position: "6.1" } } }
+      }]
+    };
+    expect(() => synoptic.parseStations(json)).toThrow(/fathoms/);
   });
 
   test("a coordinate that is not on Earth is refused", () => {
