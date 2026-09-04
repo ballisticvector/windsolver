@@ -1,0 +1,49 @@
+# The unit that runs windsolver.com.
+#
+# This file is the source of truth; /etc/systemd/system/windsolver.service on
+# the droplet is a copy of it. The deploy refuses to release when the two
+# differ, because the alternative is a configuration that exists in exactly one
+# place, has no history, and cannot be reviewed — which is how the listing
+# cache spent its first deployment writing nothing at all.
+#
+# Installing a change is deliberately not something the deploy can do. The
+# deploy key would then be able to write any ExecStart it liked and restart it,
+# which is root on the box wearing a service account's name. So:
+#
+#   sudo install -m 0644 deploy/windsolver.service /etc/systemd/system/
+#   sudo systemctl daemon-reload && sudo systemctl restart windsolver
+#
+# by a person, once, and the deploy tells you when it is needed.
+
+[Unit]
+Description=WindSolver HTTP service
+After=network.target
+
+[Service]
+Type=simple
+User=deploy
+WorkingDirectory=/home/deploy/windsolver
+Environment=NODE_ENV=production
+Environment=PORT=8099
+Environment=HOST=127.0.0.1
+Environment=WINDSOLVER_ORIGINS=https://windsolver.com,https://www.windsolver.com,https://ballisticvector.com
+# Keep the places we demo from warm, so the first visitor is not the one who
+# pays for a cold 3DEP + HRRR solve. See prewarm.js.
+Environment=WINDSOLVER_PREWARM=40.0150,-105.2705
+# ProtectHome=read-only below makes ~/.cache unwritable, and a failed cache
+# write is a silent miss. systemd creates and owns this one.
+CacheDirectory=windsolver
+Environment=WINDSOLVER_CACHE_DIR=/var/cache/windsolver
+ExecStart=/usr/bin/node /home/deploy/windsolver/tools/serve.js
+Restart=always
+RestartSec=5
+
+# The service reaches USGS and NOMADS and holds several hundred MB of cached
+# terrain; nothing on the droplet should be writable by it.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=read-only
+
+[Install]
+WantedBy=multi-user.target
