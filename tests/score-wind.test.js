@@ -46,15 +46,26 @@ function stubSource(overrides) {
  *
  * Not a real `field.assemble` result — the composition is graded in
  * `tests/field.test.js`, and the fixture volume there is over ground 40 miles
- * from KBDU. What this has to be is sample-able by `downscale.windAt` and
- * `derive.fieldAt` at the station's own coordinate.
+ * from KBDU. What this has to be is sample-able by `downscale.windAt`,
+ * `derive.fieldAt` and `derive.positionIndexAt` at the station's own
+ * coordinate.
+ *
+ * `ground.reliefM` is how far the station stands above the ground 600 m away:
+ * plus for a hill, minus for a hollow. It moves the *surroundings* and leaves
+ * the station's own elevation at `elevationM`, so the landform and the
+ * published-elevation check stay independent of each other. The 500 m position
+ * index comes out at about 0.56 of it, because the disc the index averages
+ * over lies inside the slope.
+ * The domain is 1,200 m across for the same reason — a 500 m disc has to fit
+ * inside it, and an 8 x 8 patch of 30 m pixels is a quarter of the landform
+ * the classification is about.
  */
 function stubField(wind, ground) {
   const g = ground || {};
   const crs = proj.crsFromEpsg(26913);
   const mid = proj.fromGeographic(crs, station.lat, station.lon);
-  const width = 8;
-  const height = 8;
+  const width = 40;
+  const height = 40;
   const spacing = 30;
   const geometry = {
     crs: crs,
@@ -83,13 +94,27 @@ function stubField(wind, ground) {
     offset: { meanM: 12.5 },
     terrain: { dataset: "3DEP 1m", resolutionM: 1 },
     derived: Object.assign({}, geometry, {
-      elevation: new Float32Array(width * height).fill(g.elevationM === undefined ? 1610 : g.elevationM),
+      elevation: cone(geometry, mid, g.elevationM === undefined ? 1610 : g.elevationM, g.reliefM || 0),
       fields: {
         slopeDeg: new Float32Array(width * height).fill(g.slopeDeg === undefined ? 1.2 : g.slopeDeg),
         tpi: new Float32Array(width * height).fill(g.tpi === undefined ? 0.3 : g.tpi)
       }
     })
   });
+}
+
+/** Ground falling `reliefM` over the 600 m around the station, row-major. */
+function cone(geometry, apex, baseM, reliefM) {
+  const out = new Float32Array(geometry.width * geometry.height);
+  for (let row = 0; row < geometry.height; row++) {
+    for (let col = 0; col < geometry.width; col++) {
+      const x = geometry.transform.originX + (col + 0.5) * geometry.transform.scaleX;
+      const y = geometry.transform.originY + (row + 0.5) * geometry.transform.scaleY;
+      const r = Math.hypot(x - apex.x, y - apex.y);
+      out[row * geometry.width + col] = baseM - reliefM * Math.min(1, r / 600);
+    }
+  }
+  return out;
 }
 
 function stubService(fieldFor) {
@@ -172,7 +197,7 @@ describe("what the run scores", () => {
 
   test("the station's own terrain is read where the station is, and classified", async () => {
     const service = stubService(function () {
-      return stubField({ speedMps: 4, fromDeg: 270, referenceMps: 5 }, { tpi: -14, slopeDeg: 22 });
+      return stubField({ speedMps: 4, fromDeg: 270, referenceMps: 5 }, { reliefM: -60, slopeDeg: 22 });
     });
     const report = await scoreWind.buildReport({
       source: stubSource(), service: service, stations: ["KBDU"], hours: 2, endMs: END
@@ -180,10 +205,68 @@ describe("what the run scores", () => {
 
     const terrain = report.stations[0].terrain;
     expect(terrain.class).toBe("valley");
+    expect(terrain.positionIndexM).toBeLessThan(-15);
+    expect(terrain.positionRadiusM).toBe(500);
+    // The same ground read the old way: a hollow 60 m deep and 600 m across is
+    // half a metre of it, which is why the 3 x 3 field cannot classify a
+    // landform and why this report carries both numbers.
+    expect(Math.abs(terrain.tpi)).toBeLessThan(1);
     expect(terrain.slopeDeg).toBeCloseTo(22, 6);
-    expect(terrain.demElevationM).toBeCloseTo(1610, 6);
+    // Within a couple of metres of the station's own pixel: the coordinate is
+    // not on a pixel centre, so the sample is interpolated across the hollow's
+    // rim rather than read off the middle of it.
+    expect(terrain.demElevationM).toBeCloseTo(1610, -1);
     expect(Object.keys(report.byTerrain)).toEqual(["valley"]);
-    expect(report.byTerrain.valley.n).toBe(report.overall.downscaled.n);
+    expect(report.byTerrain.valley.downscaled.n).toBe(report.overall.downscaled.n);
+  });
+
+  test("a class carries the model it started from as well as the downscaling", async () => {
+    // "6.2° on slopes" is not a claim about this engine. "6.2° where the model
+    // alone was 20.1°" is, and it needs the same pairs split the same way on
+    // both sides.
+    const service = stubService(function () {
+      return stubField({ speedMps: 4, fromDeg: 250, referenceMps: 6 }, { reliefM: 60, slopeDeg: 22 });
+    });
+    const report = await scoreWind.buildReport({
+      source: stubSource(), service: service, stations: ["KBDU"], hours: 2, endMs: END
+    });
+
+    expect(report.byTerrain.ridge.model.n).toBe(report.byTerrain.ridge.downscaled.n);
+    expect(report.byTerrain.ridge.model.speed.biasMps)
+      .not.toBeCloseTo(report.byTerrain.ridge.downscaled.speed.biasMps, 6);
+  });
+
+  test("a station whose elevation disagrees with the ground under it is dropped, and named", async () => {
+    // KBDU is published at 1,611 m. Terrain 250 m below its own coordinate
+    // means the coordinate is somewhere else, and the class, the pairing and
+    // the score would all be about that somewhere else.
+    const service = stubService(function () {
+      return stubField({ speedMps: 4, fromDeg: 270, referenceMps: 5 }, { elevationM: 1360 });
+    });
+    const report = await scoreWind.buildReport({
+      source: stubSource(), service: service, stations: ["KBDU"], hours: 2, endMs: END
+    });
+
+    expect(report.stations).toEqual([]);
+    expect(report.overall.downscaled.n).toBe(0);
+    expect(report.droppedStations.length).toBe(1);
+    expect(report.droppedStations[0].code).toBe("elevation-disagrees");
+    expect(report.droppedStations[0].differenceM).toBeCloseTo(251.8, 1);
+    expect(scoreWind.summarise(report)).toContain("out by 251.8 m");
+  });
+
+  test("the tolerance is a choice, and a station inside it is scored with the check recorded", async () => {
+    const service = stubService(function () {
+      return stubField({ speedMps: 4, fromDeg: 270, referenceMps: 5 }, { elevationM: 1360 });
+    });
+    const report = await scoreWind.buildReport({
+      source: stubSource(), service: service, stations: ["KBDU"], hours: 2,
+      endMs: END, elevationToleranceM: 300
+    });
+
+    expect(report.droppedStations).toEqual([]);
+    expect(report.stations[0].elevation.ok).toBe(true);
+    expect(report.elevationToleranceM).toBe(300);
   });
 
   test("the score carries its floor, so an error cannot be quoted without one", async () => {
@@ -250,6 +333,23 @@ describe("what the run scores", () => {
     expect(report.stations[0].unmatched).toBeGreaterThan(100);
     expect(report.stations[0].paired + report.stations[0].unmatched)
       .toBe(read.records.length);
+  });
+
+  // A RAWS station transmits once an hour on a minute of its own — Keyser Ridge
+  // at :27, Rampart Range at :35 — so a tolerance tuned to METAR's :53 drops the
+  // whole station and the report used to show that as an empty row.
+  test("a station the tolerance excluded says how far its nearest hour was", async () => {
+    const service = stubService(function () {
+      return stubField({ speedMps: 4, fromDeg: 270, referenceMps: 5 });
+    });
+    const report = await scoreWind.buildReport({
+      source: stubSource(), service: service, stations: ["KBDU"], hours: 2, endMs: END,
+      toleranceMs: 60 * 1000
+    });
+    const station = report.stations[0];
+    expect(station.nearestUnmatchedMinutes).toBeGreaterThan(1);
+    expect(scoreWind.summarise(report))
+      .toMatch(/nearest model hour [\d.]+ minutes away; --tolerance \d+ or more would score it/);
   });
 });
 
