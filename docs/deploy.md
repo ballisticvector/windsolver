@@ -78,6 +78,23 @@ then. `prewarm.js` has the reasoning.
 visitor to a timer, and only for the places that are named. The first request
 over ground nobody listed is still a cold one.
 
+## Where the product listing is cached
+
+The National Map's product search — the 29 s that is not data — is kept on disk
+across restarts. By default that is `~/.cache/windsolver/tnm` for the user the
+unit runs as, which is the deploy user's home on this box. Point it somewhere
+persistent explicitly if the unit ever gains `ProtectHome=` or runs as a user
+with no home:
+
+```
+Environment=WINDSOLVER_CACHE_DIR=/var/lib/windsolver
+```
+
+Losing the directory costs one slow solve per box, not correctness: an entry
+that cannot be read is a miss, and failures were never written in the first
+place. Deleting it is the way to pick up a project that has just been re-flown
+sooner than the 14-day expiry.
+
 ## What is not here
 
 - **No authentication and no per-caller quota.** The edge limits above are all

@@ -23,6 +23,33 @@ const geo = require("./geo");
 
 const TNM_PRODUCTS_URL = "https://tnmaccess.nationalmap.gov/api/v1/products";
 
+/**
+ * The grid the listing query is snapped out onto, in degrees.
+ *
+ * The listing is the expensive question — 29 s measured, and 504 for minutes at
+ * a time — and it is asked with a bbox, so two pins a hundred metres apart ask
+ * two different questions and share nothing. Snapping the *query* onto a grid
+ * makes them one question with one answer, which is what gives the disk cache
+ * in `listing.js` anything to hit.
+ *
+ * 0.05° is about 5.5 km north-south: small enough that the answer is still a
+ * handful of tiles, large enough that a neighbourhood shares an entry. Widening
+ * the query cannot widen the *answer*, because coverage is still measured
+ * against the box that was asked for and tiles are still filtered to it — a
+ * bigger query returns a superset, never a different set.
+ */
+const DEFAULT_LISTING_SNAP_DEG = 0.05;
+
+/**
+ * Pages of listing fetched before a query is called truncated.
+ *
+ * TNM caps `max` at 100 per page. Four pages is 400 footprints over a snapped
+ * box, which is far past the ~30 vintages the busiest ground returns; a query
+ * still full at that point is not a listing worth paging through.
+ */
+const DEFAULT_MAX_PAGES = 4;
+const DEFAULT_PAGE_SIZE = 100;
+
 function fail(code, message, extra) {
   const err = new Error(message);
   err.code = code;
@@ -61,6 +88,22 @@ function coarserThan(id) {
     .map(function (d) { return d.id; });
 }
 
+function sameBox(a, b) {
+  return a.west === b.west && a.south === b.south && a.east === b.east && a.north === b.north;
+}
+
+/**
+ * The box a listing is actually asked for: `box`, snapped outward.
+ *
+ * `snapDeg: 0` asks for the box exactly, which is what a caller wants when it
+ * is looking for what TNM says about this domain rather than this neighbourhood.
+ */
+function listingBox(box, snapDeg) {
+  const step = snapDeg === undefined ? DEFAULT_LISTING_SNAP_DEG : snapDeg;
+  if (!step) return box;
+  return geo.snapBoxOut(box, step);
+}
+
 /** Query URL for one dataset over one box. */
 function productsUrl(datasetTag, box, opts) {
   const o = opts || {};
@@ -97,6 +140,10 @@ function toBox(bb) {
 function parseProducts(json) {
   const items = (json && json.items) || [];
   const out = [];
+  // How many the page really held, which is not `out.length` once footprintless
+  // items are dropped and not `total` either. It is the only number that says
+  // whether the page was full, and therefore whether there is another one.
+  const returned = items.length;
   for (let i = 0; i < items.length; i++) {
     const it = items[i];
     const box = toBox(it.boundingBox);
@@ -111,7 +158,7 @@ function parseProducts(json) {
       sizeBytes: num(it.sizeInBytes)
     });
   }
-  return { total: num(json && json.total) || out.length, items: out };
+  return { total: num(json && json.total) || out.length, returned: returned, items: out };
 }
 
 /**
@@ -135,6 +182,42 @@ function newestPerFootprint(items) {
     if (a > b2) byKey.set(key, item);
   }
   return Array.from(byKey.values());
+}
+
+/**
+ * Every footprint TNM lists for one dataset over one box, paging until the
+ * pages stop coming back full.
+ *
+ * The old single request with `max=50` was a silent truncation: a box over
+ * ground that has been flown five times returns more than fifty footprints,
+ * the fifty-first onwards were never seen, and the coverage computed from the
+ * rest came back *low* — reported as "1m 40% covered" and fell through to a
+ * coarser product, or to no terrain at all. A wrong answer with no symptom.
+ *
+ * `truncated` says the last page was still full, so the list is known to be
+ * incomplete and any coverage figure from it is a lower bound. It is reported
+ * rather than thrown, because a lower bound that already clears the threshold
+ * is a perfectly good answer.
+ */
+async function fetchListing(datasetTag, box, fetchJson, opts) {
+  const o = opts || {};
+  const pageSize = o.max === undefined ? DEFAULT_PAGE_SIZE : o.max;
+  const maxPages = o.maxPages === undefined ? DEFAULT_MAX_PAGES : o.maxPages;
+  const items = [];
+  let pages = 0;
+
+  for (let page = 0; page < maxPages; page++) {
+    const parsed = parseProducts(await fetchJson(productsUrl(datasetTag, box, {
+      max: pageSize,
+      offset: page * pageSize,
+      prodFormats: o.prodFormats
+    })));
+    pages++;
+    for (const item of parsed.items) items.push(item);
+    if (parsed.returned < pageSize) return { items: items, truncated: false, pages: pages };
+  }
+
+  return { items: items, truncated: true, pages: pages };
 }
 
 /**
@@ -173,7 +256,8 @@ function totalBytes(tiles) {
  * and whatever fills the gap is a step in the terrain, and a step in the
  * terrain is a wind feature the mountain does not have.
  *
- * `availability` is [{ datasetId, items }]; returns null when nothing covers it.
+ * `availability` is [{ datasetId, items, error, truncated }]; returns null when
+ * nothing covers it.
  */
 function selectDataset(availability, box, opts) {
   const o = opts || {};
@@ -198,7 +282,15 @@ function selectDataset(availability, box, opts) {
       datasetId: dataset.id,
       resolutionM: dataset.resolutionM,
       coverage: coverage,
-      tileCount: tiles.length
+      tileCount: tiles.length,
+      // A truncated listing makes coverage a lower bound, so falling short of
+      // it is "we did not see the whole list" rather than "the tiles are not
+      // there". Passing it as an error keeps those two apart in the refusal;
+      // clearing it once coverage is met keeps it out of a successful answer,
+      // where the unseen remainder cannot change the outcome.
+      error: entry.truncated && coverage < minCoverage
+        ? "the listing was longer than we read, so this figure is a lower bound"
+        : null
     });
     if (coverage >= minCoverage) {
       return {
@@ -233,20 +325,28 @@ async function discover(box, fetchJson, opts) {
     throw fail("no-fetch", "discovery needs a fetchJson(url) to ask The National Map with");
   }
 
+  const query = listingBox(box, o.listingSnapDeg);
+
   for (const dataset of DATASETS) {
     if (o.only && o.only.indexOf(dataset.id) === -1) continue;
-    let parsed = { total: 0, items: [] };
+    let listing;
     try {
-      parsed = parseProducts(await fetchJson(productsUrl(dataset.tag, box, { max: o.max })));
+      listing = await fetchListing(dataset.tag, query, fetchJson, o);
+      // A full last page means the widened query, not the domain, is what
+      // filled it. Ask for the box itself before calling the list truncated:
+      // the narrower question is the one the answer is actually needed for.
+      if (listing.truncated && !sameBox(query, box)) {
+        listing = await fetchListing(dataset.tag, box, fetchJson, o);
+      }
     } catch (err) {
       // One dataset failing must not fail discovery: a coarser product is a
       // usable answer, and no terrain at all is not.
       availability.push({ datasetId: dataset.id, items: [], error: String(err && err.message || err) });
       continue;
     }
-    availability.push({ datasetId: dataset.id, items: parsed.items });
+    availability.push({ datasetId: dataset.id, items: listing.items, truncated: listing.truncated });
 
-    const tiles = newestPerFootprint(parsed.items).filter(function (t) { return geo.intersects(t.box, box); });
+    const tiles = newestPerFootprint(listing.items).filter(function (t) { return geo.intersects(t.box, box); });
     if (geo.coverageFraction(box, tiles.map(function (t) { return t.box; }), o.coverageSteps) >= minCoverage) break;
   }
 
@@ -255,7 +355,12 @@ async function discover(box, fetchJson, opts) {
 
 module.exports = {
   TNM_PRODUCTS_URL,
+  DEFAULT_LISTING_SNAP_DEG,
+  DEFAULT_MAX_PAGES,
+  DEFAULT_PAGE_SIZE,
   DATASETS,
+  listingBox,
+  fetchListing,
   datasetById,
   coarserThan,
   productsUrl,

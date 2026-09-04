@@ -12,6 +12,7 @@
 "use strict";
 
 const fs = require("fs");
+const os = require("os");
 const path = require("path");
 
 const cog = require("../cog.js");
@@ -19,6 +20,17 @@ const dem = require("../dem.js");
 const terrain = require("../terrain.js");
 
 const FIXTURES = path.join(__dirname, "fixtures");
+
+/**
+ * A listing cache directory of this test's own.
+ *
+ * The default is a real directory under the user's home, and a suite that
+ * writes there both leaks between runs and answers its own questions from a
+ * previous one.
+ */
+function cacheDir() {
+  return fs.mkdtempSync(path.join(os.tmpdir(), "windsolver-terrain-"));
+}
 
 /**
  * An S3-shaped server over a buffer, which records what was asked of it.
@@ -333,7 +345,7 @@ describe("readTerrain", () => {
     // Without a default the discovery call is made with `undefined`, every
     // dataset throws the same TypeError, and the per-dataset guard turns that
     // into "no 3DEP product covers this box" over ground that 3DEP covers.
-    const listing = {
+    const products = {
       total: 1,
       items: [{
         title: "USGS 1/3 Arc Second test",
@@ -349,15 +361,37 @@ describe("readTerrain", () => {
       }]
     };
     const tiles = server(lzw.buffer);
+    let listings = 0;
     const fetchImpl = async function (url, init) {
       if (url.startsWith(dem.TNM_PRODUCTS_URL)) {
-        return { ok: true, status: 200, json: async () => listing };
+        listings++;
+        return { ok: true, status: 200, json: async () => products };
       }
       return tiles(url, init);
     };
 
-    const out = await terrain.readTerrain(box, { fetch: fetchImpl, level: 0 });
+    const opts = { fetch: fetchImpl, level: 0, listingCacheOptions: { dir: cacheDir() } };
+    const out = await terrain.readTerrain(box, opts);
     expect(out.grids).toHaveLength(1);
+
+    // The same ground again does not re-ask The National Map: the terrain is
+    // read a second time, the 29-second question is not.
+    const before = listings;
+    await terrain.readTerrain(box, opts);
+    expect(listings).toBe(before);
+  });
+
+  test("a caller can insist on what The National Map says today", async () => {
+    const products = { total: 0, items: [] };
+    let listings = 0;
+    const fetchImpl = async function () {
+      listings++;
+      return { ok: true, status: 200, json: async () => products };
+    };
+    const opts = { fetch: fetchImpl, listingCache: false };
+    await terrain.readTerrain(box, opts).catch(() => {});
+    await terrain.readTerrain(box, opts).catch(() => {});
+    expect(listings).toBeGreaterThan(4);
   });
 
   test("a listing request that fails says so, rather than reading as empty country", async () => {
@@ -366,7 +400,10 @@ describe("readTerrain", () => {
     const fetchImpl = async function () {
       return { ok: false, status: 503, text: async () => "busy" };
     };
-    const err = await terrain.readTerrain(box, { fetch: fetchImpl }).catch((e) => e);
+    const err = await terrain.readTerrain(box, {
+      fetch: fetchImpl,
+      listingCacheOptions: { dir: cacheDir() }
+    }).catch((e) => e);
     expect(err.code).toBe("no-terrain");
     expect(err.considered.every((c) => c.error)).toBe(true);
     expect(err.message).toMatch(/503/);

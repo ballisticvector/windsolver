@@ -134,6 +134,31 @@ function coverageFraction(box, tiles, steps) {
   return total === 0 ? 0 : inside / total;
 }
 
+/**
+ * The smallest box on a `stepDeg` grid that contains `box`.
+ *
+ * Outward only. A cached answer filed under a snapped box has to cover every
+ * box that snaps to it, and snapping to the nearest edge would sometimes file a
+ * box under a key a sliver smaller than itself — invisible until it is a
+ * missing strip at the edge of a domain. Latitude is clamped because a box
+ * against the pole snaps past it otherwise.
+ */
+function snapBoxOut(box, stepDeg) {
+  const step = Number(stepDeg);
+  if (!isFinite(step) || step <= 0) throw new Error("snapBoxOut needs a positive step in degrees");
+  // The epsilon keeps a value already on the grid where it is: floor(0.3/0.1)
+  // is 2 in binary floating point, and without it every snapped box grows by a
+  // whole cell on each side for no reason.
+  const down = function (v) { return Math.round(Math.floor(v / step + 1e-9) * step * 1e6) / 1e6; };
+  const up = function (v) { return Math.round(Math.ceil(v / step - 1e-9) * step * 1e6) / 1e6; };
+  return {
+    west: down(box.west),
+    south: clampLat(down(box.south)),
+    east: up(box.east),
+    north: clampLat(up(box.north))
+  };
+}
+
 /** west,south,east,north — the order The National Map expects. */
 function bboxParam(box) {
   return [box.west, box.south, box.east, box.north].map(function (v) { return v.toFixed(6); }).join(",");
@@ -159,6 +184,7 @@ module.exports = {
   containsPoint,
   intersects,
   coverageFraction,
+  snapBoxOut,
   bboxParam,
   widthMiles,
   heightMiles
