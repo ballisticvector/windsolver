@@ -1,0 +1,127 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>WindSolver — terrain-aware wind over real ground</title>
+<meta name="description" content="A wind field read off USGS 3DEP terrain and the NOAA HRRR model. Modelled, not measured.">
+<meta name="robots" content="noindex">
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+      integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="">
+<style>
+  :root { color-scheme: dark; --bg:#0e1116; --panel:#161b22; --line:#2a323d; --dim:#8b95a5; }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; }
+  body { margin:0; background:var(--bg); color:#e6e6e6;
+         font:15px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif; }
+  #app { display:flex; height:100%; }
+  #map { flex:1 1 auto; height:100%; background:#0b0e12; }
+  aside { flex:0 0 340px; height:100%; overflow-y:auto; padding:20px;
+          background:var(--panel); border-left:1px solid var(--line); }
+  h1 { font-size:20px; margin:0 0 2px; letter-spacing:-0.01em; }
+  h2 { font-size:12px; text-transform:uppercase; letter-spacing:0.08em;
+       color:var(--dim); margin:22px 0 8px; font-weight:600; }
+  p.sub { color:var(--dim); margin:0 0 18px; font-size:13px; }
+  label { display:block; font-size:12px; color:var(--dim); margin-bottom:4px; }
+  .row { display:flex; gap:8px; margin-bottom:10px; }
+  .row > div { flex:1; }
+  input, select, button { width:100%; font:inherit; font-size:14px; padding:7px 9px;
+    background:#0e1116; color:#e6e6e6; border:1px solid var(--line); border-radius:6px; }
+  button { background:#1f6feb; border-color:#1f6feb; cursor:pointer; font-weight:600; }
+  button:hover { background:#2b7bf3; }
+  button:disabled { background:#30363d; border-color:#30363d; color:var(--dim); cursor:default; }
+  button.secondary { background:transparent; border-color:var(--line); color:#e6e6e6; font-weight:400; }
+  #status { margin:14px 0 0; font-size:13px; min-height:20px; }
+  #status.error { color:#ff9492; }
+  #status.working { color:#d29922; }
+  .readout { font-size:28px; letter-spacing:-0.02em; margin:2px 0 0; }
+  .readout small { font-size:13px; color:var(--dim); letter-spacing:0; }
+  dl { margin:0; font-size:13px; }
+  dl div { display:flex; justify-content:space-between; gap:12px; padding:3px 0;
+           border-bottom:1px solid rgba(255,255,255,0.05); }
+  dt { color:var(--dim); }
+  dd { margin:0; text-align:right; }
+  .prov { font-size:12px; color:var(--dim); }
+  .prov div { padding:2px 0; }
+  .note { border-left:3px solid #d29922; padding:8px 0 8px 12px; color:#c9b88a;
+          font-size:12px; margin-top:14px; }
+  .legend { display:flex; gap:0; margin-top:6px; }
+  .legend span { flex:1; height:10px; }
+  .legend-scale { display:flex; justify-content:space-between; font-size:10px;
+                  color:var(--dim); margin-top:2px; }
+  a { color:#58a6ff; }
+  .leaflet-container { background:#0b0e12; }
+  @media (max-width: 860px) {
+    #app { flex-direction:column-reverse; }
+    #map { height:55vh; flex:none; }
+    aside { flex:none; height:auto; border-left:none; border-top:1px solid var(--line); }
+  }
+</style>
+</head>
+<body>
+<div id="app">
+  <div id="map" role="application" aria-label="Wind field map"></div>
+  <aside>
+    <h1>WindSolver</h1>
+    <p class="sub">Terrain-aware wind over real ground. Drag the pin, or click the map.</p>
+
+    <div class="row">
+      <div><label for="lat">Latitude</label><input id="lat" type="number" step="0.0001" value="40.0150"></div>
+      <div><label for="lon">Longitude</label><input id="lon" type="number" step="0.0001" value="-105.2705"></div>
+    </div>
+    <div class="row">
+      <div>
+        <label for="radius">Box radius</label>
+        <select id="radius">
+          <option value="0.5">½ mile</option>
+          <option value="1" selected>1 mile</option>
+          <option value="2">2 miles</option>
+          <option value="4">4 miles</option>
+        </select>
+      </div>
+      <div>
+        <label for="cols">Grid</label>
+        <select id="cols">
+          <option value="24">24 across</option>
+          <option value="48" selected>48 across</option>
+          <option value="72">72 across</option>
+        </select>
+      </div>
+    </div>
+    <div class="row">
+      <div><button id="solve">Solve the wind here</button></div>
+      <div style="flex:0 0 96px"><button id="locate" class="secondary">My location</button></div>
+    </div>
+
+    <p id="status"></p>
+
+    <div id="result" hidden>
+      <h2>At the pin</h2>
+      <p class="readout"><span id="speed">—</span> <small>mph from <span id="dir">—</span></small></p>
+      <dl>
+        <div><dt>Ground here</dt><dd id="ground">—</dd></div>
+        <div><dt>Across the box</dt><dd id="spread">—</dd></div>
+        <div><dt>Height above ground</dt><dd id="agl">—</dd></div>
+      </dl>
+
+      <h2>Speed, mph</h2>
+      <div class="legend" id="legend"></div>
+      <div class="legend-scale" id="legendScale"></div>
+
+      <h2>Where this came from</h2>
+      <div class="prov" id="prov"></div>
+      <p class="note" id="notice"></p>
+    </div>
+
+    <h2>The API under it</h2>
+    <p class="prov">This page is one caller of a public HTTP service.</p>
+    <div class="prov" id="apiExample"></div>
+  </aside>
+</div>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+        integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
+<script src="/wind-map.js"></script>
+<script src="/map.js"></script>
+</body>
+</html>

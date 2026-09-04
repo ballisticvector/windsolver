@@ -24,6 +24,10 @@
 "use strict";
 
 const http = require("http");
+const net = require("net");
+const fs = require("fs");
+const os = require("os");
+const path = require("path");
 
 const proj = require("../proj.js");
 const derive = require("../derive.js");
@@ -156,6 +160,30 @@ async function get(base, path) {
     body = { unparsed: text };
   }
   return { status: res.status, headers: res.headers, body: body, text: text };
+}
+
+/**
+ * A request with the path written on the wire exactly as given.
+ *
+ * `fetch` resolves `..` in the client before the bytes leave, so a traversal
+ * test written with it proves undici's normaliser works and nothing about the
+ * server. A socket does not tidy anything up.
+ */
+function rawGet(base, rawPath) {
+  const port = Number(new URL(base).port);
+  return new Promise(function (resolve, reject) {
+    const socket = net.connect(port, "127.0.0.1", function () {
+      socket.write("GET " + rawPath + " HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n");
+    });
+    let text = "";
+    socket.setEncoding("utf8");
+    socket.on("data", function (chunk) { text += chunk; });
+    socket.on("error", reject);
+    socket.on("end", function () {
+      const status = Number((/^HTTP\/1\.1 (\d+)/.exec(text) || [])[1]);
+      resolve({ status: status, text: text });
+    });
+  });
 }
 
 describe("routing", () => {
@@ -542,6 +570,130 @@ describe("the browser calling it", () => {
       expect(other.headers.get("access-control-allow-origin")).toBe(null);
     } finally {
       await app.close();
+    }
+  });
+});
+
+describe("the page it serves", () => {
+  let root;
+  let dir;
+  let app;
+
+  beforeAll(async () => {
+    // The page directory sits *inside* another one holding a file it must not
+    // reach, so `../secret.html` names something that really exists: a
+    // traversal test whose target is missing anyway passes for the wrong
+    // reason and would keep passing with the guard deleted.
+    root = fs.mkdtempSync(path.join(os.tmpdir(), "ws-static-"));
+    fs.writeFileSync(path.join(root, "secret.html"), "<!doctype html>the private thing");
+    dir = path.join(root, "page");
+    fs.mkdirSync(dir);
+    fs.writeFileSync(path.join(dir, "index.html"), "<!doctype html><title>WindSolver</title>");
+    fs.writeFileSync(path.join(dir, "map.js"), "// the page\n");
+    fs.writeFileSync(path.join(dir, "notes.txt"), "not a page asset");
+    fs.mkdirSync(path.join(dir, "sub"));
+    fs.writeFileSync(path.join(dir, "sub", "deep.css"), "body{}");
+
+    fs.symlinkSync(path.join(root, "secret.html"), path.join(dir, "escape.html"));
+
+    app = await listen({ field: stubService(), staticDir: dir });
+  });
+  afterAll(async () => {
+    await app.close();
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  test("serves the page at the root, with its type", async () => {
+    const res = await fetch(app.url + "/");
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toMatch(/^text\/html/);
+    expect(await res.text()).toContain("WindSolver");
+  });
+
+  test("serves a nested asset", async () => {
+    const res = await fetch(app.url + "/sub/deep.css");
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toMatch(/^text\/css/);
+  });
+
+  test("answers HEAD with the length and no body", async () => {
+    const res = await fetch(app.url + "/map.js", { method: "HEAD" });
+    expect(res.status).toBe(200);
+    expect(Number(res.headers.get("content-length"))).toBeGreaterThan(0);
+    expect(await res.text()).toBe("");
+  });
+
+  test("the API still answers, and the health route is not shadowed by a file", async () => {
+    // A file called `healthz` in the page directory must not become the health
+    // check: a route is a route whether or not something shares its name.
+    fs.writeFileSync(path.join(dir, "healthz"), "not the health check");
+    const health = await get(app.url, "/healthz");
+    expect(health.status).toBe(200);
+    expect(health.body.service).toBe("windsolver");
+
+    const field = await get(app.url, "/v1/field?lat=40.0150&lon=-105.2705");
+    expect(field.status).toBe(200);
+    expect(field.body.ok).toBe(true);
+  });
+
+  test("a missing file is a JSON 404, not a page", async () => {
+    // Whoever asked for `/v1/feild` asked in JSON and should be answered in it.
+    const res = await get(app.url, "/v1/feild");
+    expect(res.status).toBe(404);
+    expect(res.body.code).toBe("no-such-route");
+  });
+
+  test("refuses a file type the page does not have", async () => {
+    const res = await get(app.url, "/notes.txt");
+    expect(res.status).toBe(404);
+    expect(res.body.code).toBe("no-such-route");
+  });
+
+  test("will not walk out of the page directory", async () => {
+    for (const attempt of [
+      "/../secret.html",
+      "/%2e%2e/secret.html",
+      "/sub/../../secret.html",
+      "/....//secret.html",
+      "//etc/passwd",
+      "/../../../../etc/passwd",
+      // The ones that matter: a URL parser removes dot *segments*, and these
+      // are not segments until they are decoded. Decoding happens here, so the
+      // walk this file has to stop is the one it creates itself.
+      "/..%2fsecret.html",
+      "/sub%2f..%2f..%2fsecret.html",
+      "/%2e%2e%2fsecret.html",
+      "/%2fetc%2fpasswd",
+      "/..%2f..%2f..%2f..%2f..%2f..%2f..%2fetc%2fpasswd"
+    ]) {
+      const res = await rawGet(app.url, attempt);
+      expect(res.status).toBe(404);
+      expect(res.text).not.toContain("private thing");
+      expect(res.text).not.toContain("root:");
+    }
+  });
+
+  test("will not follow a symlink out of the page directory", async () => {
+    // `path.resolve` cannot see this one: the path stays inside the root and the
+    // file does not, which is why the check is repeated against the real path.
+    const res = await fetch(app.url + "/escape.html");
+    expect(res.status).toBe(404);
+    expect(await res.text()).not.toContain("private thing");
+  });
+
+  test("a directory is not a page", async () => {
+    const res = await get(app.url, "/sub");
+    expect(res.status).toBe(404);
+  });
+
+  test("serves no page at all when none is configured", async () => {
+    const bare = await listen({ field: stubService() });
+    try {
+      const res = await get(bare.url, "/");
+      expect(res.status).toBe(200);
+      expect(res.body.service).toBe("windsolver");
+    } finally {
+      await bare.close();
     }
   });
 });

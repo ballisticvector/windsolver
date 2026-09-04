@@ -36,6 +36,8 @@
 "use strict";
 
 const http = require("http");
+const fs = require("fs");
+const nodePath = require("path");
 
 const geo = require("./geo.js");
 const downscale = require("./downscale.js");
@@ -139,6 +141,49 @@ const STATUS_BY_CODE = {
   "no-cycle": 503,
   "aborted": 504
 };
+
+// Served from `staticDir` when one is configured. Anything not named here is
+// refused rather than sent as a guessed type: a page is a small, known set of
+// files, and an unknown extension in that directory is a mistake worth seeing.
+const CONTENT_TYPES = {
+  ".html": "text/html; charset=utf-8",
+  ".js": "text/javascript; charset=utf-8",
+  ".css": "text/css; charset=utf-8",
+  ".json": "application/json; charset=utf-8",
+  ".svg": "image/svg+xml",
+  ".png": "image/png",
+  ".ico": "image/x-icon",
+  ".webmanifest": "application/manifest+json"
+};
+
+/**
+ * The file a request path names inside `root`, or `null` if it names none.
+ *
+ * The check is on the *resolved* path rather than on the request text, because
+ * `..` is only one of the ways out of a directory — an encoded separator or an
+ * absolute path both read as ordinary requests. Resolving first and then asking
+ * whether the answer is still under the root is the form of the check that does
+ * not depend on enumerating the tricks. A symlink out of the directory survives
+ * this one, so `serveStatic` repeats it against the real path on disk.
+ */
+function resolveStatic(root, urlPath) {
+  let decoded;
+  try {
+    decoded = decodeURIComponent(urlPath);
+  } catch {
+    return null;
+  }
+  if (decoded.indexOf("\u0000") !== -1) return null;
+
+  const relative = decoded.replace(/^\/+/, "");
+  const candidate = nodePath.resolve(root, relative === "" ? "index.html" : relative);
+  const rootResolved = nodePath.resolve(root);
+  if (candidate !== rootResolved &&
+      !candidate.startsWith(rootResolved + nodePath.sep)) {
+    return null;
+  }
+  return candidate;
+}
 
 function badParameter(name, message, extra) {
   const err = new Error(message);
@@ -395,6 +440,10 @@ function createHandler(opts) {
   const log = typeof o.log === "function" ? o.log : null;
   const startedAt = Date.now();
 
+  // Through `realpath` at construction, so the per-request check below compares
+  // two real paths: a root that is itself a symlink would fail every request.
+  const staticDir = o.staticDir ? realDir(o.staticDir) : null;
+
   const gate = createGate(
     o.maxConcurrent === undefined ? DEFAULT_MAX_CONCURRENT : o.maxConcurrent,
     o.maxQueue === undefined ? DEFAULT_MAX_QUEUE : o.maxQueue
@@ -433,6 +482,54 @@ function createHandler(opts) {
     const extra = Object.assign({}, headers);
     if (status === 503) extra["retry-after"] = String(retryAfterS);
     return send(res, status, body, extra);
+  }
+
+  /**
+   * A file from `staticDir`, or `false` if the request names nothing there.
+   *
+   * `false` rather than a 404 so the caller can fall through to the JSON
+   * "no such route" answer: an API request that misspells a route should be
+   * told so in the language it asked in, not handed a page.
+   */
+  async function serveStatic(method, urlPath, res, headers) {
+    if (!staticDir) return false;
+    const candidate = resolveStatic(staticDir, urlPath);
+    if (!candidate) return false;
+
+    let real;
+    let stat;
+    try {
+      // The realpath is what actually gets read, so it is what has to be inside
+      // the root: `resolveStatic` cannot see a symlink pointing out of it.
+      real = await fs.promises.realpath(candidate);
+      if (real !== staticDir && !real.startsWith(staticDir + nodePath.sep)) return false;
+      stat = await fs.promises.stat(real);
+    } catch {
+      return false;
+    }
+    if (!stat.isFile()) return false;
+
+    const type = CONTENT_TYPES[nodePath.extname(real).toLowerCase()];
+    if (!type) return false;
+
+    const head = Object.assign({
+      "content-type": type,
+      "content-length": stat.size,
+      // Short, because the page is edited far more often than it is hit, and a
+      // stale map that quietly calls a route that has moved is worse than a
+      // second request.
+      "cache-control": "public, max-age=300"
+    }, headers);
+
+    if (method === "HEAD") {
+      res.writeHead(200, head);
+      res.end();
+      return true;
+    }
+
+    res.writeHead(200, head);
+    fs.createReadStream(real).pipe(res);
+    return true;
   }
 
   /** Run a solve behind the gate and the deadline. */
@@ -640,6 +737,24 @@ function createHandler(opts) {
     }
 
     const path = url.pathname.replace(/\/+$/, "") || "/";
+
+    // The page, when one is configured, and only for paths the API does not
+    // own: a route is a route whether or not a file happens to share its name.
+    if (staticDir && ROUTES.indexOf(path) === -1) {
+      return serveStatic(req.method, path, res, headers).then(function (served) {
+        if (served) return;
+        return send(res, 404, {
+          ok: false,
+          code: "no-such-route",
+          error: "no route " + path,
+          routes: ROUTES
+        }, headers);
+      }, function (err) {
+        if (log) log({ level: "error", path: path, message: err && err.message });
+        return send(res, 500, { ok: false, code: "internal", error: "Internal error." }, headers);
+      });
+    }
+
     if (path === "/healthz" || path === "/") {
       return send(res, 200, {
         ok: true,
@@ -681,6 +796,16 @@ function createHandler(opts) {
       }
     });
   };
+}
+
+/** A directory as it really is on disk, so symlinked roots still compare. */
+function realDir(dir) {
+  const resolved = nodePath.resolve(dir);
+  try {
+    return fs.realpathSync(resolved);
+  } catch {
+    return resolved;
+  }
 }
 
 /** An `http.Server` around the handler, so it is deployed like any node service. */

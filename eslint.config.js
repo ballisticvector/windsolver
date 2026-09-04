@@ -42,6 +42,20 @@ module.exports = [
     }
   },
   {
+    // The page. `wind-map.js` is required by its test *and* loaded by a script
+    // tag, so it stays CommonJS with the browser globals added rather than
+    // becoming a module the suite cannot import.
+    files: ["public/**/*.js"],
+    languageOptions: {
+      globals: {
+        window: "readonly",
+        document: "readonly",
+        location: "readonly",
+        navigator: "readonly"
+      }
+    }
+  },
+  {
     ignores: ["node_modules/", "coverage/"]
   }
 ];
