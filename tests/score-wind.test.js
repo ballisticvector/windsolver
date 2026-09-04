@@ -105,15 +105,22 @@ function stubField(wind, ground) {
   });
 }
 
-/** Ground falling `reliefM` over the 600 m around the station, row-major. */
-function cone(geometry, apex, baseM, reliefM) {
+/**
+ * Ground falling `reliefM` over the 600 m around the station, row-major.
+ *
+ * `rampPerM` tilts the whole sheet east at that gradient — a regional slope the
+ * cone sits on, which is the part a model at its own scale already has.
+ */
+function cone(geometry, apex, baseM, reliefM, rampPerM) {
+  const ramp = rampPerM || 0;
   const out = new Float32Array(geometry.width * geometry.height);
   for (let row = 0; row < geometry.height; row++) {
     for (let col = 0; col < geometry.width; col++) {
       const x = geometry.transform.originX + (col + 0.5) * geometry.transform.scaleX;
       const y = geometry.transform.originY + (row + 0.5) * geometry.transform.scaleY;
       const r = Math.hypot(x - apex.x, y - apex.y);
-      out[row * geometry.width + col] = baseM - reliefM * Math.min(1, r / 600);
+      out[row * geometry.width + col] =
+        baseM - reliefM * Math.min(1, r / 600) + ramp * (x - apex.x);
     }
   }
   return out;
@@ -143,7 +150,7 @@ function terrainField(wind, ground) {
     height: stub.height,
     transform: stub.transform,
     values: cone(stub, { x: mid.x + (g.apexOffsetM || 0), y: mid.y },
-      g.elevationM === undefined ? 1610 : g.elevationM, g.reliefM || 0)
+      g.elevationM === undefined ? 1610 : g.elevationM, g.reliefM || 0, g.rampPerM)
   });
   const weights = downscale.terrainWeights(derived, { curvatureLengthM: 300 });
   const reference = { speedMps: wind.referenceMps, fromDeg: wind.fromDeg };
@@ -634,5 +641,122 @@ describe("the geometry the stub relies on", () => {
       crs: field.crs, width: field.width, height: field.height, transform: field.transform
     }, { values: field.east }), station.lat, station.lon);
     expect(value).toBeCloseTo(-7 * Math.sin(45 * Math.PI / 180), 4);
+  });
+});
+
+describe("the terrain the model already has", () => {
+  // A regional ramp the model resolves, with a cone on it that it does not.
+  // The anomaly candidate's weights come from the second alone, which is the
+  // whole claim: the correction should add the landform HRRR could not see and
+  // not the one already in its own orography.
+  const RAMP_PER_M = 0.02;
+  const ANOMALY = { radiusM: 300, resolutionM: 30 };
+  const GROUND = { reliefM: 60, apexOffsetM: 150, rampPerM: RAMP_PER_M };
+
+  /** A wide, coarse read over the same ground the fine domain was cut from. */
+  function stubGround(answer) {
+    const asked = [];
+    return {
+      asked: asked,
+      get: async function (spec) {
+        asked.push(spec);
+        if (answer instanceof Error) throw answer;
+        const crs = proj.crsFromEpsg(26913);
+        const mid = proj.fromGeographic(crs, station.lat, station.lon);
+        const width = 120;
+        const height = 120;
+        const spacing = 30;
+        const geometry = {
+          crs: crs,
+          width: width,
+          height: height,
+          transform: {
+            originX: mid.x - (width * spacing) / 2,
+            originY: mid.y + (height * spacing) / 2,
+            scaleX: spacing,
+            scaleY: -spacing
+          },
+          resolutionM: spacing
+        };
+        return {
+          grid: Object.assign({}, geometry, {
+            values: cone(geometry, { x: mid.x + GROUND.apexOffsetM, y: mid.y },
+              1610, GROUND.reliefM, RAMP_PER_M)
+          }),
+          dataset: "stub wide 30 m"
+        };
+      }
+    };
+  }
+
+  async function scored(options) {
+    const o = options || {};
+    return scoreWind.buildReport({
+      source: stubSource(),
+      service: stubService(function () {
+        return terrainField({ speedMps: 6, fromDeg: 270, referenceMps: 6 }, GROUND);
+      }),
+      ground: o.ground === undefined ? stubGround() : o.ground,
+      stations: ["KBDU"],
+      hours: 2,
+      ablate: true,
+      anomaly: o.anomaly === undefined ? ANOMALY : o.anomaly,
+      endMs: END,
+      now: function () { return 0; }
+    });
+  }
+
+  test("the anomaly rows are scored on the same pairs as the rest", async () => {
+    const report = await scored();
+    const keys = report.candidates.map(function (c) { return c.key; });
+    expect(keys).toContain("anomaly");
+    expect(keys).toContain("anomalySlopeOnly");
+    for (const key of keys) {
+      expect(report.overall[key].n).toBe(report.overall.model.n);
+      expect(report.overall[key].distinctSamples).toBe(report.overall.model.distinctSamples);
+    }
+    expect(report.domain.anomaly).toEqual(ANOMALY);
+    expect(report.candidates.find(function (c) { return c.key === "anomaly"; }).terrain)
+      .toBe("anomaly");
+  });
+
+  test("the ramp the model already has is gone from the anomaly, the cone is not", async () => {
+    const report = await scored();
+    const terrain = report.stations[0].terrain;
+    // The absolute ground carries the cone and the ramp; the anomaly carries
+    // the cone alone, so it is the shallower of the two and the wind it weights
+    // is a different wind.
+    expect(terrain.anomalySlopeDeg).toBeLessThan(terrain.slopeDeg);
+    expect(terrain.anomalySlopeDeg).toBeGreaterThan(0);
+    expect(terrain.anomalyDataset).toBe("stub wide 30 m");
+    expect(terrain.anomalyRadiusM).toBe(ANOMALY.radiusM);
+
+    const gain = report.stations[0].gain;
+    expect(gain.anomaly).not.toBeCloseTo(gain.downscaled, 3);
+  });
+
+  test("the wide read is paid once for a station, not once an hour", async () => {
+    const ground = stubGround();
+    const report = await scored({ ground: ground });
+    expect(report.overall.model.distinctSamples).toBe(2);
+    expect(ground.asked.length).toBe(1);
+  });
+
+  test("a wide read that fails leaves the anomaly rows empty, and says so", async () => {
+    const failing = Object.assign(new Error("no terrain here"), { code: "no-products" });
+    const report = await scored({ ground: stubGround(failing) });
+
+    expect(report.overall.downscaled.n).toBeGreaterThan(0);
+    expect(report.overall.anomaly.n).toBe(0);
+    const anomalyFailures = report.failures.filter(function (f) { return f.stage === "anomaly"; });
+    expect(anomalyFailures.length).toBe(1);
+    expect(anomalyFailures[0].code).toBe("no-products");
+    expect(report.stations[0].terrain.anomalyM).toBeUndefined();
+  });
+
+  test("without --anomaly the report is the rows it always was", async () => {
+    const report = await scored({ anomaly: null, ground: null });
+    expect(report.domain.anomaly).toBeNull();
+    expect(report.candidates.map(function (c) { return c.key; })).not.toContain("anomaly");
   });
 });

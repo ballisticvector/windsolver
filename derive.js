@@ -480,6 +480,126 @@ function deriveAll(grids, opts) {
 }
 
 /**
+ * The elevation surface a coarse model would have over this ground.
+ *
+ * A disc mean of `radiusM` at every cell. Symmetric, so a linear hillside comes
+ * back unchanged and only the features smaller than the disc are lost, which is
+ * the property that makes the difference between the two surfaces mean
+ * something: `elevation - smooth(elevation, R)` is the landform below scale R.
+ *
+ * A cell whose disc leaves the grid, or whose disc is more void than
+ * `minCoverage` allows, is NaN. A partial disc is a lopsided mean and a
+ * lopsided mean is a slope the ground does not have — the same reason
+ * `positionIndexAt` refuses rather than trimming its neighbourhood.
+ *
+ * Cost is cells x disc, so it is meant for a coarse, wide grid — a 100 m grid
+ * with a 3 km disc is ~2,800 samples a cell — and not for 1 m terrain.
+ */
+function smooth(grid, opts) {
+  const o = opts || {};
+  checkGrid(grid);
+  const radiusM = o.radiusM;
+  if (!(radiusM > 0)) throw fail("bad-radius", "radiusM must be a positive distance");
+  const minCoverage = o.minCoverage === undefined ? 0.9 : o.minCoverage;
+
+  const spacing = spacingFn(grid, o);
+  const values = new Float32Array(grid.width * grid.height).fill(NaN);
+  let definedCount = 0;
+
+  for (let row = 0; row < grid.height; row++) {
+    const step = spacing(row);
+    const rx = radiusM / step.x;
+    const ry = radiusM / step.y;
+    const y0 = Math.ceil(row - ry);
+    const y1 = Math.floor(row + ry);
+    if (y0 < 0 || y1 > grid.height - 1) continue;
+
+    for (let col = 0; col < grid.width; col++) {
+      const x0 = Math.ceil(col - rx);
+      const x1 = Math.floor(col + rx);
+      if (x0 < 0 || x1 > grid.width - 1) continue;
+
+      let sum = 0;
+      let used = 0;
+      let inDisc = 0;
+      for (let y = y0; y <= y1; y++) {
+        for (let x = x0; x <= x1; x++) {
+          const dx = (x - col) / rx;
+          const dy = (y - row) / ry;
+          if (dx * dx + dy * dy > 1) continue;
+          inDisc++;
+          const z = grid.values[y * grid.width + x];
+          if (Number.isNaN(z)) continue;
+          sum += z;
+          used++;
+        }
+      }
+      if (!used || used / inDisc < minCoverage) continue;
+      values[row * grid.width + col] = sum / used;
+      definedCount++;
+    }
+  }
+
+  return {
+    crs: grid.crs,
+    width: grid.width,
+    height: grid.height,
+    transform: grid.transform,
+    bounds: grid.bounds || cog.gridBounds(grid),
+    resolutionM: grid.resolutionM,
+    values: values,
+    radiusM: radiusM,
+    definedCount: definedCount
+  };
+}
+
+/**
+ * The ground minus a reference surface, cell by cell, as an elevation grid.
+ *
+ * The reference is sampled where each cell of `grid` is, not read cell for
+ * cell, so it can be coarser and wider than the ground — which is the case this
+ * exists for: a model's own orography, or a wide DEM smoothed to the model's
+ * scale, against a 30 m domain.
+ *
+ * Where the reference has no value the anomaly is NaN. Passing the elevation
+ * through unchanged there would leave one cell carrying the whole landform
+ * while its neighbours carry the residual, and the seam between them is a cliff
+ * that is not on the mountain.
+ */
+function anomaly(grid, reference) {
+  checkGrid(grid);
+  checkGrid(reference);
+
+  const values = new Float32Array(grid.width * grid.height).fill(NaN);
+  let definedCount = 0;
+
+  for (let row = 0; row < grid.height; row++) {
+    for (let col = 0; col < grid.width; col++) {
+      const i = row * grid.width + col;
+      const z = grid.values[i];
+      if (Number.isNaN(z)) continue;
+      const m = cog.pixelCentre(grid, col, row);
+      const here = proj.toGeographic(grid.crs, m.x, m.y);
+      const base = cog.sampleElevation(reference, here.lat, here.lon);
+      if (base === null || Number.isNaN(base)) continue;
+      values[i] = z - base;
+      definedCount++;
+    }
+  }
+
+  return {
+    crs: grid.crs,
+    width: grid.width,
+    height: grid.height,
+    transform: grid.transform,
+    bounds: grid.bounds || cog.gridBounds(grid),
+    resolutionM: grid.resolutionM,
+    values: values,
+    definedCount: definedCount
+  };
+}
+
+/**
  * Sample a derived field at a coordinate, bilinear, or null.
  *
  * Reuses the elevation sampler rather than writing a second one: the geometry
@@ -660,6 +780,8 @@ module.exports = {
   shelter,
   derive,
   deriveAll,
+  smooth,
+  anomaly,
   fieldAt,
   positionIndexAt,
   aspectAt,
