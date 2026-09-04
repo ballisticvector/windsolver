@@ -240,6 +240,27 @@ describe("fieldQuery", () => {
   });
 });
 
+describe("the parts of the page a unit test cannot run", () => {
+  // map.js is Leaflet, a canvas and the DOM, so these are read off the source.
+  // Both guard a failure that was measured in a browser and that looks entirely
+  // correct in the file: neither shows up as an error anywhere.
+  const fs = require("fs");
+  const path = require("path");
+  const js = fs.readFileSync(path.join(__dirname, "..", "public", "map.js"), "utf8");
+  const clearField = /function clearField\(\) \{([\s\S]*?)\n {2}\}/.exec(js);
+
+  test("clearing the field abandons the answer still on its way", () => {
+    // Otherwise a solve that lands after the pin has moved paints a field for
+    // the old box under a heading that says "At the pin".
+    expect(clearField).not.toBeNull();
+    expect(clearField[1]).toContain("inFlight.abort()");
+  });
+
+  test("a Leaflet that never loaded is said out loud, not left blank", () => {
+    expect(js).toMatch(/typeof L === "undefined"/);
+  });
+});
+
 describe("the page's narrow layout", () => {
   const fs = require("fs");
   const path = require("path");
