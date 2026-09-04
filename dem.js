@@ -133,13 +133,35 @@ function toBox(bb) {
 }
 
 /**
+ * Whether a listed product is one the terrain reader can take a window out of.
+ *
+ * 3DEP is not uniformly GeoTIFF. 1/9 arc-second is published as a zipped ERDAS
+ * IMG — `.zip`, 118 MB for one 15-minute cell over Boulder — and the archive
+ * cannot be range-read at all: the reader gets the ZIP magic where it expected
+ * a TIFF header. Measured live against KBDU, 2026-09-04.
+ *
+ * The extension is the test rather than `format`, because the format field is
+ * the product's name for itself ("IMG", "GeoTIFF") while the URL is what will
+ * actually be fetched, and the two disagree on the historical entries.
+ */
+function windowable(url) {
+  return typeof url === "string" && /\.tiff?($|\?)/i.test(url);
+}
+
+/**
  * Normalise a /products response. Items without a usable footprint are dropped
  * rather than kept with a null box — a tile we cannot place cannot be counted
  * towards coverage, and silently counting it would overstate what we have.
+ *
+ * Products that cannot be windowed are dropped the same way and counted in
+ * `unreadable`. Keeping them would let a dataset win on resolution and then
+ * fail at the far end of a cold solve, where the only symptom is a reader
+ * complaining about bytes it was handed.
  */
 function parseProducts(json) {
   const items = (json && json.items) || [];
   const out = [];
+  let unreadable = 0;
   // How many the page really held, which is not `out.length` once footprintless
   // items are dropped and not `total` either. It is the only number that says
   // whether the page was full, and therefore whether there is another one.
@@ -148,17 +170,27 @@ function parseProducts(json) {
     const it = items[i];
     const box = toBox(it.boundingBox);
     if (!box) continue;
+    const downloadUrl = it.downloadURL || it.urls && it.urls.TIFF || null;
+    if (downloadUrl !== null && !windowable(downloadUrl)) {
+      unreadable++;
+      continue;
+    }
     out.push({
       title: String(it.title || ""),
       sourceId: it.sourceId || null,
       format: it.format || null,
-      downloadUrl: it.downloadURL || it.urls && it.urls.TIFF || null,
+      downloadUrl: downloadUrl,
       box: box,
       publicationDate: it.publicationDate || it.lastUpdated || null,
       sizeBytes: num(it.sizeInBytes)
     });
   }
-  return { total: num(json && json.total) || out.length, returned: returned, items: out };
+  return {
+    total: num(json && json.total) || out.length,
+    returned: returned,
+    unreadable: unreadable,
+    items: out
+  };
 }
 
 /**
@@ -205,6 +237,7 @@ async function fetchListing(datasetTag, box, fetchJson, opts) {
   const maxPages = o.maxPages === undefined ? DEFAULT_MAX_PAGES : o.maxPages;
   const items = [];
   let pages = 0;
+  let unreadable = 0;
 
   for (let page = 0; page < maxPages; page++) {
     const parsed = parseProducts(await fetchJson(productsUrl(datasetTag, box, {
@@ -213,11 +246,14 @@ async function fetchListing(datasetTag, box, fetchJson, opts) {
       prodFormats: o.prodFormats
     })));
     pages++;
+    unreadable += parsed.unreadable;
     for (const item of parsed.items) items.push(item);
-    if (parsed.returned < pageSize) return { items: items, truncated: false, pages: pages };
+    if (parsed.returned < pageSize) {
+      return { items: items, truncated: false, pages: pages, unreadable: unreadable };
+    }
   }
 
-  return { items: items, truncated: true, pages: pages };
+  return { items: items, truncated: true, pages: pages, unreadable: unreadable };
 }
 
 /**
@@ -272,6 +308,7 @@ function selectDataset(availability, box, opts) {
         resolutionM: dataset.resolutionM,
         coverage: 0,
         tileCount: 0,
+        unreadable: (entry && entry.unreadable) || 0,
         error: (entry && entry.error) || null
       });
       continue;
@@ -283,6 +320,10 @@ function selectDataset(availability, box, opts) {
       resolutionM: dataset.resolutionM,
       coverage: coverage,
       tileCount: tiles.length,
+      // Products listed over this box that no reader can window. A dataset
+      // reported as absent while this is non-zero is present and unusable,
+      // which is a different sentence about the country.
+      unreadable: entry.unreadable || 0,
       // A truncated listing makes coverage a lower bound, so falling short of
       // it is "we did not see the whole list" rather than "the tiles are not
       // there". Passing it as an error keeps those two apart in the refusal;
@@ -344,7 +385,12 @@ async function discover(box, fetchJson, opts) {
       availability.push({ datasetId: dataset.id, items: [], error: String(err && err.message || err) });
       continue;
     }
-    availability.push({ datasetId: dataset.id, items: listing.items, truncated: listing.truncated });
+    availability.push({
+      datasetId: dataset.id,
+      items: listing.items,
+      truncated: listing.truncated,
+      unreadable: listing.unreadable
+    });
 
     const tiles = newestPerFootprint(listing.items).filter(function (t) { return geo.intersects(t.box, box); });
     if (geo.coverageFraction(box, tiles.map(function (t) { return t.box; }), o.coverageSteps) >= minCoverage) break;
@@ -359,6 +405,7 @@ module.exports = {
   DEFAULT_MAX_PAGES,
   DEFAULT_PAGE_SIZE,
   DATASETS,
+  windowable,
   listingBox,
   fetchListing,
   datasetById,

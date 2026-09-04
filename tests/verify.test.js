@@ -1,0 +1,263 @@
+/**
+ * Scoring a modelled wind against a measured one.
+ *
+ * Every test here is against a number worked out by hand or by an independent
+ * argument, because a scorer graded against its own output is a scorer that
+ * passes while being wrong by a factor — the same reason `grib2.js` is graded
+ * against ecCodes and `cog.js` against GDAL.
+ *
+ * The ones worth keeping when this file is refactored are the three that catch
+ * a score that looks fine: the wrap at north, a direction bias averaged the
+ * arithmetic way, and a 180°-wrong wind scoring a perfect speed.
+ */
+
+"use strict";
+
+const verify = require("../verify.js");
+
+function observed(timeMs, speedMps, fromDeg, extra) {
+  return Object.assign({
+    time: new Date(timeMs).toISOString(),
+    timeMs: timeMs,
+    speedMps: speedMps,
+    fromDeg: fromDeg,
+    calm: speedMps === 0
+  }, extra || {});
+}
+
+function sample(timeMs, speedMps, fromDeg) {
+  return { timeMs: timeMs, speedMps: speedMps, fromDeg: fromDeg };
+}
+
+const HOUR = 3600 * 1000;
+const T0 = Date.UTC(2026, 8, 1, 12);
+
+describe("circular arithmetic", () => {
+  test("350° and 10° are 20° apart, not 340°", () => {
+    expect(verify.angleDifferenceDeg(10, 350)).toBe(20);
+    expect(verify.angleDifferenceDeg(350, 10)).toBe(-20);
+  });
+
+  test("the difference is signed and lands in (-180, 180]", () => {
+    expect(verify.angleDifferenceDeg(180, 0)).toBe(180);
+    expect(verify.angleDifferenceDeg(0, 180)).toBe(180);
+    expect(verify.angleDifferenceDeg(271, 90)).toBe(-179);
+    expect(verify.angleDifferenceDeg(89, 270)).toBe(179);
+  });
+
+  test("a bias across north is the circular mean, not the arithmetic one", () => {
+    // Errors of -20°, +20° and 0° average to 0 either way; errors that straddle
+    // the wrap do not. This is the case where a mean of raw bearings reports a
+    // 180° bias for a model that is right.
+    expect(verify.circularMeanDeg([-20, 20, 0])).toBeCloseTo(0, 9);
+    expect(verify.circularMeanDeg([170, -170])).toBeCloseTo(180, 6);
+    expect(verify.circularMeanDeg([])).toBeNull();
+  });
+
+  test("the components agree with the engine's own convention", () => {
+    // A wind FROM 270° blows toward the east.
+    const west = verify.componentsOf(10, 270);
+    expect(west.east).toBeCloseTo(10, 9);
+    expect(west.north).toBeCloseTo(0, 9);
+    const south = verify.componentsOf(10, 180);
+    expect(south.north).toBeCloseTo(10, 9);
+  });
+});
+
+describe("pairing an observation with a model time", () => {
+  test("it takes the nearest sample and records the offset", () => {
+    const paired = verify.pair(
+      [observed(T0 + 5 * 60 * 1000, 5, 270)],
+      [sample(T0, 5, 270), sample(T0 + HOUR, 9, 300)]
+    );
+    expect(paired.pairs).toHaveLength(1);
+    expect(paired.pairs[0].offsetMs).toBe(-5 * 60 * 1000);
+    expect(paired.pairs[0].sample.timeMs).toBe(T0);
+  });
+
+  test("an observation with no sample near it is dropped, not stretched", () => {
+    const paired = verify.pair(
+      [observed(T0 + 40 * 60 * 1000, 5, 270)],
+      [sample(T0, 5, 270)]
+    );
+    expect(paired.pairs).toHaveLength(0);
+    expect(paired.unmatched[0].code).toBe("no-sample");
+    expect(paired.unmatched[0].offsetMs).toBe(40 * 60 * 1000);
+  });
+
+  test("several observations may share one hourly field, and the count says so", () => {
+    const paired = verify.pair(
+      [observed(T0 - 5 * 60 * 1000, 5, 270), observed(T0 + 5 * 60 * 1000, 6, 280)],
+      [sample(T0, 5, 270)]
+    );
+    expect(paired.pairs).toHaveLength(2);
+    const scored = verify.score(paired.pairs);
+    expect(scored.n).toBe(2);
+    expect(scored.distinctSamples).toBe(1);
+  });
+
+  test("two stations at the same hour are two samples, not one", () => {
+    // Counting hours alone would report a five-station day as 24 samples and
+    // make a wide comparison look like a narrow one.
+    const a = verify.pair([observed(T0, 5, 270, { stationId: "KBDU" })],
+      [sample(T0, 5, 270)]).pairs;
+    const b = verify.pair([observed(T0, 7, 300, { stationId: "KBJC" })],
+      [sample(T0, 5, 270)]).pairs;
+    expect(verify.score(a.concat(b)).distinctSamples).toBe(2);
+  });
+});
+
+describe("the score", () => {
+  test("a perfect model scores zero everywhere", () => {
+    const pairs = verify.pair(
+      [observed(T0, 5, 270), observed(T0 + HOUR, 8, 180)],
+      [sample(T0, 5, 270), sample(T0 + HOUR, 8, 180)]
+    ).pairs;
+    const s = verify.score(pairs);
+    expect(s.n).toBe(2);
+    expect(s.speed.biasMps).toBeCloseTo(0, 9);
+    expect(s.speed.rmseMps).toBeCloseTo(0, 9);
+    expect(s.direction.rmseDeg).toBeCloseTo(0, 9);
+    expect(s.vectorRmseMps).toBeCloseTo(0, 9);
+  });
+
+  test("bias is signed and separate from RMSE", () => {
+    // Errors of +2 and -2: no bias, 2 m/s of scatter. A model that is 2 too
+    // fast everywhere would report bias 2 with the same RMSE, and wants a
+    // completely different fix.
+    const pairs = verify.pair(
+      [observed(T0, 5, 270), observed(T0 + HOUR, 5, 270)],
+      [sample(T0, 7, 270), sample(T0 + HOUR, 3, 270)]
+    ).pairs;
+    const s = verify.score(pairs);
+    expect(s.speed.biasMps).toBeCloseTo(0, 9);
+    expect(s.speed.maeMps).toBeCloseTo(2, 9);
+    expect(s.speed.rmseMps).toBeCloseTo(2, 9);
+  });
+
+  test("a wind 180° wrong with the right speed does not score as perfect", () => {
+    const pairs = verify.pair([observed(T0, 5, 270)], [sample(T0, 5, 90)]).pairs;
+    const s = verify.score(pairs);
+    expect(s.speed.rmseMps).toBeCloseTo(0, 9);
+    expect(s.direction.rmseDeg).toBeCloseTo(180, 9);
+    // Two 5 m/s winds pointing opposite ways differ by 10 m/s.
+    expect(s.vectorRmseMps).toBeCloseTo(10, 9);
+  });
+
+  test("a direction error at the wrap is 20°, not 340°", () => {
+    const pairs = verify.pair([observed(T0, 5, 350)], [sample(T0, 5, 10)]).pairs;
+    const s = verify.score(pairs);
+    expect(s.direction.rmseDeg).toBeCloseTo(20, 9);
+    expect(s.direction.biasDeg).toBeCloseTo(20, 6);
+  });
+
+  test("a calm keeps its speed error and never invents a direction error", () => {
+    // The station measured calm and reported 0°; the model says 6 m/s from
+    // 090°. Taking that 0° at face value scores a 90° direction error against a
+    // direction nobody measured.
+    const pairs = verify.pair([observed(T0, 0, null)], [sample(T0, 6, 90)]).pairs;
+    const s = verify.score(pairs);
+    expect(s.speed.biasMps).toBeCloseTo(6, 9);
+    expect(s.direction.n).toBe(0);
+    expect(s.excluded.calm).toBe(1);
+    // The vector error still carries it: 6 m/s claimed over still air.
+    expect(s.vectorRmseMps).toBeCloseTo(6, 9);
+  });
+
+  test("a breath of wind is kept out of the direction statistics", () => {
+    const pairs = verify.pair(
+      [observed(T0, 0.5, 10), observed(T0 + HOUR, 6, 270)],
+      [sample(T0, 0.5, 190), sample(T0 + HOUR, 6, 280)]
+    ).pairs;
+    const s = verify.score(pairs);
+    expect(s.n).toBe(2);
+    expect(s.direction.n).toBe(1);
+    expect(s.excluded.belowDirectionThreshold).toBe(1);
+    expect(s.direction.rmseDeg).toBeCloseTo(10, 9);
+  });
+
+  test("an observation with no direction is still evidence about speed", () => {
+    const pairs = verify.pair([observed(T0, 6, null)], [sample(T0, 8, 270)]).pairs;
+    const s = verify.score(pairs);
+    expect(s.n).toBe(1);
+    expect(s.speed.biasMps).toBeCloseTo(2, 9);
+    expect(s.direction.n).toBe(0);
+    expect(s.excluded.noDirection).toBe(1);
+    expect(s.vectorRmseMps).toBeNull();
+  });
+
+  test("a sample the field could not give is counted, not treated as zero", () => {
+    const pairs = verify.pair(
+      [observed(T0, 6, 270), observed(T0 + HOUR, 6, 270)],
+      [sample(T0, 6, 270), { timeMs: T0 + HOUR, speedMps: null, fromDeg: null }]
+    ).pairs;
+    const s = verify.score(pairs);
+    expect(s.n).toBe(1);
+    expect(s.excluded.missingSample).toBe(1);
+    expect(s.speed.rmseMps).toBeCloseTo(0, 9);
+  });
+
+  test("two candidates are scored over one set of observations", () => {
+    // The comparison the whole exercise exists for: downscaled against raw.
+    const pairs = verify.pair(
+      [observed(T0, 4, 270)],
+      [{ timeMs: T0, raw: sample(T0, 7, 270), fine: sample(T0, 4.5, 270) }]
+    ).pairs;
+    const raw = verify.score(pairs, { read: (p) => p.sample.raw });
+    const fine = verify.score(pairs, { read: (p) => p.sample.fine });
+    expect(raw.speed.biasMps).toBeCloseTo(3, 9);
+    expect(fine.speed.biasMps).toBeCloseTo(0.5, 9);
+    expect(raw.n).toBe(fine.n);
+  });
+
+  test("an empty comparison reports nothing rather than zero", () => {
+    const s = verify.score([]);
+    expect(s.n).toBe(0);
+    expect(s.speed.rmseMps).toBeNull();
+    expect(s.direction.biasDeg).toBeNull();
+    expect(s.vectorRmseMps).toBeNull();
+  });
+});
+
+describe("the floor under any score", () => {
+  test("a whole knot and 10° cannot be beaten", () => {
+    const floor = verify.quantisationFloor();
+    // s/√12 for a value rounded to a step of s.
+    expect(floor.speedRmseMps).toBeCloseTo(0.1485, 4);
+    expect(floor.dirRmseDeg).toBeCloseTo(2.887, 3);
+  });
+
+  test("the floor rides along with every score, so it cannot be quoted without it", () => {
+    const s = verify.score([]);
+    expect(s.floor.dirRmseDeg).toBeCloseTo(2.887, 3);
+  });
+});
+
+describe("terrain under a station", () => {
+  test("position beats slope: a ridge is a ridge however gently it rises", () => {
+    expect(verify.classifyTerrain({ tpi: 9, slopeDeg: 2 })).toBe("ridge");
+    expect(verify.classifyTerrain({ tpi: -9, slopeDeg: 2 })).toBe("valley");
+    expect(verify.classifyTerrain({ tpi: 0.2, slopeDeg: 1 })).toBe("flat");
+    expect(verify.classifyTerrain({ tpi: 0.2, slopeDeg: 17 })).toBe("slope");
+  });
+
+  test("terrain nobody read is unknown, not flat", () => {
+    // NaN is how a void arrives from `derive.js`, and calling it flat would put
+    // every hole in the DEM into the class the model finds easiest.
+    expect(verify.classifyTerrain({ tpi: NaN, slopeDeg: NaN })).toBe("unknown");
+    expect(verify.classifyTerrain(null)).toBe("unknown");
+  });
+
+  test("a score splits by class, and each class keeps its own count", () => {
+    const pairs = verify.pair(
+      [observed(T0, 4, 270), observed(T0 + HOUR, 4, 270)],
+      [sample(T0, 6, 270), sample(T0 + HOUR, 4.5, 270)]
+    ).pairs;
+    pairs[0].terrain = "valley";
+    pairs[1].terrain = "flat";
+    const bands = verify.stratify(pairs, (p) => p.terrain);
+    expect(bands.valley.n).toBe(1);
+    expect(bands.valley.speed.biasMps).toBeCloseTo(2, 9);
+    expect(bands.flat.speed.biasMps).toBeCloseTo(0.5, 9);
+  });
+});

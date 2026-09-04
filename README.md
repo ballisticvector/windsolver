@@ -23,6 +23,7 @@ why a `forShot=` parameter is the way it dies.
 - [Ingestion](#ingestion) · [The network client](#the-network-client) · [The volume and its cache](#the-volume-and-its-cache) · [Terrain, read as windows](#terrain-read-as-windows) · [Terrain derivatives](#terrain-derivatives) · [Downscaling: the model wind over the ground](#downscaling-the-model-wind-over-the-ground) · [The whole chain: `field.js`](#the-whole-chain-fieldjs) · [The line a consumer cuts: `slice.js`](#the-line-a-consumer-cuts-slicejs)
 - [The HTTP service](#the-http-service) · [Routes](#routes) · [What every answer carries](#what-every-answer-carries) · [What it refuses, and with which status](#what-it-refuses-and-with-which-status) · [Running it](#running-it)
 - [Measured, not assumed](#measured-not-assumed) · [The whole chain, live over Boulder](#the-whole-chain-live-over-boulder) · [A line through it, live](#a-line-through-it-live)
+- [Against a measured wind](#against-a-measured-wind)
 - [Resolution is a finding, not a setting](#resolution-is-a-finding-not-a-setting)
 - [Things that bite](#things-that-bite)
 - [Not built yet](#not-built-yet)
@@ -45,6 +46,8 @@ why a `forShot=` parameter is the way it dies.
 | `downscale.js` | Puts the two halves together: a 3 km model wind × the terrain, giving east/north over every pixel of the domain. Pure arithmetic, no network |
 | `field.js` | The whole chain in one call: a coordinate in, terrain read, derived and cached, live HRRR fetched and cached, an east/north field over the domain out |
 | `slice.js` | The view a consumer cuts out of a field: a WGS84 geodesic from a point and a bearing, the wind resolved onto it, stacked over a set of heights, and serialised as a `windProfile`. Pure arithmetic, no network |
+| `observations.js` | Station observations from `api.weather.gov`, parsed strictly: known units only, QC-validated only, station coordinates rather than the observation's rounded ones |
+| `verify.js` | Pairs an observation with a model time and scores the difference — circular direction arithmetic, vector error, and the quantisation floor of the instrument. Pure arithmetic, no network |
 | `profile.js` | The `windProfile` contract: what a field looks like leaving here, and every check it has to pass |
 | `server.js` | The HTTP boundary: the general field over a box, the line view for a caller that has a bearing, and the limits that keep a slow upstream from becoming a hung socket |
 
@@ -863,10 +866,91 @@ same air to **+6.5 mph of `cross`**, because west is now the traveller's right.
 1621 m to 1648 m and the 10 ft cross-wind runs 7.5 to 11.0 fps along it — a spread of
 nearly half, which the 3 km model wind has no way to express.
 
-**Still not verified:** the same limit as everything downstream of the downscaling —
-**no comparison with a measured wind**. A line-shaped box is a fraction of an HRRR cell
-across, so every station starts from the same model wind and all the variation along the
-line is terrain. The height stack is the log law over that, with no veer.
+A line-shaped box is a fraction of an HRRR cell across, so every point starts from the
+same model wind and all the variation along the line is terrain. The height stack is the
+log law over that, with no veer, and is still compared with nothing.
+
+## Against a measured wind
+
+Everything above grades the arithmetic against another implementation of the same
+arithmetic. `tools/score-wind.js` does the other thing: it takes the wind that stations
+actually recorded and asks how far the model was from it, for the HRRR wind and for the
+downscaled wind separately, so the downscaling is graded against the thing it claims to
+improve rather than against nothing.
+
+```bash
+node tools/score-wind.js --stations KBDU,KBJC,KEGE,KASE,KLXV --hours 24 \
+  --radius 0.5 --resolution 30 --out score.json
+```
+
+**The observations are METARs from `api.weather.gov`** — the ASOS/AWOS network, one
+station per airport. `observations.js` reads them, converts km/h, knots and m/s and
+refuses any other unit rather than guessing, drops anything the QC field does not call
+validated, and takes the coordinate from the *station* endpoint because the observation's
+own geometry is rounded to four decimals. A calm observation keeps `fromDeg: null`: 0°
+means north, and a calm wind that scores as northerly is a direction error invented by
+the parser.
+
+**Pairing is nearest-in-time within ten minutes, and nothing is interpolated.** An
+interpolated observation is a modelled observation, which is the one thing that must not
+appear on the measured side of a comparison. Observations with no hour inside the window
+are reported as `unmatched`, not dropped.
+
+Live over the Colorado mountains, 24 hours to 2026-09-04T12Z, five stations from 1,612 m
+to 3,026 m, 30 m terrain over a half-mile box each:
+
+```
+candidate        obs   hrs  spd bias  spd rmse  dir bias  dir rmse  vec rmse
+HRRR alone       423   107      0.24      1.61      -9.2      62.2      2.93
+downscaled       423   107      0.29      1.65      -9.2      62.1      2.96
+```
+
+**The downscaling did not help.** It is 0.03 m/s worse in speed RMSE and 0.02 m/s worse
+as a vector, which is inside the noise of 107 station-hours but is certainly not the
+improvement the module exists to make. That is the finding, and it is written here rather
+than in a backlog because the whole point of building this tool was to be told something
+unwelcome.
+
+Two reasons it is not yet an indictment of the downscaling, both about *where* the
+stations are:
+
+| Station | | Terrain class under it |
+| --- | --- | --- |
+| KBDU | Boulder Municipal, 1,612 m | flat |
+| KBJC | Broomfield/Jeffco, 1,692 m | slope |
+| KEGE | Eagle County Regional, 1,993 m | flat |
+| KASE | Aspen-Pitkin County, 2,339 m | flat |
+| KLXV | Leadville, 3,026 m | flat |
+
+**Airports are built on the flat bit.** Aspen sits in a canyon and scores as `flat`,
+because the class describes the ground within the domain around the station and that
+ground is a runway. Four of the five stations are therefore the case where terrain
+correction should do least, and the one slope station — 12 observations — is the only row
+where the downscaled wind is clearly better: 20.1° direction RMSE against 62.8° on the
+flat stations, and 1.59 m/s vector RMSE against 2.98. Twelve samples proves nothing. It
+is the only place the hypothesis is even being tested.
+
+**`obs` and `hrs` are both printed because they are not the same evidence.** A station
+reporting every twenty minutes pairs several observations to one hourly field, so 423
+observations are 107 station-hours; quoting the larger number as the sample size claims
+independence the data does not have.
+
+**The floor is quoted with the error.** METAR speed is whole knots and direction whole
+tens of degrees, so a model that were exactly right would still score 0.15 m/s and 2.9°
+against it. An error is meaningless without the resolution of the ruler.
+
+**And the independence caveat is printed above every table**, because it is the one that
+would make these numbers a lie by omission: NCEP *assimilates* surface observations into
+the HRRR analysis, so the `f0` field has already seen these stations. The `HRRR alone`
+row is therefore not a forecast skill score — it is closer to an analysis fit. The
+downscaling has not seen them, which is why the *difference* between the two rows is the
+honest part of the table. `--forecast 6` scores an f06 forecast instead, which has not
+seen the observations at its own valid hour; `cache.js` keys on the lead time so an
+analysis and a forecast valid at the same moment cannot share a cache entry.
+
+**What this does not yet support:** a `confidence` number. Five stations, one day, four
+of them flat, and 95 of the 423 observations calm and so carrying no direction at all. It
+is a harness with a first result, not a calibration.
 
 ## Resolution is a finding, not a setting
 
@@ -884,6 +968,24 @@ Whatever gets chosen has to reach the UI. A screen that says "1 m" everywhere is
 wherever the lidar has not been flown.
 
 ## Things that bite
+
+**A listed 3DEP product may not be a GeoTIFF at all.** Over Boulder the 1/9 arc-second
+dataset returns real, current products whose `downloadURL` ends `.zip` — ERDAS IMG inside
+an archive, which no amount of range-reading turns into a window. The reader used to
+select one and fail with `not-tiff … starts "PK\u0003\u0004"` after the discovery had
+already succeeded. `dem.parseProducts` now drops any product that is not a `.tif`/`.tiff`
+and counts it as `unreadable`, so discovery falls through to the coarser product that can
+be read, and **"terrain exists but this reader cannot open it" stays distinct from "there
+is no terrain here"** in the listing and in `selectDataset().considered`.
+
+**A station observation is not independent of the HRRR analysis.** NCEP assimilates
+surface observations, so scoring `f0` against `api.weather.gov` grades a fit, not a
+forecast. `tools/score-wind.js` prints that above every table and takes `--forecast` for
+the comparison that is not circular.
+
+**And an ASOS station is on the flattest ground for miles**, because it is at an airport.
+Four of the five Colorado stations scored so far classify as `flat` — including Aspen, in
+a canyon — so a terrain correction is being graded where it should do the least.
 
 **Dataset tags are matched verbatim.** They were read from the live `/datasets` endpoint,
 not from documentation. A near-miss returns an empty result rather than an error, which
@@ -985,9 +1087,11 @@ comparison also only holds on the central meridian — see the note on convergen
 
 The downscaling is graded factor by factor and bearing by bearing against an independent
 Numpy implementation of Liston & Elder, over four synthetic domains. What that grades is
-the arithmetic, not the physics: **no part of it has been compared with a measured wind**,
-and the weights are the paper's defaults rather than anything fitted to this terrain.
-Real 3DEP domains do run through it now, over one coordinate and one cycle.
+the arithmetic, not the physics. The weights are the paper's defaults rather than
+anything fitted to this terrain, and the one measured comparison there is —
+[against a measured wind](#against-a-measured-wind), five Colorado stations over a day —
+found the downscaled wind **no better than the HRRR wind it corrects**, at stations that
+are almost all airport-flat. That is a first result on the wrong terrain, not a verdict.
 
 The slice on top of it is graded against PROJ for the geodesic and against `profile.js`
 for the contract, which grades the geometry and the serialisation. It does not grade the

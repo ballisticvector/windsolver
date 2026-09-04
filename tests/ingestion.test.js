@@ -1,3 +1,6 @@
+const fs = require("fs");
+const path = require("path");
+
 const geo = require("../geo");
 const dem = require("../dem");
 const hrrr = require("../hrrr");
@@ -267,6 +270,51 @@ describe("dem — parsing a National Map response", () => {
     expect(dem.parseProducts({ total: 0, items: [] }).items).toHaveLength(0);
     expect(dem.parseProducts({}).items).toHaveLength(0);
     expect(dem.parseProducts(null).items).toHaveLength(0);
+  });
+
+  test("a product that is not a windowable GeoTIFF is dropped, and counted", () => {
+    // 1/9 arc-second is a real 3DEP dataset, finer than 1/3, and it is
+    // published as a zipped ERDAS IMG rather than as a COG — the whole 118 MB
+    // archive or nothing. Kept in the listing it wins on resolution, and the
+    // reader gets "PK\u0003\u0004" where it expected a TIFF header, at the far
+    // end of a cold solve. Measured against KBDU on 2026-09-04.
+    const real = JSON.parse(fs.readFileSync(
+      path.join(__dirname, "fixtures", "tnm-one-ninth-boulder.json"), "utf8"));
+    const parsed = dem.parseProducts(real);
+    expect(real.items.length).toBeGreaterThan(0);
+    expect(parsed.items).toHaveLength(0);
+    expect(parsed.unreadable).toBe(real.items.length);
+  });
+
+  test("discovery falls past a dataset whose products cannot be windowed", () => {
+    // The fall-through is the fix. Dropping the products without it would turn
+    // "1/9 is unusable here" into "there is no terrain here".
+    const one = JSON.parse(fs.readFileSync(
+      path.join(__dirname, "fixtures", "tnm-one-ninth-boulder.json"), "utf8"));
+    const domain = { west: -105.2, south: 39.8, east: -105.1, north: 39.9 };
+    const cover = {
+      minX: -105.3, maxX: -105.0, minY: 39.7, maxY: 40.0
+    };
+    const fetchJson = async (url) => {
+      if (url.indexOf("1%2F9") !== -1) return one;
+      if (url.indexOf("1%2F3") !== -1) {
+        return {
+          items: [{
+            title: "USGS 13 arc-second n40w106",
+            format: "GeoTIFF",
+            downloadURL: "https://prd-tnm.s3.amazonaws.com/StagedProducts/Elevation/13/TIFF/current/n40w106/USGS_13_n40w106.tif",
+            boundingBox: cover,
+            publicationDate: "2023-01-01"
+          }]
+        };
+      }
+      return { items: [] };
+    };
+
+    return dem.discover(domain, fetchJson, {}).then((res) => {
+      expect(res.dataset.id).toBe("one-third");
+      expect(res.tiles[0].downloadUrl).toMatch(/\.tif$/);
+    });
   });
 
   test("re-flown ground keeps only the newest vintage", () => {
