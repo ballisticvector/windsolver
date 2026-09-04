@@ -25,6 +25,12 @@
  * read as "ask again". The cache is an optimisation, and an optimisation that
  * can fail a request is a liability.
  *
+ * **A directory that cannot be written is reported once.** A cache that silently
+ * does nothing is indistinguishable from one that is working, and the first
+ * deployment of this module spent every request re-asking TNM because the unit
+ * carried `ProtectHome=read-only` and every write failed into the `catch`
+ * below. Failing the request over it would still be wrong; saying so would not.
+ *
  * **Entries are written atomically.** Write to a temporary name in the same
  * directory and rename over the target, because rename within a filesystem is
  * atomic and a reader can therefore only ever see a whole file. Two processes
@@ -84,6 +90,18 @@ function fileNameFor(url) {
 }
 
 /**
+ * The default report for a cache directory that will not take a write: one
+ * line on stderr, in the shape `tools/serve.js` logs.
+ */
+function writeWarning(detail) {
+  process.stderr.write(JSON.stringify(Object.assign({
+    t: new Date().toISOString(),
+    level: "warn",
+    message: "listing cache is not writable; every solve will re-ask The National Map"
+  }, detail)) + "\n");
+}
+
+/**
  * A listing cache over a directory.
  *
  * `now` is injectable so expiry can be tested without waiting a fortnight, and
@@ -96,7 +114,12 @@ function createListingCache(options) {
   const ttlMs = o.ttlMs === undefined ? DEFAULT_TTL_MS : o.ttlMs;
   const maxEntries = o.maxEntries === undefined ? DEFAULT_MAX_ENTRIES : o.maxEntries;
   const now = o.now || function () { return Date.now(); };
-  const stats = { hits: 0, misses: 0, stale: 0, writes: 0, unreadable: 0, evicted: 0 };
+  const stats = { hits: 0, misses: 0, stale: 0, writes: 0, unreadable: 0, evicted: 0, writeFails: 0 };
+  const warn = o.onWriteError === undefined ? writeWarning : o.onWriteError;
+  // Reported once, because the failure is a property of the directory rather
+  // than of the request: a read-only home would otherwise write the same line
+  // for every listing of every solve, and that is a warning nobody reads.
+  let warned = false;
 
   function pathFor(url) {
     return path.join(dir, fileNameFor(url));
@@ -178,10 +201,15 @@ function createListingCache(options) {
       }));
       await fs.promises.rename(temp, target);
       stats.writes++;
-    } catch {
+    } catch (err) {
       // A cache that cannot write is a cache that is not helping, not a
-      // request that failed. Clean up if we can and carry on.
+      // request that failed. Clean up if we can, say so once, and carry on.
+      stats.writeFails++;
       try { await fs.promises.unlink(temp); } catch { /* nothing to clean */ }
+      if (warn && !warned) {
+        warned = true;
+        warn({ dir: dir, error: String(err && err.message || err), fails: stats.writeFails });
+      }
       return false;
     }
     await prune();

@@ -81,14 +81,27 @@ over ground nobody listed is still a cold one.
 ## Where the product listing is cached
 
 The National Map's product search — the 29 s that is not data — is kept on disk
-across restarts. By default that is `~/.cache/windsolver/tnm` for the user the
-unit runs as, which is the deploy user's home on this box. Point it somewhere
-persistent explicitly if the unit ever gains `ProtectHome=` or runs as a user
-with no home:
+across restarts. The default is `~/.cache/windsolver/tnm` for the user the unit
+runs as, **and on this droplet that default cannot work**: the unit carries
+`ProtectHome=read-only`, so every write into `deploy`'s home fails and the cache
+does nothing at all while looking exactly like one that is working. Two lines
+fix it, and they are in the unit:
 
 ```
-Environment=WINDSOLVER_CACHE_DIR=/var/lib/windsolver
+CacheDirectory=windsolver
+Environment=WINDSOLVER_CACHE_DIR=/var/cache/windsolver
 ```
+
+`CacheDirectory=` is what creates `/var/cache/windsolver` owned by the service
+user; `ProtectSystem=full` leaves `/var` writable, so no hardening has to be
+given up to get a cache. Measured on the box afterwards, with the in-memory
+terrain cache emptied by a restart each time: 3.7 s for a box whose listing was
+already on disk against 23–45 s cold, a pin moved 40 m reused the same entry
+because the listing query is snapped to 0.05°, and a repeat is 0.06 s.
+
+If a future unit loses the cache directory the service now says so once, on
+stderr, naming the directory and the errno — a silent cache is the failure that
+cost a deployment here.
 
 Losing the directory costs one slow solve per box, not correctness: an entry
 that cannot be read is a miss, and failures were never written in the first
