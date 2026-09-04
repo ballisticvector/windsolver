@@ -9,7 +9,11 @@
  * settings belong. Flags win over the environment.
  *
  *   PORT, HOST, WINDSOLVER_ORIGINS (comma-separated), WINDSOLVER_TIMEOUT_MS,
- *   WINDSOLVER_MAX_CONCURRENT, WINDSOLVER_MAX_QUEUE
+ *   WINDSOLVER_MAX_CONCURRENT, WINDSOLVER_MAX_QUEUE, WINDSOLVER_STATIC_DIR
+ *
+ * The map page in `public/` is served by default, so one process is the whole
+ * product and a deploy is one copy. `--no-static` turns it off for a box that
+ * should answer the API and nothing else.
  *
  * The service is the *only* thing that fetches: it holds the terrain and
  * atmosphere caches, and a consumer reaches it over HTTP rather than importing
@@ -18,7 +22,11 @@
 
 "use strict";
 
+const nodePath = require("path");
+
 const server = require("../server.js");
+
+const BUNDLED_PAGE = nodePath.join(__dirname, "..", "public");
 
 function args(argv) {
   const out = {};
@@ -48,8 +56,13 @@ const host = a.host || process.env.HOST || "127.0.0.1";
 const originsRaw = a.origins || process.env.WINDSOLVER_ORIGINS || "";
 const origins = String(originsRaw).split(",").map(function (s) { return s.trim(); }).filter(Boolean);
 
+const staticDir = a["no-static"] || process.env.WINDSOLVER_STATIC_DIR === ""
+  ? null
+  : (typeof a.static === "string" ? a.static : process.env.WINDSOLVER_STATIC_DIR || BUNDLED_PAGE);
+
 const options = {
   origins: origins,
+  staticDir: staticDir,
   timeoutMs: num(a.timeout, num(process.env.WINDSOLVER_TIMEOUT_MS, server.DEFAULT_TIMEOUT_MS)),
   maxConcurrent: num(a.concurrency, num(process.env.WINDSOLVER_MAX_CONCURRENT, server.DEFAULT_MAX_CONCURRENT)),
   maxQueue: num(a.queue, num(process.env.WINDSOLVER_MAX_QUEUE, server.DEFAULT_MAX_QUEUE)),
@@ -68,6 +81,7 @@ srv.listen(port, host, function () {
     host: host,
     port: port,
     origins: origins,
+    staticDir: staticDir,
     timeoutMs: options.timeoutMs,
     maxConcurrent: options.maxConcurrent,
     maxQueue: options.maxQueue,
