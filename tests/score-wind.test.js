@@ -18,6 +18,7 @@ const fs = require("fs");
 const path = require("path");
 
 const cog = require("../cog.js");
+const derive = require("../derive.js");
 const downscale = require("../downscale.js");
 const proj = require("../proj.js");
 const scoreWind = require("../tools/score-wind.js");
@@ -116,6 +117,51 @@ function cone(geometry, apex, baseM, reliefM) {
     }
   }
   return out;
+}
+
+/**
+ * A field over real terrain derivatives, so the terms can be turned off one at
+ * a time.
+ *
+ * `stubField` above is uniform on purpose: it makes the pairing and the
+ * accounting readable. It cannot serve the ablation, because switching a gain
+ * off has to change the answer, and that needs a real slope, aspect and
+ * curvature under the station rather than a constant filled in by hand. This
+ * is `field.assemble` with the two network reads replaced by a cone.
+ */
+function terrainField(wind, ground) {
+  const g = ground || {};
+  const stub = stubField(wind, g);
+  const crs = stub.crs;
+  const mid = proj.fromGeographic(crs, station.lat, station.lon);
+  // The apex is pushed off the station so the station stands on the flank.
+  // On the summit itself the slope is zero by symmetry and the slope term is
+  // switched off by the geometry rather than by the option under test.
+  const derived = derive.derive({
+    crs: crs,
+    width: stub.width,
+    height: stub.height,
+    transform: stub.transform,
+    values: cone(stub, { x: mid.x + (g.apexOffsetM || 0), y: mid.y },
+      g.elevationM === undefined ? 1610 : g.elevationM, g.reliefM || 0)
+  });
+  const weights = downscale.terrainWeights(derived, { curvatureLengthM: 300 });
+  const reference = { speedMps: wind.referenceMps, fromDeg: wind.fromDeg };
+  const solved = downscale.downscale(weights, reference, { heightAglM: 10 });
+
+  return Object.assign({}, solved, {
+    reference: {
+      east: -wind.referenceMps * Math.sin(wind.fromDeg * Math.PI / 180),
+      north: -wind.referenceMps * Math.cos(wind.fromDeg * Math.PI / 180),
+      speedMps: wind.referenceMps,
+      fromDeg: wind.fromDeg
+    },
+    weights: weights,
+    derived: derived,
+    heightAglM: 10,
+    offset: { meanM: 12.5 },
+    terrain: { dataset: "3DEP 1m", resolutionM: 1 }
+  });
 }
 
 function stubService(fieldFor) {
@@ -479,6 +525,103 @@ describe("the summary a person reads", () => {
     expect(text).toMatch(new RegExp(
       String(report.overall.downscaled.n) + "\\s+" +
       String(report.overall.downscaled.distinctSamples) + "\\s"));
+  });
+});
+
+describe("scoring the downscaling's terms one at a time", () => {
+  // "The downscaling is worse than the model it started from" is four claims
+  // wearing one number: the slope speed-up, the curvature speed-up, the
+  // sheltering and the diverting angle. Which of them is paying is only
+  // answerable if each is scored on the same observations, the same hours and
+  // the same solved domains as the others.
+  const wind = { speedMps: 8, fromDeg: 225, referenceMps: 8 };
+  const hill = { reliefM: 60, elevationM: 1610, apexOffsetM: 240 };
+
+  async function ablated(extra) {
+    return scoreWind.buildReport(Object.assign({
+      source: stubSource(),
+      service: stubService(function () { return terrainField(wind, hill); }),
+      stations: ["KBDU"], hours: 4, endMs: END, ablate: true
+    }, extra || {}));
+  }
+
+  test("every term is scored against the same pairs as the whole", async () => {
+    const report = await ablated();
+    const keys = report.candidates.map(function (c) { return c.key; });
+    expect(keys).toEqual([
+      "model", "downscaled", "slopeOnly", "curvatureOnly", "noDivert", "divertOnly"]);
+    for (const key of keys) {
+      expect(report.overall[key].n).toBe(report.overall.model.n);
+      expect(report.overall[key].distinctSamples).toBe(report.overall.model.distinctSamples);
+    }
+    expect(report.overall.model.n).toBeGreaterThan(0);
+  });
+
+  test("a term switched off really is off, and the rest still run", async () => {
+    const report = await ablated();
+    const gain = report.stations[0].gain;
+    // On a hillside the whole downscaling moves the wind, and so does each
+    // speed term alone. If any of these were 1 the row would be scoring the
+    // model under another name and reading as "this term does no harm".
+    expect(gain.downscaled).not.toBeCloseTo(1, 3);
+    expect(gain.slopeOnly).not.toBeCloseTo(1, 3);
+    expect(gain.curvatureOnly).not.toBeCloseTo(1, 3);
+    // Turning is not a speed term: with every gain at zero the speed is the
+    // model's exactly, so whatever that row scores is the turning alone.
+    expect(gain.divertOnly).toBeCloseTo(1, 9);
+    // To 2 places, not 6: the candidate's speed goes through a float32 field
+    // and the model's does not, so they agree to about a millimetre a second
+    // and the report rounds to three places anyway.
+    expect(report.overall.divertOnly.speed.rmseMps)
+      .toBeCloseTo(report.overall.model.speed.rmseMps, 2);
+    expect(report.overall.divertOnly.direction.rmseDeg)
+      .not.toBeCloseTo(report.overall.model.direction.rmseDeg, 2);
+    // And the mirror of it: no diverting keeps the speed weighting.
+    expect(report.overall.noDivert.direction.rmseDeg)
+      .toBeCloseTo(report.overall.model.direction.rmseDeg, 2);
+    expect(gain.noDivert).toBeCloseTo(gain.downscaled, 9);
+  });
+
+  test("without --ablate the report is the two rows it always was", async () => {
+    const report = await ablated({ ablate: false });
+    expect(Object.keys(report.overall)).toEqual(["model", "downscaled"]);
+  });
+
+  test("the summary names every term and what it did to the wind", async () => {
+    const text = scoreWind.summarise(await ablated());
+    for (const label of ["HRRR alone", "downscaled", "slope only", "curvature only",
+      "no diverting", "diverting only"]) {
+      expect(text).toContain(label);
+    }
+    // The sheltering gain is a default that does nothing unless Sx was
+    // derived, and a row headed "shelter 0.5" that never sheltered anything is
+    // the same silent no-op as a cache that cannot be written.
+    expect(text).toMatch(/inert, no Sx derived/);
+  });
+
+  // Each term is divided by the largest value inside the requested box, so the
+  // wind at a station is partly a fact about how much ground was asked for.
+  // These rows hold the divisor still, and they are only worth having if they
+  // really are a different weighting of the same domain.
+  test("fixed scales re-weight the same domain, on the same pairs", async () => {
+    const scales = { slopeScaleRad: (40 * Math.PI) / 180, curvatureScale: 0.13 };
+    const report = await ablated({ scales: scales });
+    const keys = report.candidates.map(function (c) { return c.key; });
+    expect(keys).toContain("fixedScales");
+    expect(keys).toContain("fixedCurvatureOnly");
+    for (const key of keys) {
+      expect(report.overall[key].n).toBe(report.overall.model.n);
+      expect(report.overall[key].distinctSamples).toBe(report.overall.model.distinctSamples);
+    }
+    const gain = report.stations[0].gain;
+    expect(gain.fixedScales).not.toBeCloseTo(gain.downscaled, 3);
+    expect(report.domain.fixedScales).toEqual(scales);
+  });
+
+  test("without --scales the report says the divisor was the domain's own", async () => {
+    const report = await ablated();
+    expect(report.domain.fixedScales).toBeNull();
+    expect(report.candidates.map(function (c) { return c.key; })).not.toContain("fixedScales");
   });
 });
 

@@ -28,6 +28,11 @@
  *                (default 0.03, short grass)
  *   --no-height  score the model at its own level instead of moving it to the
  *                anemometer's height
+ *   --ablate     score the downscaling's terms one at a time as well as together
+ *   --shelter    derive Winstral sheltering, so the third term is not inert
+ *   --scales     also score the downscaling normalised against fixed physical
+ *                scales instead of against each domain's own extremes, as
+ *                `slopeDeg,curvature` (default 40,0.13 with a bare --scales)
  *   --out        write the full result as JSON to this path
  *
  * **It costs one HRRR subset per station per hour** — a few KB each, but each
@@ -58,6 +63,21 @@
  * model look too fast. The model wind is brought down to whatever height the station says
  * before it is scored, and the factor is in the report. An ASOS is at 10 m and
  * moves by nothing, which is why the airport scores in #28 did not need this.
+ *
+ * **A combined score cannot say which term is paying.** `W = (1 + Ws*Os +
+ * Wc*Oc) * (1 - Wx*Ox)`, plus a diverting angle applied to the direction, is
+ * four independent claims about the ground reported as one number, and the
+ * first RAWS run said only that the four of them together were worse than
+ * leaving the model alone. `--ablate` scores each of them on the *same*
+ * observations and the same solved domains: the terrain weighting is computed
+ * once per station and every candidate is a re-weighting of it, so a fifth
+ * candidate costs arithmetic over a 90 x 90 grid and no network at all.
+ *
+ * **Sheltering is off unless it is asked for.** `derive` only computes Winstral
+ * Sx when the spec says so, so `Wx*Ox` was identically zero in every score run
+ * so far: what has been graded is the two speed-*up* terms with the one term
+ * that can slow the wind down switched off. `--shelter` turns it on, at the
+ * cost of a wider terrain read and the sector search.
  *
  * **A station is dropped if its published elevation disagrees with the ground
  * under its published coordinate.** One of the two is then wrong, and the
@@ -115,10 +135,65 @@ function hoursIn(endMs, count) {
 /** Score options: which candidate wind to read, and the observer's rounding. */
 function reading(floor, which) {
   return {
-    read: function (p) { return p.sample[which]; },
+    read: function (p) { return p.sample.byCandidate[which]; },
     speedStepMps: floor.speedStepMps,
     dirStepDeg: floor.dirStepDeg
   };
+}
+
+/**
+ * The candidate winds a run scores, in the order they are printed.
+ *
+ * `model` is the single HRRR wind the domain was downscaled from and is the
+ * thing everything else has to beat. The rest are the same downscaling with
+ * different gains, so the difference between two rows is one term and not one
+ * term plus a different domain, a different hour or a different pairing.
+ */
+function candidatesFor(opts) {
+  const o = opts || {};
+  const list = [
+    { key: "model", label: "HRRR alone", short: "hrrr", reference: true },
+    { key: "downscaled", label: "downscaled", short: "down", options: {} }
+  ];
+  if (!o.ablate) return list;
+
+  list.push(
+    // One gain at a time. `shelter: 0` is explicit rather than assumed: on a
+    // domain derived with sheltering the default gain is 0.5, and a row called
+    // "slope only" that quietly carried it would be the same conflation this
+    // whole option exists to undo.
+    { key: "slopeOnly", label: "slope only", short: "slope",
+      options: { weights: { curvature: 0, shelter: 0 } } },
+    { key: "curvatureOnly", label: "curvature only", short: "curv",
+      options: { weights: { slope: 0, shelter: 0 } } },
+    // The speed weighting with the turning switched off, and the turning with
+    // the speed weighting switched off. Direction and speed are scored
+    // separately anyway, but the diverting angle is a function of the slope
+    // term, so "is the turning helping" is not answerable from the gains alone.
+    { key: "noDivert", label: "no diverting", short: "nodiv", options: { divert: false } },
+    { key: "divertOnly", label: "diverting only", short: "divert",
+      options: { weights: { slope: 0, curvature: 0, shelter: 0 } } }
+  );
+  if (o.shelter) {
+    list.push(
+      { key: "shelterOnly", label: "shelter only", short: "shelt",
+        options: { weights: { slope: 0, curvature: 0 } } },
+      { key: "noShelter", label: "no shelter", short: "noshelt",
+        options: { weights: { shelter: 0 } } }
+    );
+  }
+  // The same downscaling with the divisor held still. By default each term is
+  // scaled by the largest value inside the requested box, so the wind at a
+  // station is partly a fact about how much ground was asked for; these rows
+  // say whether taking that out helps, hurts, or does nothing measurable.
+  if (o.scales) {
+    list.push(
+      { key: "fixedScales", label: "fixed scales", short: "fixed", options: {}, scales: o.scales },
+      { key: "fixedCurvatureOnly", label: "fixed curvature only", short: "fixcurv",
+        options: { weights: { slope: 0, shelter: 0 } }, scales: o.scales }
+    );
+  }
+  return list;
 }
 
 /** The 3DEP ground under a coordinate, from an already-derived domain. */
@@ -162,6 +237,7 @@ function tidy(score) {
       within30Deg: round(score.direction.within30Deg, 3)
     },
     vectorRmseMps: round(score.vectorRmseMps, 3),
+    scale: round(score.scale, 4),
     excluded: score.excluded,
     floor: {
       speedRmseMps: round(score.floor.speedRmseMps, 3),
@@ -194,6 +270,9 @@ async function buildReport(options) {
   const roughnessM = o.roughnessM === undefined
     ? downscale.DEFAULT_ROUGHNESS_M : o.roughnessM;
   const useSensorHeight = o.sensorHeight === undefined ? true : !!o.sensorHeight;
+  const useShelter = !!o.shelter;
+  const candidates = o.candidates || candidatesFor({
+    ablate: o.ablate, shelter: useShelter, scales: o.scales });
 
   // The ruler the observations were written with. A METAR is a whole knot and
   // 10°; a RAWS is a whole mile per hour and 1°. Scoring RAWS against a METAR's
@@ -218,6 +297,12 @@ async function buildReport(options) {
     });
 
     const samples = [];
+    const rescaled = {};
+    // How much each candidate multiplied the model wind at this station's own
+    // coordinate. The score says whether a term helped; this says what it did,
+    // and the two answer different questions — a term can be harmless on
+    // average and still be multiplying a ridge by 1.3.
+    const gains = {};
     let terrain = null;
 
     // The model is asked for a level; the station measures at whatever height
@@ -243,7 +328,8 @@ async function buildReport(options) {
           radiusMiles: radiusMiles,
           targetResolutionM: resolutionM,
           validTime: validTime,
-          forecastHour: forecastHour
+          forecastHour: forecastHour,
+          shelter: useShelter ? true : undefined
         });
       } catch (err) {
         // One bad hour is a fact about NOMADS or about The National Map, not a
@@ -253,8 +339,8 @@ async function buildReport(options) {
         continue;
       }
 
-      const fine = downscale.windAt(field, station.lat, station.lon);
       const reference = field.reference;
+      const referenceSpeed = Math.hypot(reference.east, reference.north);
 
       if (height.fieldHeightAglM === null) {
         const fieldHeight = typeof field.heightAglM === "number" ? field.heightAglM : null;
@@ -291,19 +377,40 @@ async function buildReport(options) {
         terrain.class = verify.classifyTerrain(terrain);
       }
 
-      samples.push({
-        timeMs: validTime.getTime(),
-        // The downscaled wind at the station, which is what the service answers.
-        fine: fine
-          ? { speedMps: fine.speedMps * height.factor, fromDeg: fine.fromDeg }
-          : { speedMps: null, fromDeg: null },
-        // The single HRRR wind the whole domain was downscaled from: the
-        // baseline this engine has to beat to be worth running.
-        model: {
-          speedMps: Math.hypot(reference.east, reference.north) * height.factor,
-          fromDeg: bearingFrom(reference.east, reference.north)
+      // Every candidate is the same domain re-weighted, so the terrain read and
+      // the HRRR subset are paid once and the comparison between two rows is
+      // one gain and nothing else.
+      const byCandidate = {};
+      for (const candidate of candidates) {
+        // Re-weighting against fixed scales is a second pass over the
+        // curvature, so it is done once per candidate per domain rather than
+        // once per hour; the derived domain is the same object all hour.
+        let weights = field.weights;
+        if (candidate.scales) {
+          if (!rescaled[candidate.key]) {
+            rescaled[candidate.key] = downscale.terrainWeights(field.derived, Object.assign(
+              { curvatureLengthM: field.weights.curvatureLengthM }, candidate.scales));
+          }
+          weights = rescaled[candidate.key];
         }
-      });
+        const at = candidate.reference
+          ? { speedMps: referenceSpeed, fromDeg: bearingFrom(reference.east, reference.north) }
+          : downscale.windAt(
+            Object.keys(candidate.options).length === 0 && weights === field.weights
+              ? field
+              : downscale.downscale(weights, reference,
+                Object.assign({ heightAglM: field.heightAglM }, candidate.options)),
+            station.lat, station.lon);
+        byCandidate[candidate.key] = at
+          ? { speedMps: at.speedMps * height.factor, fromDeg: at.fromDeg }
+          : { speedMps: null, fromDeg: null };
+        if (at && referenceSpeed > 0) {
+          const g = gains[candidate.key] || { sum: 0, n: 0 };
+          gains[candidate.key] = { sum: g.sum + at.speedMps / referenceSpeed, n: g.n + 1 };
+        }
+      }
+
+      samples.push({ timeMs: validTime.getTime(), byCandidate: byCandidate });
     }
 
     // The published elevation against the 3DEP ground under the published
@@ -346,7 +453,15 @@ async function buildReport(options) {
       allPairs.push(p);
     }
 
-    stations.push({
+    const stationScores = {};
+    const stationGains = {};
+    for (const candidate of candidates) {
+      stationScores[candidate.key] = tidy(verify.score(paired.pairs, reading(floor, candidate.key)));
+      const g = gains[candidate.key];
+      stationGains[candidate.key] = g && g.n ? round(g.sum / g.n, 3) : null;
+    }
+
+    stations.push(Object.assign({
       id: station.id,
       name: station.name,
       lat: station.lat,
@@ -361,24 +476,50 @@ async function buildReport(options) {
       paired: paired.pairs.length,
       unmatched: paired.unmatched.length,
       nearestUnmatchedMinutes: nearestUnmatchedMs === null ? null : round(nearestUnmatchedMs / 60000, 1),
-      model: tidy(verify.score(paired.pairs, reading(floor, "model"))),
-      downscaled: tidy(verify.score(paired.pairs, reading(floor, "fine")))
-    });
+      // What each candidate did to the model wind here, as a multiplier.
+      gain: stationGains
+    }, stationScores));
   }
 
-  // Both candidates are stratified, not just the downscaled one. "The
+  // Every candidate is stratified, not just the downscaled one. "The
   // downscaling scores 6.2 on slopes" is unreadable on its own: the question is
   // whether it beat the model it started from on that terrain, and that needs
   // the same split on both sides.
   const classOf = function (p) { return p.terrain ? p.terrain.class : "unknown"; };
   const byTerrain = {};
-  const modelByTerrain = verify.stratify(allPairs, classOf, reading(floor, "model"));
-  for (const [label, scored] of Object.entries(
-    verify.stratify(allPairs, classOf, reading(floor, "fine"))
-  )) byTerrain[label] = { model: tidy(modelByTerrain[label]), downscaled: tidy(scored) };
+  for (const candidate of candidates) {
+    for (const [label, scored] of Object.entries(
+      verify.stratify(allPairs, classOf, reading(floor, candidate.key))
+    )) {
+      if (!byTerrain[label]) byTerrain[label] = {};
+      byTerrain[label][candidate.key] = tidy(scored);
+    }
+  }
+
+  const overall = {};
+  for (const candidate of candidates) {
+    overall[candidate.key] = tidy(verify.score(allPairs, reading(floor, candidate.key)));
+  }
+
+  // The same candidates with each one's own mean speed error divided out.
+  //
+  // A run carrying a bias that is not about the ground — the model's own, the
+  // roughness the height correction assumed, the brush a RAWS tower stands in —
+  // grades every multiplicative term on its sign: against a model that is too
+  // fast, a term that slows the wind wins over any terrain and a term that
+  // speeds it up loses over any terrain. These rows ask the other question,
+  // which is whether a term puts the wind in the right place. Each scale is
+  // fitted on the observations it is then scored against, so the rows are
+  // comparable with each other and not with the ones above.
+  const debiased = {};
+  for (const candidate of candidates) {
+    const opts = reading(floor, candidate.key);
+    debiased[candidate.key] = tidy(verify.score(allPairs,
+      Object.assign({}, opts, { scale: verify.debiasScale(allPairs, opts) })));
+  }
 
   const report = {
-    schemaVersion: 2,
+    schemaVersion: 3,
     generated: new Date(started).toISOString(),
     window: {
       from: validTimes[0].toISOString(),
@@ -395,7 +536,11 @@ async function buildReport(options) {
       // travels with the report rather than living in someone's memory.
       positionRadiusM: positionRadiusM,
       positionThresholdM: verify.DEFAULT_POSITION_THRESHOLD_M,
-      roughnessM: roughnessM
+      roughnessM: roughnessM,
+      // Null means every term was divided by the largest value inside the box,
+      // which makes the answer partly a fact about the request. Two reports
+      // cannot be compared without knowing which of the two this was.
+      fixedScales: o.scales || null
     },
     source: {
       observations: o.observationSource ||
@@ -407,10 +552,19 @@ async function buildReport(options) {
         : "partial: an f" + forecastHour + " forecast has not seen the observations at its own valid hour."
     },
     stations: stations,
-    overall: {
-      model: tidy(verify.score(allPairs, reading(floor, "model"))),
-      downscaled: tidy(verify.score(allPairs, reading(floor, "fine")))
-    },
+    candidates: candidates.map(function (c) {
+      return {
+        key: c.key,
+        label: c.label,
+        short: c.short || c.key,
+        weights: c.reference ? null : Object.assign({}, downscale.DEFAULT_WEIGHTS,
+          (c.options && c.options.weights) || {}),
+        divert: c.reference ? null : !(c.options && c.options.divert === false)
+      };
+    }),
+    shelter: useShelter,
+    overall: overall,
+    debiased: debiased,
     byTerrain: byTerrain,
     droppedStations: dropped,
     elevationToleranceM: elevationToleranceM,
@@ -419,6 +573,23 @@ async function buildReport(options) {
   };
 
   return report;
+}
+
+/**
+ * `--scales`, as `slopeDeg,curvature`.
+ *
+ * The bare flag takes the middle of what thirteen Colorado RAWS domains
+ * actually reported for their own extremes — 31 to 55 degrees of slope and
+ * 0.097 to 0.174 of curvature over boxes of the same 1.6 km width — so the
+ * default is a measured middle rather than a round number.
+ */
+function fixedScales(value) {
+  if (!value) return null;
+  const parts = value === true ? [40, 0.13] : String(value).split(",").map(Number);
+  if (parts.length !== 2 || !parts.every(function (n) { return n > 0; })) {
+    throw new Error("--scales is slopeDeg,curvature, both positive: " + value);
+  }
+  return { slopeScaleRad: (parts[0] * Math.PI) / 180, curvatureScale: parts[1] };
 }
 
 async function main() {
@@ -454,6 +625,9 @@ async function main() {
     elevationToleranceM: number(args.elevation, 50, "elevation"),
     roughnessM: number(args.roughness, downscale.DEFAULT_ROUGHNESS_M, "roughness"),
     sensorHeight: !args["no-height"],
+    ablate: !!args.ablate,
+    shelter: !!args.shelter,
+    scales: fixedScales(args.scales),
     endMs: endMs
   });
 
@@ -494,7 +668,7 @@ function sourceFor(name, ids) {
 
 function line(label, score) {
   return [
-    label.padEnd(14),
+    label.padEnd(16),
     String(score.n).padStart(5),
     String(score.distinctSamples).padStart(5),
     fixed(score.speed.biasMps, 2).padStart(9),
@@ -503,6 +677,19 @@ function line(label, score) {
     fixed(score.direction.rmseDeg, 1).padStart(9),
     fixed(score.vectorRmseMps, 2).padStart(9)
   ].join(" ");
+}
+
+/** The mean multiplier a candidate applied, over the stations that scored. */
+function meanGain(report, key) {
+  let sum = 0;
+  let n = 0;
+  for (const s of report.stations) {
+    const g = s.gain && s.gain[key];
+    if (typeof g !== "number") continue;
+    sum += g;
+    n++;
+  }
+  return n ? sum / n : null;
 }
 
 function fixed(value, places) {
@@ -542,20 +729,32 @@ function heights(report) {
     " (log law, z0 " + report.domain.roughnessM + " m; speed only, no veering)";
 }
 
+/** The candidates the report scored, oldest reports first. */
+function candidatesOf(report) {
+  if (report.candidates && report.candidates.length) return report.candidates;
+  return [
+    { key: "model", label: "HRRR alone", short: "hrrr" },
+    { key: "downscaled", label: "downscaled", short: "down" }
+  ];
+}
+
 function summarise(report) {
-  const head = ["candidate".padEnd(14), "obs".padStart(5), "hrs".padStart(5), "spd bias".padStart(9),
+  const head = ["candidate".padEnd(16), "obs".padStart(5), "hrs".padStart(5), "spd bias".padStart(9),
     "spd rmse".padStart(9), "dir bias".padStart(9), "dir rmse".padStart(9),
     "vec rmse".padStart(9)].join(" ");
+  const candidates = candidatesOf(report);
 
   const out = [
     "WindSolver against measured wind",
     report.window.from + " to " + report.window.to + "  f" + report.window.forecastHour,
     report.source.independence,
     "",
-    head,
-    line("HRRR alone", report.overall.model),
-    line("downscaled", report.overall.downscaled),
-    "",
+    head
+  ];
+  for (const c of candidates) {
+    if (report.overall[c.key]) out.push(line(c.label, report.overall[c.key]));
+  }
+  out.push("",
     "speed and vector errors are m/s, direction degrees; a perfect model scores " +
       fixed(report.overall.downscaled.floor.speedRmseMps, 2) + " m/s and " +
       fixed(report.overall.downscaled.floor.dirRmseDeg, 1) + "° against these " +
@@ -564,16 +763,55 @@ function summarise(report) {
       "reporting every five minutes contributes several obs to one sample",
     heights(report),
     ""
-  ];
+  );
+
+  // What each term did, as distinct from whether it helped. A candidate that
+  // multiplies the wind at every station by 1.2 and scores the same as the
+  // model is not a term that does nothing; it is a term whose damage is hidden
+  // inside a bias that was already there.
+  if (candidates.length > 2) {
+    out.push("what each term did to the model wind at the stations' own coordinates:");
+    for (const c of candidates) {
+      if (c.key === "model") continue;
+      const gain = meanGain(report, c.key);
+      if (gain === null) continue;
+      out.push("  " + c.label.padEnd(16) + " x" + fixed(gain, 3) +
+        (c.weights
+          ? "   slope " + c.weights.slope + ", curvature " + c.weights.curvature +
+            ", shelter " + (report.shelter ? c.weights.shelter : c.weights.shelter + " (inert, no Sx derived)") +
+            ", diverting " + (c.divert ? "on" : "off")
+          : ""));
+    }
+    out.push("");
+  }
+
+  // A term is only doing terrain work if it survives having its own mean error
+  // taken away. Without this, "the downscaling is worse" and "the run is too
+  // fast and the downscaling multiplies" are the same table.
+  if (report.debiased && candidates.length > 1) {
+    out.push("the same candidates with each one's own speed bias divided out, so a term is " +
+      "graded on where it puts the wind rather than on which way it pushes the mean:");
+    out.push(head);
+    for (const c of candidates) {
+      if (report.debiased[c.key]) {
+        out.push(line(c.label, report.debiased[c.key]) +
+          "   x" + fixed(report.debiased[c.key].scale, 3));
+      }
+    }
+    out.push("each scale is fitted on the same observations it is then scored against, so " +
+      "these are not scores to quote — only to compare with each other");
+    out.push("");
+  }
 
   if (Object.keys(report.byTerrain).length > 1) {
     out.push("by the terrain under the station, model then downscaled" +
       " (position read over a " + report.domain.positionRadiusM + " m disc, ±" +
       report.domain.positionThresholdM + " m separates ridge and valley from slope):");
     out.push(head);
-    for (const [label, both] of Object.entries(report.byTerrain)) {
-      out.push(line(label + " hrrr", both.model));
-      out.push(line(label + " down", both.downscaled));
+    for (const [label, scores] of Object.entries(report.byTerrain)) {
+      for (const c of candidates) {
+        if (scores[c.key]) out.push(line(label + " " + (c.short || c.key), scores[c.key]));
+      }
     }
     out.push("");
   }
