@@ -1097,6 +1097,28 @@ about, at the height the wind was measured, with the pieces that were previously
 confounded — landform scale, sensor height, pairing window — each visible in the report
 rather than baked into the number.
 
+### The downscaling does not yet earn its place
+
+Scored that way, term by term and split by landform, **the terrain correction is no
+better than raw HRRR overall and clearly worse on ridges.** `docs/downscaling.md` is the
+working note: every measurement taken so far, what each one does and does not license
+anyone to say, and the runs that would settle the open questions. Two of its findings are
+worth knowing before touching `downscale.js`:
+
+- **HRRR's mean wind over these stations is 70% too fast**, so a multiplicative term is
+  graded on the sign of its gain rather than on its physics until that is accounted for.
+- **The model has its own mountains.** `tools/model-terrain.js` compares HRRR's surface
+  orography with the 3DEP ground under each station: the model's ground sits ~70 m above
+  the floor of a valley station and ~41 m below the top of a ridge station, so part of
+  the landform the correction adds has already been applied by the model.
+
+```bash
+node tools/model-terrain.js --stations PCPC2,KSHC2,TT532 --at 2026-09-04T18:00:00Z
+```
+
+**No default or formula has been changed on the strength of any of it**, and none should
+be on one state and one day.
+
 ## Resolution is a finding, not a setting
 
 1 m DEM comes from quality-level-2-or-better lidar and covers a subset of the country;

@@ -11,6 +11,7 @@ code and that will otherwise be undone by accident.
 - [The line: WindSolver knows nothing about rifles](#the-line-windsolver-knows-nothing-about-rifles)
 - [The contract is published, not internal](#the-contract-is-published-not-internal)
 - [The shooter's grid is a projection, not the native shape](#the-shooters-grid-is-a-projection-not-the-native-shape)
+- [The downscaling is under investigation](#the-downscaling-is-under-investigation-and-nothing-about-it-is-settled)
 - [Things that bite](#things-that-bite)
 - [Licensing, before anything is sold](#licensing-before-anything-is-sold)
 - [Conventions](#conventions)
@@ -60,6 +61,28 @@ npm run lint
 >   five-station run found the downscaling **no better than raw HRRR**, on terrain where
 >   it should do least. Do not quote that as a verdict on the downscaling, and do not
 >   quote it as a confidence either.
+> - **The terrain downscaling is not yet known to help, and on ridges it measurably
+>   hurts.** `docs/downscaling.md` is the standing note: read it before changing anything
+>   in `downscale.js`, and add to it rather than starting a new one.
+
+## The downscaling is under investigation, and nothing about it is settled
+
+`docs/downscaling.md` holds every measurement taken against real anemometers so far, the
+hypotheses each one supports, and the runs that would settle them. The two facts most
+likely to make a well-meant change wrong:
+
+- **HRRR runs about 70% fast over the RAWS sample**, so any multiplicative term is graded
+  on the sign of its gain rather than on its physics until that bias is dealt with. A
+  candidate that wins the raw table may only be the one that slows the wind down.
+- **The model has its own mountains.** `tools/model-terrain.js` measures HRRR's surface
+  orography against the 3DEP ground under a station: about 70 m above the floor of a
+  valley station, 41 m below the top of a ridge one. A correction computed against the
+  absolute landform therefore re-adds terrain the model has already applied, which is the
+  leading explanation for the ridge result.
+
+**Do not change a default, a coefficient or the formula on one state and one day of
+observations.** Add a candidate to `tools/score-wind.js --ablate` instead, so the change
+is scored beside the others on the same pairs before it is anywhere near a default.
 
 ## What this is
 
