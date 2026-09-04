@@ -1,0 +1,132 @@
+name: Deploy
+
+# windsolver.com is released deliberately, never as a side effect of merging.
+#
+# There is no staging tier here, so there is no staged-commit gate like
+# BallisticVector's — the button and the CI job below are the whole ceremony.
+# Add one before this service has users who would notice a bad minute.
+on:
+  workflow_dispatch:
+
+# One deploy at a time. Two runs started close together would otherwise race
+# onto the same droplet and the loser leaves it on a commit nobody chose. Queue
+# rather than cancel: a deploy half-way through an `npm ci` should finish.
+concurrency:
+  group: production
+  cancel-in-progress: false
+
+jobs:
+  ci:
+    name: CI Checks
+    uses: ./.github/workflows/ci.yml
+
+  deploy:
+    name: Deploy to windsolver.com
+    runs-on: ubuntu-latest
+    needs: ci
+    environment:
+      name: production
+      url: https://windsolver.com
+    permissions:
+      contents: write
+
+    steps:
+      # Refused rather than skipped. A job with a branch condition on it reports
+      # green while having deployed nothing, which is the one outcome a release
+      # button must never produce.
+      - name: Refuse to release anything but main
+        if: github.ref != 'refs/heads/main'
+        run: |
+          echo "Deploy runs from main; this run is on ${{ github.ref }}." >&2
+          exit 1
+
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      # The droplet gets a tarball built here rather than pulling from GitHub.
+      # This repo is private, so a `git pull` on the box would need a deploy key
+      # living on the box; the runner is already authenticated, and a tarball
+      # cannot end up on a commit nobody chose.
+      #
+      # tests/ and .agents/ are left out: nothing serving traffic reads them,
+      # and tests/fixtures alone is most of the repository. package.json and
+      # package-lock.json stay in, because the box installs from them.
+      - name: Build the tree that will run
+        run: |
+          tar czf /tmp/windsolver.tgz \
+            --exclude=.git --exclude=node_modules --exclude=tests --exclude=.agents \
+            .
+          ls -l /tmp/windsolver.tgz
+          # The unit runs tools/serve.js and the page is served out of public/.
+          # A tarball missing either restarts cleanly onto a broken site.
+          tar tzf /tmp/windsolver.tgz | grep -qx './tools/serve.js'
+          tar tzf /tmp/windsolver.tgz | grep -qx './public/map.js'
+          tar tzf /tmp/windsolver.tgz | grep -qx './package-lock.json'
+
+      - name: Copy it to the droplet
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.DEPLOY_HOST }}
+          username: ${{ secrets.DEPLOY_USER }}
+          key: ${{ secrets.DEPLOY_SSH_KEY }}
+          source: /tmp/windsolver.tgz
+          target: /tmp
+          strip_components: 1
+
+      - name: Unpack, install and restart
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.DEPLOY_HOST }}
+          username: ${{ secrets.DEPLOY_USER }}
+          key: ${{ secrets.DEPLOY_SSH_KEY }}
+          script: |
+            set -e
+            cd /home/deploy/windsolver
+
+            echo "==> Unpacking..."
+            tar xzf /tmp/windsolver.tgz
+
+            echo "==> Installing dependencies..."
+            npm ci --omit=dev
+
+            echo "==> Restarting..."
+            # Passwordless sudo for this one unit only — see docs/deploy.md.
+            sudo systemctl restart windsolver
+
+            echo "==> Verifying..."
+            # The service answers /healthz without touching USGS or NOMADS, so
+            # this checks the process, not the weather. A cold /v1/field can
+            # exceed the service's own 45 s ceiling on a bad USGS minute and is
+            # deliberately not the gate on a deploy.
+            for i in $(seq 1 15); do
+              curl -sf http://127.0.0.1:8099/healthz >/dev/null && break
+              sleep 1
+            done
+            curl -sf http://127.0.0.1:8099/healthz || (echo "Health check failed" && exit 1)
+
+            echo "==> Deployed."
+
+      - name: Check the public URL, not just the socket
+        run: |
+          # Through nginx and TLS, because the page and the API reach a visitor
+          # that way and a vhost can be wrong while the service is perfect.
+          curl -sf -o /dev/null -w 'healthz %{http_code}\n' https://windsolver.com/healthz
+          curl -sf -o /dev/null -w 'page    %{http_code}\n' https://windsolver.com/
+          curl -sf -o /dev/null -w 'map.js  %{http_code}\n' https://windsolver.com/map.js
+
+      - name: Record what is now live
+        run: |
+          # A moving bookmark at the live commit, so the next deploy can show
+          # what it would add. The one place a force-update is correct: it is a
+          # pointer, not history, and nothing is branched from it.
+          git tag -f production "${{ github.sha }}"
+          git push -f origin refs/tags/production
+
+      - name: Summary
+        run: |
+          {
+            echo "## Deployed to windsolver.com"
+            echo "- **Commit:** \`$(echo ${{ github.sha }} | cut -c1-7)\`"
+            echo "- **Triggered by:** ${{ github.actor }}"
+          } >> $GITHUB_STEP_SUMMARY

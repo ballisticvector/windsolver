@@ -9,7 +9,9 @@
  * settings belong. Flags win over the environment.
  *
  *   PORT, HOST, WINDSOLVER_ORIGINS (comma-separated), WINDSOLVER_TIMEOUT_MS,
- *   WINDSOLVER_MAX_CONCURRENT, WINDSOLVER_MAX_QUEUE, WINDSOLVER_STATIC_DIR
+ *   WINDSOLVER_MAX_CONCURRENT, WINDSOLVER_MAX_QUEUE, WINDSOLVER_STATIC_DIR,
+ *   WINDSOLVER_PREWARM (lat,lon[,radiusMiles] entries separated by ;),
+ *   WINDSOLVER_PREWARM_INTERVAL_MS
  *
  * The map page in `public/` is served by default, so one process is the whole
  * product and a deploy is one copy. `--no-static` turns it off for a box that
@@ -23,8 +25,10 @@
 "use strict";
 
 const nodePath = require("path");
+const http = require("http");
 
 const server = require("../server.js");
+const prewarm = require("../prewarm.js");
 
 const BUNDLED_PAGE = nodePath.join(__dirname, "..", "public");
 
@@ -71,6 +75,8 @@ const options = {
   }
 };
 
+const places = prewarm.parsePlaces(a.prewarm === true ? "" : (a.prewarm || process.env.WINDSOLVER_PREWARM));
+
 const srv = server.createServer(options);
 
 srv.listen(port, host, function () {
@@ -85,8 +91,33 @@ srv.listen(port, host, function () {
     timeoutMs: options.timeoutMs,
     maxConcurrent: options.maxConcurrent,
     maxQueue: options.maxQueue,
-    routes: server.ROUTES
+    routes: server.ROUTES,
+    prewarm: places
   }) + "\n");
+
+  // Warmed through the socket the service is already listening on, so the entry
+  // left in the cache is the one a visitor's request looks up. See prewarm.js.
+  if (places.length) {
+    prewarm.start(places, {
+      intervalMs: num(a["prewarm-interval"],
+        num(process.env.WINDSOLVER_PREWARM_INTERVAL_MS, prewarm.DEFAULT_INTERVAL_MS)),
+      log: options.log,
+      fetchPath: function (path) {
+        return new Promise(function (resolve, reject) {
+          const req = http.get({ host: host, port: port, path: path }, function (res) {
+            res.resume();
+            res.on("end", function () { resolve(res.statusCode); });
+          });
+          req.on("error", reject);
+          // Outlast the service's own ceiling: a prewarm that gives up first
+          // reports a failure for a solve that went on to succeed.
+          req.setTimeout(options.timeoutMs + 15000, function () {
+            req.destroy(new Error("prewarm request timed out"));
+          });
+        });
+      }
+    });
+  }
 });
 
 for (const signal of ["SIGINT", "SIGTERM"]) {
