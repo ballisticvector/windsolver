@@ -163,6 +163,13 @@ function maxAbs(values) {
  * bounded to 0.5..1.5 whatever the terrain. It is a *relative* measure by
  * design: the same ridge in a domain full of bigger ridges gets a smaller
  * weight, because the model wind is already the average over the domain.
+ *
+ * **That only holds while the domain is fixed.** In MicroMet the domain is the
+ * region being simulated; here it is whatever box a caller asked for, so the
+ * divisor moves with the request and the wind at one coordinate changes when a
+ * bigger box brings a bigger feature into a corner it never touches. Pass a
+ * scale in the field's own units — `curvatureScale`, `slopeScaleRad`,
+ * `shelterScaleDeg` — to make the answer a property of the ground instead.
  */
 function normalise(values, max) {
   const out = new Float32Array(values.length);
@@ -183,6 +190,11 @@ function normalise(values, max) {
  * Takes a `derive.derive` result. `shelter: true` there is optional; without it
  * the shelter term is simply absent and `terrainWeights` says so, rather than
  * silently weighting by two terms while a caller believes it got three.
+ *
+ * Each term is scaled by the largest magnitude in the domain unless the caller
+ * names a scale for it. The scale actually used is reported next to the domain
+ * extreme it replaced, because the two answer different questions and a field
+ * that does not say which one it used cannot be compared with another one.
  */
 function terrainWeights(derived, opts) {
   const o = opts || {};
@@ -191,6 +203,9 @@ function terrainWeights(derived, opts) {
   }
   const lengthM = o.curvatureLengthM === undefined ? DEFAULT_CURVATURE_LENGTH_M : o.curvatureLengthM;
   if (!(lengthM > 0)) throw fail("bad-length", "curvatureLengthM must be positive");
+  for (const name of ["curvatureScale", "slopeScaleRad", "shelterScaleDeg"]) {
+    if (o[name] !== undefined && !(o[name] > 0)) throw fail("bad-scale", name + " must be positive");
+  }
 
   const geometry = {
     crs: derived.crs,
@@ -207,11 +222,14 @@ function terrainWeights(derived, opts) {
   }, geometry);
 
   const curvature = scaleCurvature(work, lengthM);
-  const omegaC = normalise(curvature, maxAbs(curvature));
+  const maxCurvature = maxAbs(curvature);
+  const curvatureScale = o.curvatureScale === undefined ? maxCurvature : o.curvatureScale;
+  const omegaC = normalise(curvature, curvatureScale);
 
   const slopeDeg = derived.fields.slopeDeg;
   const aspectDeg = derived.fields.aspectDeg;
   const maxSlopeRad = toRad(maxAbs(slopeDeg));
+  const slopeScaleRad = o.slopeScaleRad === undefined ? maxSlopeRad : o.slopeScaleRad;
 
   let shelter = null;
   if (derived.shelter) {
@@ -220,11 +238,13 @@ function terrainWeights(derived, opts) {
       const m = maxAbs(sector.sx);
       if (m > max) max = m;
     }
+    const scaleDeg = o.shelterScaleDeg === undefined ? max : o.shelterScaleDeg;
     shelter = {
       sectors: derived.shelter.sectors.map(function (sector) {
-        return { centreDeg: sector.centreDeg, omega: normalise(sector.sx, max) };
+        return { centreDeg: sector.centreDeg, omega: normalise(sector.sx, scaleDeg) };
       }),
-      maxSxDeg: max
+      maxSxDeg: max,
+      scaleDeg: scaleDeg
     };
   }
 
@@ -239,6 +259,9 @@ function terrainWeights(derived, opts) {
     curvature: curvature,
     omegaC: omegaC,
     maxSlopeRad: maxSlopeRad,
+    maxCurvature: maxCurvature,
+    slopeScaleRad: slopeScaleRad,
+    curvatureScale: curvatureScale,
     curvatureLengthM: lengthM,
     shelter: shelter
   }, geometry);
@@ -323,7 +346,10 @@ function heightFactor(fromHeightM, toHeightM, roughnessM) {
  *
  * and turned by MicroMet's diverting angle, which bends the flow towards the
  * downhill direction across a slope — the term that makes a wind follow a
- * valley instead of driving through the wall of it.
+ * valley instead of driving through the wall of it. `{divert: false}` leaves
+ * the direction alone, which is how the turning is scored on its own against
+ * measured wind: it and the speed weighting are independent claims, and a
+ * combined score cannot say which of them is paying.
  *
  * Cells with no derivative — the border, and anything touching a void — come
  * out `NaN`. They are not filled with the model wind: an undownscaled cell that
@@ -336,6 +362,7 @@ function downscale(weights, wind, opts) {
   const ref = readWind(wind);
   const gains = Object.assign({}, DEFAULT_WEIGHTS, o.weights);
   const useShelter = o.shelter === false ? false : Boolean(weights.shelter);
+  const useDivert = o.divert !== false;
   if (o.shelter === true && !weights.shelter) {
     throw fail("no-shelter", "this domain was derived without shelter; pass {shelter: true} to derive");
   }
@@ -350,7 +377,7 @@ function downscale(weights, wind, opts) {
 
   const bracket = useShelter ? bracketSectors(weights.shelter.sectors, ref.fromDeg) : null;
   const thetaRad = toRad(ref.fromDeg);
-  const maxSlope = weights.maxSlopeRad;
+  const maxSlope = weights.slopeScaleRad === undefined ? weights.maxSlopeRad : weights.slopeScaleRad;
 
   let defined = 0;
   let sumFactor = 0;
@@ -383,7 +410,7 @@ function downscale(weights, wind, opts) {
     // weights, not against the terrain.
     const bounded = f > 0 ? f : 0;
 
-    const divert = Number.isNaN(aspectRad)
+    const divert = Number.isNaN(aspectRad) || !useDivert
       ? 0
       : -0.5 * os * Math.sin(2 * (aspectRad - thetaRad));
     const from = thetaRad + divert;
@@ -418,7 +445,11 @@ function downscale(weights, wind, opts) {
       name: "micromet",
       weights: gains,
       shelter: useShelter,
-      curvatureLengthM: weights.curvatureLengthM
+      divert: useDivert,
+      curvatureLengthM: weights.curvatureLengthM,
+      slopeScaleRad: maxSlope,
+      curvatureScale: weights.curvatureScale,
+      shelterScaleDeg: useShelter ? weights.shelter.scaleDeg : null
     },
     east: east,
     north: north,

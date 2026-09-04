@@ -202,6 +202,36 @@ function quantisationFloor(opts) {
 }
 
 /**
+ * The single factor that would put a candidate's mean speed on the observed
+ * one, or null when there is nothing to scale.
+ *
+ * This exists because a run can carry a bias that has nothing to do with the
+ * ground — the model's own, the roughness the height correction assumed, the
+ * brush a RAWS tower stands in — and while it is there, **every multiplicative
+ * terrain term is graded on its sign rather than on its physics**: against a
+ * model that is uniformly too fast, anything that slows the wind scores better
+ * and anything that speeds it up scores worse, over any terrain at all.
+ *
+ * Removing it is not a correction to the engine and must never be reported as
+ * one. It is a second view of the same run, in which the question is whether a
+ * term puts the wind in the right *place* rather than whether it happens to
+ * push the mean the right way.
+ */
+function debiasScale(pairs, opts) {
+  const o = opts || {};
+  const read = o.read || function (p) { return p.sample; };
+  let observed = 0;
+  let modelled = 0;
+  for (const p of pairs || []) {
+    const m = read(p);
+    if (!m || typeof m.speedMps !== "number" || !isFinite(m.speedMps)) continue;
+    observed += p.observed.speedMps;
+    modelled += m.speedMps;
+  }
+  return modelled > 0 ? observed / modelled : null;
+}
+
+/**
  * Score one candidate wind against the measured one, over a set of pairs.
  *
  * `read` pulls the candidate out of a pair's sample, so the same pairs can be
@@ -209,10 +239,17 @@ function quantisationFloor(opts) {
  * with no chance of the two runs seeing different observations. That comparison
  * is the point: an error of 2 m/s means nothing on its own, and "2.0 m/s where
  * the model alone was 2.6" is a claim about this engine.
+ *
+ * `scale` multiplies the candidate's speed before it is scored and leaves its
+ * direction alone. It rides back out on the result because a score taken under
+ * a scale fitted to the same observations is not comparable with one that was
+ * not, and a number that has quietly had its bias removed is the flattering
+ * kind of wrong.
  */
 function score(pairs, opts) {
   const o = opts || {};
   const read = o.read || function (p) { return p.sample; };
+  const scale = o.scale === undefined || o.scale === null ? 1 : o.scale;
   const minDirectionMps = o.minDirectionMps === undefined
     ? DEFAULT_MIN_DIRECTION_MPS
     : o.minDirectionMps;
@@ -231,7 +268,10 @@ function score(pairs, opts) {
 
   for (const p of pairs) {
     const observed = p.observed;
-    const modelled = read(p);
+    const raw = read(p);
+    const modelled = raw && typeof raw.speedMps === "number"
+      ? { speedMps: raw.speedMps * scale, fromDeg: raw.fromDeg }
+      : raw;
     // A sample belongs to one station at one hour, so counting hours alone
     // would collapse five stations into one and understate the evidence.
     distinct.add(p.stationId + "@" + (p.sample && p.sample.timeMs));
@@ -308,6 +348,7 @@ function score(pairs, opts) {
       noDirection: noObservedDirection
     },
     minDirectionMps: minDirectionMps,
+    scale: scale,
     floor: quantisationFloor(o)
   };
 }
@@ -404,6 +445,7 @@ function stratify(pairs, labelOf, opts) {
 }
 
 module.exports = {
+  debiasScale,
   DEFAULT_MIN_DIRECTION_MPS,
   DEFAULT_POSITION_THRESHOLD_M,
   DEFAULT_TOLERANCE_MS,

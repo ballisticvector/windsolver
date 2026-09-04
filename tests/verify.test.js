@@ -219,6 +219,60 @@ describe("the score", () => {
   });
 });
 
+describe("scoring the shape of a wind rather than its size", () => {
+  // A run whose model is a flat 50% too fast: the terrain terms cannot be read
+  // off the raw score at all, because any multiplier below 1 improves it and
+  // any multiplier above 1 makes it worse whatever the ground is doing.
+  const pairs = verify.pair(
+    [observed(T0, 4, 270), observed(T0 + HOUR, 8, 270), observed(T0 + 2 * HOUR, 6, 270)],
+    [sample(T0, 6, 270), sample(T0 + HOUR, 12, 270), sample(T0 + 2 * HOUR, 9, 270)]
+  ).pairs;
+
+  test("the scale that removes the bias is the ratio of the means", () => {
+    expect(verify.debiasScale(pairs)).toBeCloseTo(18 / 27, 9);
+  });
+
+  test("a scaled score is the same score of a rescaled wind", () => {
+    const s = verify.score(pairs, { scale: verify.debiasScale(pairs) });
+    expect(s.n).toBe(3);
+    expect(s.speed.biasMps).toBeCloseTo(0, 9);
+    expect(s.speed.modelledMeanMps).toBeCloseTo(6, 9);
+    // The direction is untouched: a scale is a claim about how fast the wind
+    // is, never about where it comes from.
+    expect(s.direction.rmseDeg).toBeCloseTo(0, 9);
+    expect(s.vectorRmseMps).toBeCloseTo(0, 9);
+    expect(verify.score(pairs).vectorRmseMps).toBeGreaterThan(2);
+  });
+
+  test("scaling away the bias leaves the scatter it was hiding", () => {
+    // Same mean error, different shape: one model is uniformly fast, the other
+    // is fast on one hour and slow on another. Debiasing flatters the first
+    // completely and the second not at all, which is the whole reason to look.
+    const uniform = verify.pair(
+      [observed(T0, 4, 270), observed(T0 + HOUR, 8, 270)],
+      [sample(T0, 6, 270), sample(T0 + HOUR, 12, 270)]
+    ).pairs;
+    const scattered = verify.pair(
+      [observed(T0, 4, 270), observed(T0 + HOUR, 8, 270)],
+      [sample(T0, 10, 270), sample(T0 + HOUR, 8, 270)]
+    ).pairs;
+
+    expect(verify.score(uniform, { scale: verify.debiasScale(uniform) }).speed.rmseMps)
+      .toBeCloseTo(0, 9);
+    expect(verify.score(scattered, { scale: verify.debiasScale(scattered) }).speed.rmseMps)
+      .toBeGreaterThan(1);
+  });
+
+  test("a scale is reported with the score, because it was fitted on it", () => {
+    expect(verify.score(pairs, { scale: 0.5 }).scale).toBe(0.5);
+    expect(verify.score(pairs).scale).toBe(1);
+  });
+
+  test("no wind to scale is no scale, not a division by zero", () => {
+    expect(verify.debiasScale([])).toBeNull();
+  });
+});
+
 describe("the floor under any score", () => {
   test("a whole knot and 10° cannot be beaten", () => {
     const floor = verify.quantisationFloor();

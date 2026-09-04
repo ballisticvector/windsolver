@@ -32,6 +32,7 @@ const downscale = require("../downscale.js");
 const proj = require("../proj.js");
 
 const FIXTURES = path.join(__dirname, "fixtures");
+const toRad = function (deg) { return (deg * Math.PI) / 180; };
 const REFERENCE = JSON.parse(fs.readFileSync(path.join(FIXTURES, "micromet-reference.json"), "utf8"));
 
 function f32(name) {
@@ -247,6 +248,30 @@ describe("the signs, on a hill whose answer is obvious", () => {
     expect(at(field.divertDeg, crest - 8)).toBeCloseTo(0, 9);
   });
 
+  test("the turning can be switched off without touching the speed", () => {
+    // The speed weighting and the diverting angle are separate claims about
+    // the same ground, and a score of the two together cannot say which of
+    // them is paying. Scoring them apart needs each to be removable on its
+    // own, so this is the invariant: no turning, and the same speeds.
+    const straight = downscale.downscale(
+      weights, { speedMps: 10, fromDeg: 225 }, { shelter: false, divert: false });
+    expect(straight.method.divert).toBe(false);
+    expect(oblique.method.divert).toBe(true);
+
+    let checked = 0;
+    for (let i = 0; i < straight.factor.length; i++) {
+      if (Number.isNaN(straight.factor[i])) continue;
+      expect(straight.divertDeg[i]).toBe(0);
+      expect(straight.fromDeg[i]).toBeCloseTo(225, 9);
+      expect(straight.speedMps[i]).toBeCloseTo(oblique.speedMps[i], 9);
+      checked++;
+    }
+    expect(checked).toBeGreaterThan(100);
+    // And the run it is being compared with really did turn the wind, or the
+    // assertion above is true of nothing.
+    expect(Math.abs(at(oblique.divertDeg, crest - 8))).toBeGreaterThan(0.1);
+  });
+
   test("components and bearing describe the same wind", () => {
     const i = row * width + crest - 8;
     const from = (field.fromDeg[i] * Math.PI) / 180;
@@ -413,6 +438,68 @@ describe("the model's ground is not the ground", () => {
 
   test("refuses to guess the model elevation", () => {
     expect(() => downscale.terrainOffset(weights)).toThrow(/required/);
+  });
+});
+
+describe("normalising against the domain makes the answer depend on the box", () => {
+  // Ground that is gentle where the station stands and violent 3 km east of
+  // it: a cliff that a small window never sees and a large one does. Liston &
+  // Elder scale each terrain term by the extreme within the domain, which is a
+  // fixed region in MicroMet and a request parameter here.
+  const SPACING = 20;
+  const elevation = function (east, north) {
+    const hummock = 25 * Math.exp(-(((east - 3000) / 400) ** 2 + ((north - 3000) / 400) ** 2));
+    const cliff = 400 * Math.exp(-(((east - 6000) / 250) ** 2));
+    return 2000 + hummock + cliff + 0.004 * north;
+  };
+  const boxAround = function (halfM) {
+    const n = Math.round((2 * halfM) / SPACING);
+    const values = new Float32Array(n * n);
+    for (let row = 0; row < n; row++) {
+      for (let col = 0; col < n; col++) {
+        values[row * n + col] = elevation(
+          3000 - halfM + (col + 0.5) * SPACING,
+          3000 + halfM - (row + 0.5) * SPACING
+        );
+      }
+    }
+    return gridFrom(values, n, n, SPACING);
+  };
+  const centreOf = function (field, grid) {
+    return field.speedMps[Math.round(grid.height / 2) * grid.width + Math.round(grid.width / 2)];
+  };
+  const wind = { speedMps: 8, fromDeg: 270 };
+  const small = boxAround(800);
+  const large = boxAround(3200);
+
+  test("the same coordinate, the same ground and the same wind, two windows", () => {
+    const a = downscale.downscale(downscale.terrainWeights(derive.derive(small)), wind);
+    const b = downscale.downscale(downscale.terrainWeights(derive.derive(large)), wind);
+    // Not a rounding difference: the cliff entering the corner of the domain
+    // rescales the wind at the centre by a fifth.
+    expect(Math.abs(centreOf(a, small) - centreOf(b, large))).toBeGreaterThan(1.5);
+  });
+
+  test("a scale given in physical units makes the answer a property of the ground", () => {
+    const scales = { curvatureScale: 0.002, slopeScaleRad: toRad(30) };
+    const a = downscale.downscale(downscale.terrainWeights(derive.derive(small), scales), wind);
+    const b = downscale.downscale(downscale.terrainWeights(derive.derive(large), scales), wind);
+    expect(centreOf(a, small)).toBeCloseTo(centreOf(b, large), 3);
+  });
+
+  test("the domain's own extremes are still reported, so the default is visible", () => {
+    const weights = downscale.terrainWeights(derive.derive(large), { slopeScaleRad: toRad(30) });
+    expect(weights.slopeScaleRad).toBeCloseTo(toRad(30), 9);
+    expect(weights.maxSlopeRad).toBeGreaterThan(toRad(45));
+    expect(downscale.terrainWeights(derive.derive(large)).slopeScaleRad)
+      .toBeCloseTo(downscale.terrainWeights(derive.derive(large)).maxSlopeRad, 9);
+  });
+
+  test("a scale that is not a scale is refused", () => {
+    expect(() => downscale.terrainWeights(derive.derive(small), { curvatureScale: 0 }))
+      .toThrow(/must be positive/);
+    expect(() => downscale.terrainWeights(derive.derive(small), { slopeScaleRad: -1 }))
+      .toThrow(/must be positive/);
   });
 });
 
