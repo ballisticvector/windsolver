@@ -1,6 +1,6 @@
 {
   "name": "@ballisticvector/windsolver",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "WindSolver: terrain and atmosphere ingestion, and the windProfile contract that crosses the product line",
   "main": "profile.js",
   "type": "commonjs",
@@ -22,7 +22,8 @@
     "slice.js",
     "server.js",
     "tools/serve.js",
-    "README.md"
+    "README.md",
+    "CHANGELOG.md"
   ],
   "scripts": {
     "serve": "node tools/serve.js",

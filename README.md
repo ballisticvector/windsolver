@@ -56,7 +56,7 @@ reach a caller on a Tuesday:
 ```json
 "dependencies": {
   "@ballisticvector/windsolver":
-    "https://github.com/ballisticvector/windsolver/archive/refs/tags/v1.0.0.tar.gz"
+    "https://github.com/ballisticvector/windsolver/archive/refs/tags/v1.1.0.tar.gz"
 }
 ```
 
