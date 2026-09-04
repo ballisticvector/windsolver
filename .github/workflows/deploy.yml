@@ -54,15 +54,20 @@ jobs:
       # package-lock.json stay in, because the box installs from them.
       - name: Build the tree that will run
         run: |
+          # Built in /tmp and moved in, so the archive cannot contain itself.
+          # It has to end up inside the workspace: scp-action runs in a
+          # container with only the workspace mounted, so a path anywhere else
+          # on the runner is invisible to it and tars as an empty archive.
           tar czf /tmp/windsolver.tgz \
             --exclude=.git --exclude=node_modules --exclude=tests --exclude=.agents \
             .
-          ls -l /tmp/windsolver.tgz
+          mv /tmp/windsolver.tgz windsolver.tgz
+          ls -l windsolver.tgz
           # The unit runs tools/serve.js and the page is served out of public/.
           # A tarball missing either restarts cleanly onto a broken site.
-          tar tzf /tmp/windsolver.tgz | grep -qx './tools/serve.js'
-          tar tzf /tmp/windsolver.tgz | grep -qx './public/map.js'
-          tar tzf /tmp/windsolver.tgz | grep -qx './package-lock.json'
+          tar tzf windsolver.tgz | grep -qx './tools/serve.js'
+          tar tzf windsolver.tgz | grep -qx './public/map.js'
+          tar tzf windsolver.tgz | grep -qx './package-lock.json'
 
       - name: Copy it to the droplet
         uses: appleboy/scp-action@v0.1.7
@@ -70,9 +75,11 @@ jobs:
           host: ${{ secrets.DEPLOY_HOST }}
           username: ${{ secrets.DEPLOY_USER }}
           key: ${{ secrets.DEPLOY_SSH_KEY }}
-          source: /tmp/windsolver.tgz
+          source: windsolver.tgz
           target: /tmp
-          strip_components: 1
+          # A second deploy must land on top of the first one's tarball rather
+          # than being skipped as already present.
+          overwrite: true
 
       - name: Unpack, install and restart
         uses: appleboy/ssh-action@v1
