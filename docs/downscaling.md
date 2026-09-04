@@ -18,6 +18,7 @@ If you are picking this up cold: `downscale.js` is the module in question,
 - [Measurement 2: the same scores with each candidate's own bias removed](#measurement-2-the-same-scores-with-each-candidates-own-bias-removed)
 - [Measurement 3: split by the ground the station stands on](#measurement-3-split-by-the-ground-the-station-stands-on)
 - [Measurement 4: the ground the model thinks it is blowing over](#measurement-4-the-ground-the-model-thinks-it-is-blowing-over)
+- [Measurement 5: subtracting that ground, and scoring it](#measurement-5-subtracting-that-ground-and-scoring-it)
 - [The hypotheses, and how much weight each one carries](#the-hypotheses-and-how-much-weight-each-one-carries)
 - [What would settle it](#what-would-settle-it)
 - [Things that would poison the answer](#things-that-would-poison-the-answer)
@@ -167,29 +168,87 @@ its dynamics actually ran over and is correct for that purpose; 3DEP is the grou
 anemometer stands on. The difference is the part of the landform the model could not see
 — which is the only part a downscaling has any business adding.
 
+## Measurement 5: subtracting that ground, and scoring it
+
+The run measurement 4 asked for. `tools/score-wind.js --anomaly` derives the terrain
+weights from the fine DEM **minus a smoothed regional surface** — `derive.smooth` over a
+disc, `derive.anomaly` sampling it back by position — so the correction adds only the
+landform the model could not resolve. Station elevation and the ridge/valley
+classification still come from the unmodified DEM. Same 13 stations, same 24 hours, same
+312 pairs, f06.
+
+Ridge and valley vector RMSE, in m/s, at two smoothing radii:
+
+```
+candidate                 ridge (96)   valley (96)
+HRRR alone                      3.58          3.80
+downscaled                      3.97          3.59
+fixed scales                    4.02          3.56
+terrain anomaly, 3 km           3.93          3.62
+terrain anomaly, 1 km           3.92          3.61
+anomaly, fixed scales, 3 km     3.98          3.60
+anomaly, fixed scales, 1 km     3.96          3.59
+anomaly slope only              3.62          3.86
+```
+
+**The subtraction does not rescue the ridges.** 3.97 becomes 3.93, against 3.58 for the
+raw model; halving the radius from 3 km to 1 km moves it by another 0.01. The terrain
+anomaly is a strictly better-motivated input than the absolute landform, and on this
+sample it buys about 1% of the ridge penalty.
+
+The reason is a scale mismatch that measurement 4 did not expose: **the curvature term
+reads a 500 m length and the slope term reads hillslope gradients, and neither of those
+wavelengths is in a 1–3 km regional mean.** Removing the mean removes the part of the
+landform the terms were already blind to. So the ridge penalty is not the model's own
+orography being added twice through this pathway, and hypothesis 1 as written is not
+supported.
+
+Two things the run did show, neither of which is a result:
+
+- **The slope term is the whole of the ridge penalty.** `anomaly slope only` scores 3.62
+  on ridges against the model's 3.58, while every candidate carrying curvature sits near
+  3.95. In measurement 2 curvature looked like the term doing the useful work; split by
+  ground it is the term doing the damage, on the one stratum where the model needed no
+  help.
+- **A domain-relative weight hides a change in its own input.** Normalised against the
+  domain's extremes, the residual and the DEM it came from each divide by their own
+  largest value, so the anomaly gain (x1.040) and the absolute gain (x1.038) are almost
+  the same number for visibly different terrain. The fixed-scale rows exist so the
+  subtraction is graded rather than the divisor.
+
+Artefacts: `--ablate --scales --anomaly` and the same with `--anomaly 1000
+--anomaly-resolution 30`.
+
 ## The hypotheses, and how much weight each one carries
 
 Roughly in the order the evidence supports them.
 
-1. **Double counting on ridges.** The correction is applied to the *absolute* landform,
-   but the model has already resolved part of it — measurably so: 41 m of ridge at these
-   four stations. A correction computed against the terrain *anomaly*, the fine DEM minus
-   the model's own smoothed surface, would add only what is missing. Supported by
-   measurements 3 and 4 and by the mechanism; **not yet tested on any observation.**
-2. **The gain is the wrong thing to tune while the bias is 70%.** Whatever the terrain
+1. **The curvature term is wrong on convex ground.** Split by stratum, every candidate
+   carrying curvature costs about 0.4 m/s of vector RMSE on ridges and the slope-only
+   candidates cost almost nothing, on the one stratum where HRRR was already right.
+   Supported by measurements 3 and 5.
+2. **Double counting on ridges — tested, and not supported through this pathway.** The
+   model has resolved part of the landform, measurably: 41 m of ridge at these four
+   stations. Subtracting a 1–3 km regional surface before deriving the weights recovers
+   0.04 of the 0.39 m/s ridge penalty (measurement 5), because the terms read 500 m and
+   hillslope wavelengths that a regional mean does not contain. It stays on the list
+   because the mechanism is real and only one implementation of it has been scored — a
+   subtraction at the wavelength the *terms* work at, rather than at HRRR's grid scale,
+   has not been.
+3. **The gain is the wrong thing to tune while the bias is 70%.** Whatever the terrain
    terms do, they are multiplying a wind that is far too fast over most of this sample.
    Some of that is siting rather than model error — a RAWS tower stands in brush, not on
    the mown grass the default `z0 = 0.03 m` assumes — so the roughness the height
    correction uses is a candidate in its own right, and it is currently one constant for
    every station in the country.
-3. **The slope term does nothing as scored.** `os = alongWind / (2 * maxSlope)` is
+4. **The slope term does nothing as scored.** `os = alongWind / (2 * maxSlope)` is
    normalised by the domain's own steepest slope, so a station on a 20° slope in a domain
    containing a 50° cliff reads as gentle ground. Fixed physical scales exist now
    (`slopeScaleRad`, `curvatureScale`, `shelterScaleDeg`) but are off by default.
-4. **Diversion is unearned.** It is a plausible piece of physics with no measured support
+5. **Diversion is unearned.** It is a plausible piece of physics with no measured support
    in this sample and a small measured cost. It should either be justified against a
    station set where it can show itself, or turned off.
-5. **The shelter term is the wrong shape for wind.** `Sx` in this form comes from the
+6. **The shelter term is the wrong shape for wind.** `Sx` in this form comes from the
    snow-redistribution literature; a term that moves the answer by 0.6% is either
    mis-scaled, mis-signed, or measuring something that does not limit surface wind.
 
@@ -197,11 +256,15 @@ Roughly in the order the evidence supports them.
 
 In cost order.
 
-- **Score the terrain-anomaly variant.** Derive the weights from the DEM with the model's
-  own orography subtracted — a high-pass at roughly 3 km — and run it as one more
-  candidate through the ablation, same stations, same hours. If hypothesis 1 is right,
-  the ridge penalty shrinks or disappears and the valley gain survives. This is the single
-  highest-value next run, and it needs no new data.
+- **Score a curvature term that cannot speed up a ridge**, since measurement 5 puts the
+  ridge penalty on curvature rather than on the absolute-versus-anomaly landform. The
+  cheap version is a candidate with the convex half of the curvature response clipped;
+  the honest version is finding out why a convex speed-up is wrong here at all, because
+  clipping a term to fit 96 correlated hours is curve fitting.
+- **Repeat measurement 5 at the terms' own wavelength.** The subtraction was done at 1 km
+  and 3 km, which is HRRR's scale and not the terms' scale. A high-pass at 300–500 m
+  would change the curvature input rather than leave it alone, and that is the version of
+  hypothesis 2 that has not been scored.
 - **Repeat on other days.** Everything above is **one state and one day.** NOMADS keeps
   roughly two days of cycles, so repeats either happen in near-real-time or come from the
   HRRR archive on AWS Open Data (`noaa-hrrr-bdp-pds`), which is complete back to 2014 and
