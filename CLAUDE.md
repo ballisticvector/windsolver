@@ -49,6 +49,17 @@ npm run lint
 > - **A listed 3DEP tile can be nodata over the whole box** — over Boulder the *newer* of
 >   the two 1 m tiles is void across the domain, 181,872 pixels out of 181,872, and the
 >   older project underneath it carries the ground. `readTerrain` sorts least void first.
+> - **A listed 3DEP product can be a `.zip` of ERDAS IMG, not a COG** — the 1/9
+>   arc-second dataset over Boulder is exactly that, and it fails as `not-tiff` long
+>   after discovery said it had found terrain. `dem.parseProducts` drops anything that is
+>   not a `.tif`/`.tiff` and counts it `unreadable`, so "unusable" stays distinct from
+>   "absent".
+> - **NWS station observations are not independent of the HRRR analysis** — NCEP
+>   assimilates them, so `tools/score-wind.js --forecast 0` grades an analysis fit. And
+>   the stations are at airports, so they sit on the flattest ground for miles: the first
+>   five-station run found the downscaling **no better than raw HRRR**, on terrain where
+>   it should do least. Do not quote that as a verdict on the downscaling, and do not
+>   quote it as a confidence either.
 
 ## What this is
 

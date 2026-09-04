@@ -1,0 +1,20 @@
+{
+ "id": "https://api.weather.gov/stations/KBDU",
+ "type": "Feature",
+ "geometry": {
+  "type": "Point",
+  "coordinates": [
+   -105.2258217,
+   40.0394297
+  ]
+ },
+ "properties": {
+  "stationIdentifier": "KBDU",
+  "name": "Boulder Municipal Airport",
+  "elevation": {
+   "unitCode": "wmoUnit:m",
+   "value": 1611.7824
+  },
+  "timeZone": "America/Denver"
+ }
+}

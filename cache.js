@@ -120,8 +120,24 @@ function cacheKey(spec) {
     // also needs the model's surface height, and the missing parameter reads
     // downstream as "the model has no terrain here" rather than as a miss.
     s.variables ? s.variables.slice().sort().join(",") : "default",
-    new Date(validTimeMs(s.validTime)).toISOString()
+    new Date(validTimeMs(s.validTime)).toISOString(),
+    // Two fields valid at the same instant from different lead times are
+    // different fields: the 18Z analysis and the 12Z run's six-hour forecast
+    // both describe 18:00, and one of them has seen six hours of observations
+    // the other has not. Filing them under one key would let a verification run
+    // score the analysis and report it as a forecast.
+    "f" + leadHours(s)
   ].join("|");
+}
+
+/** The lead time in whole hours, defaulting to the analysis. */
+function leadHours(spec) {
+  const h = (spec || {}).forecastHour;
+  if (h === undefined || h === null) return 0;
+  if (!Number.isInteger(h) || h < 0) {
+    throw fail("bad-forecast-hour", "forecastHour must be a whole number of hours at or after the cycle");
+  }
+  return h;
 }
 
 /**
@@ -328,10 +344,14 @@ function createHrrrVolumeSource(opts) {
     load: async function (spec) {
       const box = snapBox(spec.box, o.snapDeg);
       const validTime = new Date(validTimeMs(spec.validTime));
+      // The cycle is the lead time before the instant asked about, so a request
+      // for 18:00 at f06 fetches the 12Z run rather than the 18Z one.
+      const lead = leadHours(spec);
+      const cycleTime = new Date(validTime.getTime() - lead * 3600 * 1000);
       const got = await nomads.fetchHrrrBox(Object.assign({}, o, {
         box: box,
-        cycle: hrrr.analysisCycleFor(validTime),
-        forecastHour: 0,
+        cycle: hrrr.analysisCycleFor(cycleTime),
+        forecastHour: lead,
         levels: (spec.levels || hrrr.DEFAULT_LEVEL_KEYS).map(hrrr.filterLevel),
         variables: spec.variables || o.variables
       }));
@@ -618,6 +638,7 @@ module.exports = {
   DEFAULT_TERRAIN_MAX_BYTES,
   snapBox,
   cacheKey,
+  leadHours,
   terrainKey,
   weightsKey,
   approximateBytes,

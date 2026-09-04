@@ -74,7 +74,19 @@ describe("cacheKey", () => {
   test("nothing about a shooter reaches the key", () => {
     const key = cacheModule.cacheKey(spec());
     expect(key).not.toMatch(/azimuth|yard|range|shot/i);
-    expect(key).toBe("HRRR|-105.32,39.98,-105.24,40.04|heightAboveGround:10+heightAboveGround:80|default|2026-08-26T20:00:00.000Z");
+    expect(key).toBe("HRRR|-105.32,39.98,-105.24,40.04|heightAboveGround:10+heightAboveGround:80|default|2026-08-26T20:00:00.000Z|f0");
+  });
+
+  test("the analysis and a forecast valid at the same hour are two entries", () => {
+    // Both describe 20:00. The f06 came from a run that started six hours
+    // earlier and has not seen the observations the analysis assimilated, which
+    // is the entire difference a verification run is trying to measure.
+    const analysis = cacheModule.cacheKey(spec());
+    const forecast = cacheModule.cacheKey(spec({ forecastHour: 6 }));
+    expect(forecast).not.toBe(analysis);
+    expect(cacheModule.cacheKey(spec({ forecastHour: 0 }))).toBe(analysis);
+    expect(() => cacheModule.cacheKey(spec({ forecastHour: 1.5 }))).toThrow(/whole number/);
+    expect(() => cacheModule.cacheKey(spec({ forecastHour: -1 }))).toThrow(/whole number/);
   });
 
   test("a narrower variable set is a different key, so it cannot answer a wider request", () => {
@@ -266,6 +278,18 @@ describe("createHrrrVolumeSource", () => {
     expect(nomads.calls[0].box).toEqual(cacheModule.snapBox(BOX));
     expect(v.validTime.toISOString()).toBe("2026-08-26T20:00:00.000Z");
     expect(v.bytes).toBe(1883);
+  });
+
+  test("a lead time moves the cycle back, not the hour asked about", async () => {
+    // 20:00 at f06 is the 14Z run's six-hour forecast. Asking the 20Z run for
+    // f06 would return a field valid at 02:00 the next day, which is a
+    // perfectly ordinary wind over the right ground at the wrong time.
+    const nomads = fakeNomads(() => recordsValidAt(VALID));
+    const source = cacheModule.createHrrrVolumeSource({ nomads: nomads, now: () => VALID.getTime() });
+    await source.get(spec({ forecastHour: 6 }));
+
+    expect(nomads.calls[0].cycle).toEqual({ year: 2026, month: 8, day: 26, hour: 14 });
+    expect(nomads.calls[0].forecastHour).toBe(6);
   });
 
   test("refuses a field valid at a different instant than the one asked for", async () => {
