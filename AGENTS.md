@@ -201,6 +201,15 @@ reads the other conversion as noise, and a directory at the end of the file is l
 header from each conversion and parameterises the differences rather than asserting one
 shape. Re-run the survey before relying on any of it.
 
+**And a shape the survey missed entirely: float32 with predictor 2.** Horizontal
+differencing is usually seen on 8-bit imagery, so a reader that undoes it byte by byte
+looks correct until a project writes it on 32-bit elevations —
+CO_SanLuisJuanMiguel_2020_D20 over Copper Mountain does, and 30 sampled tiles contained
+none. The difference is between whole samples, and libtiff accumulates a 32-bit sample as
+an unsigned integer whatever the sample format says it means, so the sum wraps at 2^32
+rather than adding as floats. `tests/fixtures/cog-lzw-p2.tif` is cut from that tile so the
+case is a real conversion rather than a hypothetical one.
+
 **Grade the terrain reader against GDAL, not against your own arithmetic**, for the same
 reason the decoder is graded against ecCodes. `tests/cog.test.js` compares every pixel of
 every overview level against `gdal_translate`'s reading of the same fixture, and the

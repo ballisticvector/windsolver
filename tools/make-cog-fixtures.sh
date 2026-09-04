@@ -18,6 +18,9 @@
 #   cog-lzw-p3.tif        128 x 96 window, EPSG:4269, LZW + floating predictor
 #   cog-deflate.tif       the same pixels, Deflate, to prove both decode alike
 #   cog-utm13-1m.tif      128 x 96 window, EPSG:26913, 1 m lidar
+#   cog-lzw-p2.tif        128 x 96 window, EPSG:26913, LZW + horizontal
+#                         differencing on float32 — a shape 3DEP really ships,
+#                         and the one a byte-wise predictor reads as noise
 #   cog-nodata-hole.tif   cog-lzw-p3 with a lidar-shaped hole punched in it
 #   cog-trailing-ifd.tif  cog-lzw-p3 with its directories moved to the end
 #   usgs-*-header.bin     the first 32 KB of each real tile, unmodified. Two
@@ -46,12 +49,18 @@ TILE_13="$S3/13/TIFF/historical/n40w106/USGS_13_n40w106_20260630.tif"
 # the pixel fixture is cut from it.
 TILE_1M_COG="$S3/1m/Projects/CO_ArapahoRooseveltPikeNF_D23/TIFF/USGS_1M_13_x47y443_CO_ArapahoRooseveltPikeNF_D23.tif"
 TILE_1M_2013="$S3/1m/Projects/CO_SoPlatteRiver_Lot5_2013/TIFF/USGS_one_meter_x47y443_CO_SoPlatteRiver_Lot5_2013.tif"
+# A fourth conversion, over Copper Mountain: float32 with predictor 2. The
+# survey in tools/cog-survey.js sampled none, and it is the conversion the
+# reader used to refuse. It is also 98% nodata over its own footprint, so the
+# window below is one of the few places in the tile that has ground in it.
+TILE_1M_P2="$S3/1m/Projects/CO_SanLuisJuanMiguel_2020_D20/TIFF/USGS_1M_13_x39y437_CO_SanLuisJuanMiguel_2020_D20.tif"
 
 # The headers, exactly as USGS serves them, so the suite covers the real files
 # and not only what GDAL writes locally.
 curl -sS -r 0-32767 -o "$FIX/usgs-13-n40w106-header.bin" "$TILE_13"
 curl -sS -r 0-32767 -o "$FIX/usgs-1m-x47y443-header.bin" "$TILE_1M_COG"
 curl -sS -r 0-32767 -o "$FIX/usgs-1m-x47y443-2013-header.bin" "$TILE_1M_2013"
+curl -sS -r 0-32767 -o "$FIX/usgs-1m-x39y437-p2-header.bin" "$TILE_1M_P2"
 
 # Small windows, cut over the network. -projwin is in the source's own CRS:
 # degrees for the 1/3 arc-second product, metres for the 1 m lidar.
@@ -66,6 +75,10 @@ gdal_translate -q -projwin 474000 4425000 474128 4424904 \
   -of COG -co COMPRESS=LZW -co PREDICTOR=YES -co BLOCKSIZE=32 \
   "/vsicurl/$TILE_1M_2013" "$FIX/cog-utm13-1m.tif"
 
+gdal_translate -q -projwin 397250 4360550 397378 4360454 \
+  -of COG -co COMPRESS=LZW -co PREDICTOR=2 -co BLOCKSIZE=32 \
+  "/vsicurl/$TILE_1M_P2" "$FIX/cog-lzw-p2.tif"
+
 # A hole, because a nodata pixel read as its -999999 sentinel or flattened to
 # zero puts a cliff in the terrain, and a cliff is a wind feature.
 python3 tools/nodata-hole.py "$FIX/cog-lzw-p3.tif" "$FIX/cog-nodata-hole.tif"
@@ -75,7 +88,7 @@ python3 tools/trailing-ifd.py "$FIX/cog-lzw-p3.tif" "$FIX/cog-trailing-ifd.tif"
 gdalinfo "$FIX/cog-trailing-ifd.tif" > /dev/null   # still a TIFF to an independent reader
 
 python3 tools/gdal-reference.py \
-  "$FIX/cog-lzw-p3" "$FIX/cog-utm13-1m" "$FIX/cog-nodata-hole"
+  "$FIX/cog-lzw-p3" "$FIX/cog-utm13-1m" "$FIX/cog-nodata-hole" "$FIX/cog-lzw-p2"
 
 # GDAL's own slope, aspect and roughness over the same pixels, for
 # `tests/derive.test.js`. Same rule as the decoder against ecCodes: a derivative

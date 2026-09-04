@@ -710,15 +710,45 @@ function unpredictFloat(buf, width, height, samples, bytesPerSample) {
   return buf;
 }
 
-/** Undo horizontal differencing on integer samples. */
-function unpredictHorizontal(buf, width, height, samples, bytesPerSample) {
-  if (bytesPerSample !== 1) {
+/**
+ * Undo horizontal differencing (TIFF predictor 2).
+ *
+ * The differences are between whole samples, not between bytes, so anything
+ * wider than a byte has to be accumulated as a number in the file's byte order
+ * and written back the same way. Doing it byte-wise decodes an 8-bit file and
+ * turns every wider one into noise.
+ *
+ * **The sample format does not enter into it.** libtiff accumulates a 32-bit
+ * sample as an unsigned integer whatever the file says it means, so a float
+ * raster written with this predictor — 3DEP has them, e.g. the
+ * CO_SanLuisJuanMiguel_2020_D20 project — is wrapped at 2^32 rather than added
+ * as floats.
+ */
+function unpredictHorizontal(buf, width, height, samples, bytesPerSample, littleEndian) {
+  if ([1, 4].indexOf(bytesPerSample) === -1) {
     throw fail("predictor", "horizontal differencing on " + bytesPerSample * 8 + "-bit samples is not implemented");
   }
-  const rowBytes = width * samples;
+  const rowBytes = width * samples * bytesPerSample;
+
+  if (bytesPerSample === 1) {
+    for (let row = 0; row < height; row++) {
+      const base = row * rowBytes;
+      for (let i = samples; i < rowBytes; i++) buf[base + i] = (buf[base + i] + buf[base + i - samples]) & 0xff;
+    }
+    return buf;
+  }
+
+  const read = littleEndian ? buf.readUInt32LE.bind(buf) : buf.readUInt32BE.bind(buf);
+  const write = littleEndian ? buf.writeUInt32LE.bind(buf) : buf.writeUInt32BE.bind(buf);
+  const rowSamples = width * samples;
+
   for (let row = 0; row < height; row++) {
     const base = row * rowBytes;
-    for (let i = samples; i < rowBytes; i++) buf[base + i] = (buf[base + i] + buf[base + i - samples]) & 0xff;
+    for (let i = samples; i < rowSamples; i++) {
+      const at = base + i * bytesPerSample;
+      const previous = at - samples * bytesPerSample;
+      write((read(at) + read(previous)) % 0x100000000, at);
+    }
   }
   return buf;
 }
@@ -760,7 +790,9 @@ function decodeTile(bytes, level, header) {
   if (level.predictor === 3) {
     plain = unpredictFloat(raw, level.tileWidth, level.tileHeight, level.samplesPerPixel, bytesPerSample);
   } else if (level.predictor === 2) {
-    plain = unpredictHorizontal(raw, level.tileWidth, level.tileHeight, level.samplesPerPixel, bytesPerSample);
+    plain = unpredictHorizontal(
+      raw, level.tileWidth, level.tileHeight, level.samplesPerPixel, bytesPerSample, header.littleEndian
+    );
   }
 
   const count = level.tileWidth * level.tileHeight;
