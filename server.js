@@ -39,6 +39,7 @@ const http = require("http");
 const fs = require("fs");
 const nodePath = require("path");
 
+const auth = require("./auth.js");
 const geo = require("./geo.js");
 const downscale = require("./downscale.js");
 const slice = require("./slice.js");
@@ -438,6 +439,12 @@ function createHandler(opts) {
   const retryAfterS = o.retryAfterSeconds === undefined ? DEFAULT_RETRY_AFTER_S : o.retryAfterSeconds;
   const origins = o.origins || [];
   const log = typeof o.log === "function" ? o.log : null;
+  // Off unless keys are configured, so a checkout and the suite are open and
+  // there is no default credential to forget to change.
+  const gatekeeper = o.auth || auth.createAuth({
+    keys: o.apiKeys || [],
+    allowPage: o.allowPageWithoutKey
+  });
   const startedAt = Date.now();
 
   // Through `realpath` at construction, so the per-request check below compares
@@ -781,9 +788,18 @@ function createHandler(opts) {
       }, headers);
     }
 
+    // Only `/v1/` — `/healthz` and the page are answered above, because a
+    // monitor that needs a credential is a monitor that stops being run.
+    const who = gatekeeper.check(req.headers);
+    if (!who.ok) {
+      if (log) log({ level: "warn", path: path, code: who.code });
+      return send(res, who.status, { ok: false, code: who.code, error: who.error },
+        Object.assign({ "www-authenticate": "Bearer realm=\"windsolver\"" }, headers));
+    }
+
     const startedMs = Date.now();
     route(url.searchParams, res, headers).then(function () {
-      if (log) log({ level: "info", path: path, query: url.search, ms: Date.now() - startedMs });
+      if (log) log({ level: "info", path: path, query: redactQuery(url.search), caller: who.caller, ms: Date.now() - startedMs });
     }, function (err) {
       if (log && err && err.code) {
         log({ level: "warn", path: path, code: err.code, ms: Date.now() - startedMs });
@@ -796,6 +812,17 @@ function createHandler(opts) {
       }
     });
   };
+}
+
+/**
+ * A query string with anything key-shaped taken out of it.
+ *
+ * The service does not accept a key in the URL, but a caller who tries is a
+ * caller who has just put their secret somewhere this log, nginx's log and
+ * every proxy in between will keep. Redact rather than store it.
+ */
+function redactQuery(search) {
+  return String(search || "").replace(/([?&](?:key|api_key|apikey|token|access_token)=)[^&]*/gi, "$1[redacted]");
 }
 
 /** A directory as it really is on disk, so symlinked roots still compare. */
@@ -832,5 +859,6 @@ module.exports = {
   STATUS_BY_CODE,
   createGate,
   createHandler,
+  redactQuery,
   createServer
 };

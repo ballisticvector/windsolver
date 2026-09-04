@@ -150,8 +150,8 @@ async function listen(opts) {
   };
 }
 
-async function get(base, path) {
-  const res = await fetch(base + path);
+async function get(base, path, headers) {
+  const res = await fetch(base + path, headers ? { headers: headers } : undefined);
   const text = await res.text();
   let body = null;
   try {
@@ -568,6 +568,154 @@ describe("the browser calling it", () => {
         headers: { origin: "https://example.com" }
       });
       expect(other.headers.get("access-control-allow-origin")).toBe(null);
+    } finally {
+      await app.close();
+    }
+  });
+});
+
+describe("an API key on /v1/", () => {
+  // Long enough to pass the minimum, and obviously not a real one.
+  const KEY = "test-key-0123456789abcdefghij";
+  const OTHER = "second-key-0123456789abcdefghij";
+
+  test("with none configured, nothing changes", async () => {
+    // The default has to stay open, or every checkout, the suite and a laptop
+    // need a credential before the engine will answer once.
+    const app = await listen({ field: stubService() });
+    try {
+      const res = await get(app.url, "/v1/field?lat=40.0150&lon=-105.2705&cols=4");
+      expect(res.status).toBe(200);
+      expect(res.headers.get("www-authenticate")).toBe(null);
+    } finally {
+      await app.close();
+    }
+  });
+
+  describe("with keys configured", () => {
+    let app;
+    let logged;
+
+    beforeAll(async () => {
+      logged = [];
+      app = await listen({
+        field: stubService(),
+        apiKeys: "ballisticvector:" + KEY + ",ops:" + OTHER,
+        allowPageWithoutKey: false,
+        log: function (entry) { logged.push(entry); }
+      });
+    });
+
+    afterAll(async () => { await app.close(); });
+
+    test("a named key is let through, either way of sending it", async () => {
+      const bearer = await get(app.url, "/v1/field?lat=40.0150&lon=-105.2705&cols=4",
+        { authorization: "Bearer " + KEY });
+      expect(bearer.status).toBe(200);
+
+      const header = await get(app.url, "/v1/field?lat=40.0150&lon=-105.2705&cols=4",
+        { "x-api-key": OTHER });
+      expect(header.status).toBe(200);
+    });
+
+    test("no key is 401, and says how to send one", async () => {
+      const res = await get(app.url, "/v1/field?lat=40.0150&lon=-105.2705");
+      expect(res.status).toBe(401);
+      expect(res.body.code).toBe("no-key");
+      expect(res.body.error).toMatch(/Authorization: Bearer/);
+      expect(res.headers.get("www-authenticate")).toMatch(/^Bearer/);
+    });
+
+    test("a wrong key is 401, and is not mistaken for a missing one", async () => {
+      const res = await get(app.url, "/v1/field?lat=40.0150&lon=-105.2705",
+        { authorization: "Bearer " + KEY + "x" });
+      expect(res.status).toBe(401);
+      expect(res.body.code).toBe("bad-key");
+    });
+
+    test("an Authorization that is not a Bearer is named, not ignored", async () => {
+      // Silently treating `Basic …` as "no credential" sends a caller who is
+      // trying to authenticate the message for a caller who is not.
+      const res = await get(app.url, "/v1/field?lat=40&lon=-105",
+        { authorization: "Basic " + Buffer.from("a:b").toString("base64") });
+      expect(res.status).toBe(401);
+      expect(res.body.code).toBe("bad-authorization");
+    });
+
+    test("a key in the query string is not a key", async () => {
+      // Accepting one would put the secret in this log, nginx's log and every
+      // proxy in between.
+      const res = await get(app.url, "/v1/field?lat=40&lon=-105&key=" + KEY);
+      expect(res.status).toBe(401);
+    });
+
+    test("the refusal never quotes the key back, in the body or the log", async () => {
+      logged.length = 0;
+      const res = await get(app.url, "/v1/field?lat=40&lon=-105&api_key=" + KEY,
+        { authorization: "Bearer " + KEY + "-wrong" });
+      expect(res.text).not.toContain(KEY);
+      expect(JSON.stringify(logged)).not.toContain(KEY);
+    });
+
+    test("a solve that is let through is logged by caller name", async () => {
+      logged.length = 0;
+      await get(app.url, "/v1/field?lat=40.0150&lon=-105.2705&cols=4", { "x-api-key": OTHER });
+      const info = logged.filter((e) => e.level === "info");
+      expect(info.length).toBe(1);
+      expect(info[0].caller).toBe("ops");
+      expect(JSON.stringify(logged)).not.toContain(OTHER);
+    });
+
+    test("a key-shaped query parameter is redacted before it is logged", () => {
+      // Belt and braces on the query the success line writes: a caller who
+      // sends their secret in the URL has already put it somewhere it should
+      // not be, and this log is one of the places.
+      expect(server.redactQuery("?lat=40&api_key=" + KEY + "&cols=4"))
+        .toBe("?lat=40&api_key=[redacted]&cols=4");
+      expect(server.redactQuery("?token=" + KEY)).toBe("?token=[redacted]");
+      expect(server.redactQuery("?lat=40&lon=-105")).toBe("?lat=40&lon=-105");
+    });
+
+    test("/healthz stays open, or the monitor stops being run", async () => {
+      const res = await get(app.url, "/healthz");
+      expect(res.status).toBe(200);
+      expect(res.body.ok).toBe(true);
+    });
+
+    test("a route that does not exist is still a 404, not a 401", async () => {
+      // 401 on an unknown path turns a typo into a credentials problem and
+      // tells a caller their key is wrong when their URL is.
+      const res = await get(app.url, "/v1/forecast");
+      expect(res.status).toBe(404);
+    });
+
+    test("with the page door shut, the page's own fetch is refused too", async () => {
+      const res = await get(app.url, "/v1/field?lat=40&lon=-105",
+        { "sec-fetch-site": "same-origin" });
+      expect(res.status).toBe(401);
+    });
+  });
+
+  test("with the page door open, the page's own fetch is served", async () => {
+    // What keeps windsolver.com working. It is a browser-set header and not a
+    // wall — see auth.js — and the point of this test is that the door is
+    // exactly one header wide and shuts on everything else.
+    const logged = [];
+    const app = await listen({
+      field: stubService(),
+      apiKeys: "ballisticvector:" + KEY,
+      log: function (entry) { logged.push(entry); }
+    });
+    try {
+      const page = await get(app.url, "/v1/field?lat=40.0150&lon=-105.2705&cols=4",
+        { "sec-fetch-site": "same-origin" });
+      expect(page.status).toBe(200);
+      expect(logged.filter((e) => e.level === "info")[0].caller).toBe("page");
+
+      for (const site of ["cross-site", "same-site", "none"]) {
+        const other = await get(app.url, "/v1/field?lat=40&lon=-105", { "sec-fetch-site": site });
+        expect(other.status).toBe(401);
+      }
     } finally {
       await app.close();
     }

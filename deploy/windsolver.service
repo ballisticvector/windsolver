@@ -34,6 +34,17 @@ Environment=WINDSOLVER_PREWARM=40.0150,-105.2705
 # write is a silent miss. systemd creates and owns this one.
 CacheDirectory=windsolver
 Environment=WINDSOLVER_CACHE_DIR=/var/cache/windsolver
+
+# Who may call /v1/. Absent means anyone, which is what a checkout wants and
+# what a public URL does not. Add it on the box and nowhere else — this is the
+# one line the deploy's comparison is blind to, precisely so the secret has no
+# reason to be in a repository:
+#
+#   Environment=WINDSOLVER_API_KEYS=ballisticvector:$(openssl rand -base64 32)
+#
+# The map page calls /v1/field from a stranger's browser, so it cannot hold a
+# key; it is let through on Sec-Fetch-Site instead, which is a door and not a
+# wall. WINDSOLVER_PAGE_NEEDS_KEY=1 shuts that door and the page with it.
 ExecStart=/usr/bin/node /home/deploy/windsolver/tools/serve.js
 Restart=always
 RestartSec=5

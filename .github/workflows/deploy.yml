@@ -97,12 +97,22 @@ jobs:
             # as it was rather than on new code under an old process.
             echo "==> Checking the unit on the box against the one in the repo..."
             tar xzOf /tmp/windsolver.tgz ./deploy/windsolver.service > /tmp/windsolver.service.repo
-            if ! diff -u /etc/systemd/system/windsolver.service /tmp/windsolver.service.repo; then
+            # WINDSOLVER_API_KEYS is the one line the repository must not hold,
+            # so it is the one line this comparison cannot see. Everything else
+            # about the unit is still graded. Written to files rather than
+            # compared through process substitution, which is not in every sh.
+            grep -v 'WINDSOLVER_API_KEYS' /etc/systemd/system/windsolver.service > /tmp/unit.box || true
+            grep -v 'WINDSOLVER_API_KEYS' /tmp/windsolver.service.repo > /tmp/unit.repo || true
+            if ! diff -u /tmp/unit.box /tmp/unit.repo; then
               echo ""
               echo "The unit on the droplet is not the one in this release." >&2
               echo "Left is the box, right is the repo. Install it by hand:" >&2
               echo "  sudo install -m 0644 deploy/windsolver.service /etc/systemd/system/" >&2
               echo "  sudo systemctl daemon-reload" >&2
+              echo "" >&2
+              echo "Copy any WINDSOLVER_API_KEYS line across first: it is on the" >&2
+              echo "box only, and installing the repo copy over it turns the" >&2
+              echo "service open without saying so." >&2
               echo "" >&2
               echo "Deliberately not done here: a deploy that can write a unit" >&2
               echo "and restart it is a deploy key that is root on this box." >&2

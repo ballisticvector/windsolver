@@ -133,12 +133,52 @@ that cannot be read is a miss, and failures were never written in the first
 place. Deleting it is the way to pick up a project that has just been re-flown
 sooner than the 14-day expiry.
 
+## Who may call `/v1/`
+
+Off unless configured. One line in the unit turns it on:
+
+```
+Environment=WINDSOLVER_API_KEYS=ballisticvector:<secret>,ops:<secret>
+```
+
+Pairs are `name:secret`, comma or semicolon separated, and the name is how one
+consumer is revoked without revoking the others and how a log line says who
+spent the USGS budget. Generate a secret with `openssl rand -base64 32`; under
+24 characters is refused, and so is a malformed list — the service exits rather
+than starting open while an operator believes it is closed. **The secret goes in
+the unit on the droplet and nowhere in this repository**, which is the one place
+`deploy/windsolver.service` is deliberately not the whole truth: the tracked copy
+carries the line commented out, and the deploy's drift check compares the file
+ignoring `WINDSOLVER_API_KEYS`.
+
+A caller sends `Authorization: Bearer <key>` or `X-API-Key: <key>`. Never a
+query parameter — this service's log, nginx's log and every proxy in between
+keep URLs — and one sent that way is redacted on the way to the log and refused.
+
+`/healthz` and the page stay open. A monitor that needs a credential is a
+monitor that stops being run.
+
+### The map page is the awkward part, and it is not solved by a key
+
+windsolver.com serves a public map page that calls `/v1/field` **from a
+stranger's browser**. Any key that page could use would be in view-source, so an
+API key cannot protect an endpoint a public page calls. What the service does
+instead is let through a request carrying `Sec-Fetch-Site: same-origin`, a
+header the browser sets and page script cannot.
+
+**That is a door, not a wall** — it is one header of `curl`. It keeps the demo
+working; what limits abuse through it is still nginx's 20 requests a minute.
+Closing it is `Environment=WINDSOLVER_PAGE_NEEDS_KEY=1`, and the map page stops
+working for everyone at the same moment, which is the honest trade and the
+reason it is a separate switch. A browser too old to send `Sec-Fetch-*` (Safari
+before 16.4) is treated as a program and refused.
+
 ## What is not here
 
-- **No authentication and no per-caller quota.** The edge limits above are all
-  that stands between the service and a stranger spending your USGS and NOMADS
-  bandwidth, and the page is `noindex`. Machine API keys before the URL is
-  advertised; see the README.
+- **No per-caller quota and no key issuance.** Keys are a list in the unit:
+  adding or revoking one is an edit and a restart, there is no dashboard, and
+  the rate limit is per IP at the edge rather than per key. That is the right
+  size for one consumer; a second one, or a paid tier, is when it stops being.
 - **No rollback step.** Re-running the workflow on an earlier commit is the
   rollback, which is fine while a release is a tarball and a restart.
 - **No comparison with a measured wind**, which is why the page says
