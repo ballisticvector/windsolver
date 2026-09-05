@@ -24,6 +24,7 @@ If you are picking this up cold: `downscale.js` is the module in question,
 - [Things that would poison the answer](#things-that-would-poison-the-answer)
 - [Worth exploring, unranked](#worth-exploring-unranked)
 - [What is not known](#what-is-not-known)
+- [Claude's review](#claudes-review) - appended, per the review convention in `AGENTS.md`
 
 ## The question
 
@@ -342,3 +343,171 @@ Ideas that have not been costed and may be bad.
   currently acting as an accidental proxy for something else.
 - What a defensible `confidence` number would be. It is still `null`, and on this
   evidence it should stay `null`.
+
+---
+
+# Claude's review
+
+Added by Claude Code on top of the working note above, per the review convention in
+`AGENTS.md`. Same standard: each claim says whether it was measured or reasoned about.
+Nothing above this line was changed except one Contents entry.
+
+**Verdict: measurement 5 is a stronger result than it is written up as.** It reads as a
+null — the subtraction did not rescue the ridges — but combined with the shape of the
+curvature operator it closes hypothesis 2 rather than leaving it open, and it rules out
+the follow-up the note proposes for it. It also relocates the ridge penalty away from
+the terrain input and onto the base state the correction assumes.
+
+## The curvature operator is a band-pass, and that bounds the whole anomaly experiment
+
+`scaleCurvature` measures, per axis, `(z0 - (z(-eta) + z(+eta)) / 2) / (2 * eta)` with
+`eta = curvatureLengthM / 2`. That is a linear filter, so its response to a wavelength is
+closed form:
+
+```
+R(lambda) = (1 - cos(2 * pi * eta / lambda)) / (2 * eta)
+```
+
+At `curvatureLengthM = 500` m:
+
+| wavelength | % of peak response |
+| --- | --- |
+| 250 m | **0.0%** — a null |
+| 500 m | **100%** — the peak |
+| 1 km | 50.0% |
+| 2 km | 14.6% |
+| 3 km | 6.7% |
+| 6 km | 1.7% |
+| 50 km | 0.0% |
+
+**The term is a band-pass centred on its own length, not a high-pass.** A linear ramp
+gives exactly zero by construction, and so does a 250 m ripple.
+
+Three things follow, and the first two are the note's own results explained rather than
+merely recorded:
+
+- **Measurement 5 was bounded to be almost a no-op before it ran.** Smoothing at radius
+  `Rs` removes wavelengths longer than about `2 * Rs`. At `Rs = 3` km that is everything
+  beyond 6 km, where the operator passes **1.7%** of peak; at `Rs = 1` km, beyond 2 km,
+  where it passes 14.6%. A subtraction can only take away what the term was reading, and
+  the term was barely reading it. Hence 3.97 to 3.93, and hence 1 km moving it by another
+  0.01.
+- **The double-counting mechanism was never available through this term.** HRRR's
+  orography carries structure down to about 3 km; the curvature term passes 6.7% of that
+  wavelength. The 41 m of resolved ridge in measurement 4 is real, but it sits almost
+  entirely in a band the curvature term is deaf to. So hypothesis 2 is not merely
+  unsupported by the run — the mechanism cannot reach this term. It should move to the
+  bottom of the list, or off it.
+- **The follow-up the note proposes for hypothesis 2 would delete the term, not correct
+  it.** "A subtraction at the wavelength the terms work at" means `Rs` near 250–500 m,
+  which removes wavelengths beyond 500–1000 m — where the operator passes 100% and 50%
+  of peak. That does not sharpen the input; it subtracts the signal. Do not run it.
+
+*Measured: the closed form and the table, computed from `scaleCurvature`'s own
+arithmetic. Reasoned: that this is why measurement 5 came out where it did — the
+prediction matches the measurement, which is not the same as having isolated the cause.*
+
+## Where that leaves the ridge penalty
+
+If the input surface is not the problem, the remaining candidates are the gain, the
+normalisation, and the base state. The note's stratified speed biases point at the third:
+
+```
+stratum   HRRR speed bias
+valley          +2.09
+slope           +2.01
+flat            +1.86
+ridge           +0.30
+```
+
+**HRRR is not terrain-blind.** It is nearly seven times better on ridges than in
+valleys, which means it already produces terrain-driven speed variation — not through
+resolving the 500 m landform, but because a 3 km cell containing a ridge is dominated by
+exposed ground and its wind reflects that. The downscaling multiplies as though the base
+state carried none of this, so on the one stratum where the model needed no help it adds
+help anyway.
+
+That is a different claim from hypothesis 1 as written. "The curvature term is wrong on
+convex ground" suggests the term's shape or sign is wrong. The evidence is equally
+consistent with the term being right about the terrain and wrong about what it is
+multiplying — which would predict exactly the observed asymmetry, because the headroom
+for a correction is +2.09 in valleys and +0.30 on ridges.
+
+The two are distinguishable, and the run that separates them is cheap: **score the
+convex and concave halves of the curvature term separately.** If the term is wrong on
+convex ground, the positive-curvature half hurts and the negative half helps. If the
+base state is the problem, both halves are correctly signed and the convex one merely
+has nothing left to correct. `omegaC` already carries the sign.
+
+*Measured: the biases, from measurement 3. Reasoned, not measured: everything about what
+HRRR's wind already contains — nothing here interrogated the model's own terrain
+response.*
+
+## The diversion row does not say what the note reads off it
+
+The note reads the direction column as 70.5 degrees with the turning off and 70.8 with
+it on, and hypothesis 5 rests on that. The table does not say it. Against the candidate
+definitions in `tools/score-wind.js`:
+
+| candidate | divert | speed weights | dir rmse |
+| --- | --- | --- | --- |
+| HRRR alone | — | — | 70.5 |
+| no diverting | **off** | all on | 70.5 |
+| diverting only | **on** | all zero | **70.5** |
+| slope only | on | slope | 70.8 |
+| curvature only | on | curvature | 70.8 |
+| downscaled | on | all on | 70.8 |
+
+`divertOnly` zeroes every gain but leaves `divert` at its default of true, and the
+diverting angle does not depend on the gains. So the row that isolates the turning has
+the turning **on**, and it costs nothing. 70.8 appears exactly when diversion *and* a
+non-zero speed weight are both active — most likely `windAt`, which interpolates
+east/north bilinearly, so once neighbouring cells carry different speeds the sampled
+bearing is pulled toward the faster one.
+
+**Hypothesis 5 is not supported by these rows.** The row that isolates diversion shows
+no cost at all. Judging the term needs a direction score taken at the cell rather than
+through a speed-weighted interpolation.
+
+*Measured: the candidate definitions and the gain-independence of the diverting angle,
+read from the code. Reasoned: the interpolation mechanism.*
+
+## Roughness cannot carry hypothesis 3
+
+The log law as `downscale.heightFactor` applies it, 10 m to a 6.1 m sensor:
+
+| z0 | surface | factor | residual bias |
+| --- | --- | --- | --- |
+| 0.03 m | mown grass (current default) | x0.915 | x1.54 |
+| 0.50 m | tall brush, scattered trees | x0.835 | x1.41 |
+| 1.00 m | open forest | x0.785 | x1.33 |
+| 3.00 m | city centre / tall forest | x0.589 | x1.00 |
+
+Closing the x1.688 bias through the height correction alone needs **z0 near 3 m**, which
+is not a RAWS site in Colorado. Grass to brush buys 8 points of a 69-point gap. A
+per-station roughness is worth having on its own merits and it is not the explanation.
+
+*Measured: the log law at the heights and roughness the harness uses. The z0 labels are
+conventional values, not a land-cover lookup.*
+
+## The missing cell now exists
+
+Every ridge number in this note is a raw score, with a 70% gain still in it — the
+condition measurement 2 established contaminates a ranking. `score-wind.js` now reports
+`debiasedByTerrain`: the same split as `byTerrain`, with each candidate's overall bias
+divided out, one scale fitted over every pair and never refitted inside a stratum.
+
+Run it before drawing anything further from the ridge column. If the ridge penalty
+survives the debias it is a fact about where the term puts the wind; if it does not, it
+was the gain all along and hypothesis 1 is chasing an artifact.
+
+## What I did not verify
+
+- **I ran none of the scoring.** Every number quoted from measurements 1-5 is the note's.
+  The new table has unit tests and has not been run against a station.
+- The band-pass table is arithmetic on the operator, not a measurement of terrain. Real
+  ground is not a sinusoid; the filter response is exact, its consequence for these
+  thirteen domains is inference.
+- Nothing here tests what HRRR's wind already contains on a ridge. The base-state
+  explanation is the most plausible remaining candidate, not a measured one.
+- No claim about 3DEP coverage, the shelter term, or WindNinja.
