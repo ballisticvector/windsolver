@@ -677,8 +677,37 @@ async function buildReport(options) {
       Object.assign({}, opts, { scale: verify.debiasScale(allPairs, opts) })));
   }
 
+  // The stratified split, with each candidate's *overall* speed bias taken out
+  // first. This is the cell the other two tables leave empty, and the ridge
+  // result turns on it.
+  //
+  // `byTerrain` grades a term on a stratum while the run's gain is still in it,
+  // so against a model that is too fast it ranks terms by which way they push
+  // the mean. `debiased` takes the gain out but pools every stratum, so it
+  // cannot see a term that helps in a hollow and hurts on a crest. Only the two
+  // together ask: once a candidate's overall gain is granted, does it still put
+  // the wind in the wrong place on convex ground?
+  //
+  // **The scale is fitted over every pair and then applied to each stratum. It
+  // is never refitted inside one.** A per-stratum fit would divide out the
+  // difference between strata, which is the difference this table exists to
+  // show — every row would come back with a speed bias near zero and a ridge
+  // penalty would be invisible. The rows are therefore comparable with each
+  // other, and, like `debiased`, are not scores to quote.
+  const debiasedByTerrain = {};
+  for (const candidate of candidates) {
+    const opts = reading(floor, candidate.key);
+    const scale = verify.debiasScale(allPairs, opts);
+    for (const [label, scored] of Object.entries(
+      verify.stratify(allPairs, classOf, Object.assign({}, opts, { scale: scale }))
+    )) {
+      if (!debiasedByTerrain[label]) debiasedByTerrain[label] = {};
+      debiasedByTerrain[label][candidate.key] = tidy(scored);
+    }
+  }
+
   const report = {
-    schemaVersion: 3,
+    schemaVersion: 4,
     generated: new Date(started).toISOString(),
     window: {
       from: validTimes[0].toISOString(),
@@ -731,6 +760,7 @@ async function buildReport(options) {
     overall: overall,
     debiased: debiased,
     byTerrain: byTerrain,
+    debiasedByTerrain: debiasedByTerrain,
     droppedStations: dropped,
     elevationToleranceM: elevationToleranceM,
     failures: failures,
@@ -1001,6 +1031,25 @@ function summarise(report) {
         if (scores[c.key]) out.push(line(label + " " + (c.short || c.key), scores[c.key]));
       }
     }
+    out.push("");
+  }
+
+  // The same split, with the run's own gain taken out. `byTerrain` above ranks
+  // terms partly by which way they push the mean; this asks whether a term is
+  // in the right place on that ground once its gain is granted.
+  if (report.debiasedByTerrain && Object.keys(report.debiasedByTerrain).length > 1
+      && candidates.length > 1) {
+    out.push("the same split with each candidate's overall speed bias divided out — one " +
+      "scale fitted over every pair, not refitted inside a stratum, so a term that helps " +
+      "in a hollow and hurts on a crest still shows both:");
+    out.push(head);
+    for (const [label, scores] of Object.entries(report.debiasedByTerrain)) {
+      for (const c of candidates) {
+        if (scores[c.key]) out.push(line(label + " " + (c.short || c.key), scores[c.key]));
+      }
+    }
+    out.push("fitted on the observations they are then scored against — compare these with " +
+      "each other, do not quote them");
     out.push("");
   }
 

@@ -65,7 +65,11 @@ function stubSource(overrides) {
 function stubField(wind, ground) {
   const g = ground || {};
   const crs = proj.crsFromEpsg(26913);
-  const mid = proj.fromGeographic(crs, station.lat, station.lon);
+  // `centre` lets a caller put the domain over somewhere other than KBDU, so a
+  // report can carry two stations standing on different ground. Each one then
+  // sits on its own apex rather than on the flank of somebody else's.
+  const centre = g.centre || station;
+  const mid = proj.fromGeographic(crs, centre.lat, centre.lon);
   const width = 40;
   const height = 40;
   const spacing = 30;
@@ -374,6 +378,85 @@ describe("what the run scores", () => {
     expect(report.byTerrain.ridge.model.n).toBe(report.byTerrain.ridge.downscaled.n);
     expect(report.byTerrain.ridge.model.speed.biasMps)
       .not.toBeCloseTo(report.byTerrain.ridge.downscaled.speed.biasMps, 6);
+  });
+
+  /**
+   * Two stations on opposite landforms, each on its own ground.
+   *
+   * The ridge station is given a wind the model reads nearly right and the
+   * valley station one the model reads much too fast, which is the shape the
+   * Colorado run actually found: +0.30 m/s of bias on ridges against +2.09 in
+   * valleys. That difference is the thing a per-stratum debias would erase.
+   */
+  // The default END sits in a calm stretch of the fixture, where every
+  // observation is excluded and a debias scale has nothing to fit. This window
+  // is the windy half of 2026-09-01: 1.5 to 4.6 m/s, direction all through the
+  // west and south.
+  const WINDY_END = Date.UTC(2026, 8, 1, 6);
+
+  function twoStations() {
+    const ridge = { id: "RIDGE", name: "Ridge", lat: station.lat + 0.05, lon: station.lon,
+      elevationM: station.elevationM, sensorHeightM: station.sensorHeightM };
+    const source = stubSource({
+      station: async function (id) {
+        return id === "RIDGE" ? Object.assign({}, station, ridge) : station;
+      }
+    });
+    const service = stubService(function (spec) {
+      const onRidge = spec.lat > station.lat + 0.01;
+      return stubField(
+        onRidge
+          ? { speedMps: 4.2, fromDeg: 270, referenceMps: 4.2 }
+          : { speedMps: 7.5, fromDeg: 270, referenceMps: 7.5 },
+        onRidge
+          ? { reliefM: 60, centre: ridge, elevationM: station.elevationM }
+          : { reliefM: -60 }
+      );
+    });
+    return { source: source, service: service };
+  }
+
+  test("the stratified table is also reported with the run's own bias divided out", async () => {
+    const { source, service } = twoStations();
+    const report = await scoreWind.buildReport({
+      source: source, service: service, stations: ["KBDU", "RIDGE"], hours: 6, endMs: WINDY_END
+    });
+
+    // Same strata and the same pairs as the raw split — this is the same table,
+    // read with the gain taken out, not a different sample.
+    expect(Object.keys(report.debiasedByTerrain).sort())
+      .toEqual(Object.keys(report.byTerrain).sort());
+    for (const label of Object.keys(report.byTerrain)) {
+      expect(report.debiasedByTerrain[label].downscaled.n)
+        .toBe(report.byTerrain[label].downscaled.n);
+    }
+  });
+
+  test("the debias scale is fitted over every pair, not refitted inside each stratum", async () => {
+    // The whole point of the table. Refitting per stratum divides out the
+    // difference between the strata, which is the difference it exists to show:
+    // every row would come back with a speed bias of about zero and a ridge
+    // penalty would be invisible.
+    const { source, service } = twoStations();
+    const report = await scoreWind.buildReport({
+      source: source, service: service, stations: ["KBDU", "RIDGE"], hours: 6, endMs: WINDY_END
+    });
+
+    const labels = Object.keys(report.debiasedByTerrain);
+    expect(labels.length).toBeGreaterThan(1);
+
+    // One scale, and it is the one the pooled row used.
+    for (const label of labels) {
+      expect(report.debiasedByTerrain[label].downscaled.scale)
+        .toBeCloseTo(report.debiased.downscaled.scale, 9);
+    }
+
+    // And it is a global fit rather than a per-stratum one: after it, at least
+    // one stratum still carries a speed bias. A per-stratum fit zeroes them all.
+    const biases = labels.map(function (l) {
+      return Math.abs(report.debiasedByTerrain[l].downscaled.speed.biasMps);
+    });
+    expect(Math.max.apply(null, biases)).toBeGreaterThan(0.1);
   });
 
   test("a station whose elevation disagrees with the ground under it is dropped, and named", async () => {
