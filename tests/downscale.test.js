@@ -278,6 +278,60 @@ describe("the signs, on a hill whose answer is obvious", () => {
     expect(field.east[i]).toBeCloseTo(field.speedMps[i] * Math.sin(from + Math.PI), 5);
     expect(field.north[i]).toBeCloseTo(field.speedMps[i] * Math.cos(from + Math.PI), 5);
   });
+
+  // Convex ground and concave ground are one gain in Liston & Elder, so a
+  // score of the curvature term is a score of both claims at once: "a crest
+  // speeds the wind up" and "a hollow slows it down". Against RAWS those two
+  // are measurably different — the model is already about right on ridges and
+  // 2 m/s fast everywhere else — so they have to be removable one at a time
+  // before a run can say which of them is costing.
+  describe("the curvature term's two halves", () => {
+    const curvatureOnly = { slope: 0, shelter: 0 };
+    const both = downscale.downscale(
+      weights, { speedMps: 10, fromDeg: 270 }, { shelter: false, weights: curvatureOnly });
+    const concaveOnly = downscale.downscale(weights, { speedMps: 10, fromDeg: 270 },
+      { shelter: false, weights: Object.assign({ curvatureConvex: 0 }, curvatureOnly) });
+    const convexOnly = downscale.downscale(weights, { speedMps: 10, fromDeg: 270 },
+      { shelter: false, weights: Object.assign({ curvatureConcave: 0 }, curvatureOnly) });
+    const hollow = crest - 20;
+
+    test("dropping the convex gain leaves the crest alone and keeps the hollow", () => {
+      expect(at(weights.omegaC, crest)).toBeGreaterThan(0);
+      expect(at(both.factor, crest)).toBeGreaterThan(1);
+      expect(at(concaveOnly.factor, crest)).toBe(1);
+      expect(at(concaveOnly.factor, hollow)).toBe(at(both.factor, hollow));
+      expect(at(concaveOnly.factor, hollow)).toBeLessThan(1);
+    });
+
+    test("dropping the concave gain leaves the hollow alone and keeps the crest", () => {
+      expect(at(weights.omegaC, hollow)).toBeLessThan(0);
+      expect(at(convexOnly.factor, hollow)).toBe(1);
+      expect(at(convexOnly.factor, crest)).toBe(at(both.factor, crest));
+      expect(at(convexOnly.factor, crest)).toBeGreaterThan(1);
+    });
+
+    test("naming neither half is the term as it has always been", () => {
+      // The whole point of the split is that it is inert until it is asked
+      // for: a scoring option that quietly moved the production default would
+      // make every previous run in `docs/downscaling.md` incomparable.
+      const halved = downscale.downscale(weights, { speedMps: 10, fromDeg: 270 },
+        { shelter: false, weights: { curvatureConvex: 0.5, curvatureConcave: 0.5 } });
+      let checked = 0;
+      for (let i = 0; i < field.factor.length; i++) {
+        if (Number.isNaN(field.factor[i])) continue;
+        expect(halved.factor[i]).toBe(field.factor[i]);
+        checked++;
+      }
+      expect(checked).toBeGreaterThan(100);
+    });
+
+    test("the field says which gain each half of the ground was given", () => {
+      expect(convexOnly.method.weights).toMatchObject(
+        { curvature: 0.5, curvatureConvex: 0.5, curvatureConcave: 0 });
+      expect(field.method.weights).toMatchObject(
+        { curvatureConvex: 0.5, curvatureConcave: 0.5 });
+    });
+  });
 });
 
 describe("flat ground", () => {
@@ -519,7 +573,11 @@ describe("what it refuses", () => {
   test("and says which method produced the field it did return", () => {
     const field = downscale.downscaleDerived(derive.derive(grid), { speedMps: 3, fromDeg: 10 }, { curvatureLengthM: 60 });
     expect(field.method).toMatchObject({ name: "micromet", curvatureLengthM: 60, shelter: false });
-    expect(field.method.weights).toEqual(downscale.DEFAULT_WEIGHTS);
+    // The two halves of the curvature gain are reported resolved rather than
+    // omitted, so a field never leaves "which gain did convex ground get" to
+    // be inferred from an option that was not passed.
+    expect(field.method.weights).toEqual(Object.assign(
+      { curvatureConvex: 0.5, curvatureConcave: 0.5 }, downscale.DEFAULT_WEIGHTS));
     expect(field.stats.undefinedFraction).toBeGreaterThan(0);
   });
 });

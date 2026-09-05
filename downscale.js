@@ -59,6 +59,16 @@ const DEFAULT_CURVATURE_LENGTH_M = 500;
  * term, and 0.5 is a judgement about how much a sheltered pixel should slow
  * down, **not a calibrated coefficient**. Nothing in this repository has been
  * compared against an anemometer.
+ *
+ * `curvatureConvex` and `curvatureConcave` are not two more terms. They are
+ * `curvature` on the two signs of the ground, and each one defaults to it, so
+ * naming neither leaves the arithmetic bit for bit as Liston & Elder wrote it.
+ * They exist because the single gain makes two claims at once — a crest speeds
+ * the wind up, a hollow slows it down — and the measurements in
+ * `docs/downscaling.md` grade those claims very differently: HRRR is about
+ * right on ridges and roughly 2 m/s fast on every other stratum, so a term
+ * that is helping in hollows and hurting on crests scores as one number that
+ * hides both.
  */
 const DEFAULT_WEIGHTS = { slope: 0.5, curvature: 0.5, shelter: 0.5 };
 
@@ -361,6 +371,11 @@ function downscale(weights, wind, opts) {
   if (!weights || !weights.omegaC) throw fail("bad-weights", "a terrainWeights result is required");
   const ref = readWind(wind);
   const gains = Object.assign({}, DEFAULT_WEIGHTS, o.weights);
+  // Resolved once, and reported, so that a field always says what it did to
+  // each half of the ground rather than leaving it to be inferred from the
+  // absence of an option.
+  if (gains.curvatureConvex === undefined) gains.curvatureConvex = gains.curvature;
+  if (gains.curvatureConcave === undefined) gains.curvatureConcave = gains.curvature;
   const useShelter = o.shelter === false ? false : Boolean(weights.shelter);
   const useDivert = o.divert !== false;
   if (o.shelter === true && !weights.shelter) {
@@ -405,7 +420,11 @@ function downscale(weights, wind, opts) {
       ox = lo * (1 - bracket.t) + hi * bracket.t;
     }
 
-    const f = (1 + gains.slope * os + gains.curvature * oc) * (1 - gains.shelter * ox);
+    // Convex ground is oc > 0 by `scaleCurvature`'s sign: the centre standing
+    // above the mean of its neighbours. Zero is neither, and takes the concave
+    // gain only because it multiplies by nothing either way.
+    const gc = oc > 0 ? gains.curvatureConvex : gains.curvatureConcave;
+    const f = (1 + gains.slope * os + gc * oc) * (1 - gains.shelter * ox);
     // Bounded above zero by construction; the guard is against a caller's own
     // weights, not against the terrain.
     const bounded = f > 0 ? f : 0;

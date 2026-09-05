@@ -19,6 +19,7 @@ If you are picking this up cold: `downscale.js` is the module in question,
 - [Measurement 3: split by the ground the station stands on](#measurement-3-split-by-the-ground-the-station-stands-on)
 - [Measurement 4: the ground the model thinks it is blowing over](#measurement-4-the-ground-the-model-thinks-it-is-blowing-over)
 - [Measurement 5: subtracting that ground, and scoring it](#measurement-5-subtracting-that-ground-and-scoring-it)
+- [Measurement 6: the curvature term's two halves, through the debiased table](#measurement-6-the-curvature-terms-two-halves-through-the-debiased-table)
 - [The hypotheses, and how much weight each one carries](#the-hypotheses-and-how-much-weight-each-one-carries)
 - [What would settle it](#what-would-settle-it)
 - [Things that would poison the answer](#things-that-would-poison-the-answer)
@@ -34,7 +35,11 @@ a terrain correction is for, and it happens on precisely the ground the correcti
 exists to handle.
 
 The first version of that result was reported as "the downscaling is worse". It was not
-wrong, but it was close to meaningless, for reasons in the next two sections.
+wrong, but it was close to meaningless, for reasons in the next two sections. By
+[measurement 6](#measurement-6-the-curvature-terms-two-halves-through-the-debiased-table)
+the "clearly worse on ridges" half of the sentence has gone the same way: it is the
+model's speed bias being multiplied on the stratum with the least room for it, and it
+disappears when that bias is divided out.
 
 ## What the downscaling actually does
 
@@ -45,7 +50,9 @@ const f = (1 + gains.slope * os + gains.curvature * oc) * (1 - gains.shelter * o
 ```
 
 - **slope** — speed-up along the component of the slope facing the wind, `os`;
-- **curvature** — speed-up over convex ground and slow-down in concave ground, `oc`;
+- **curvature** — speed-up over convex ground and slow-down in concave ground, `oc`.
+  Those are two claims on one coefficient, and `curvatureConvex` / `curvatureConcave`
+  grade them apart; each defaults to `curvature`, so naming neither changes nothing;
 - **shelter** — a reduction by an upwind exposure/shelter index `Sx`, `ox`. **It is only
   derived when a caller asks for it**, so in every ordinary run this multiplies by one
   and the coefficient in the defaults is inert;
@@ -220,14 +227,83 @@ Two things the run did show, neither of which is a result:
 Artefacts: `--ablate --scales --anomaly` and the same with `--anomaly 1000
 --anomaly-resolution 30`.
 
+## Measurement 6: the curvature term's two halves, through the debiased table
+
+The run [Claude's review](#claudes-review) parked, and the one measurement 5 asked for.
+`Wc*Oc` makes two claims with one coefficient — a crest speeds the wind up, a hollow
+slows it down — and the sign of `omegaC` separates them for nothing.
+`downscale.js` now takes `curvatureConvex` and `curvatureConcave`, each defaulting to
+`curvature`, so an ordinary field is unchanged; `--ablate` scores four more rows.
+
+**This is not the same 312 pairs as measurements 1-5.** NOMADS had expired most of that
+window's cycles by the time the split existed, so this is 13 stations x 24 hours ending
+2026-09-05T19:00Z, f06 — the same stations, a different day. It is a repeat as well as a
+split, which is worth having and is also why nothing below should be read as the same
+sample moving.
+
+Vector RMSE, m/s. `raw` is as scored; `debiased` divides each candidate's own overall
+speed bias out, one scale over every pair.
+
+```
+                        overall            ridge (96)         valley (96)
+candidate            raw   debiased     raw   debiased     raw   debiased
+HRRR alone          3.22       2.25    3.23       2.54    3.39       2.17
+downscaled          3.22       2.19    3.46       2.54    3.16       2.03
+curvature only      3.24       2.20    3.49       2.55    3.18       2.04
+no convex speed-up  3.12       2.22    3.20       2.54    3.16       2.08
+no concave slow-down 3.29      2.20    3.46       2.53    3.37       2.10
+convex only         3.31       2.21    3.49       2.54    3.39       2.11
+concave only        3.14       2.23    3.23       2.55    3.18       2.10
+```
+
+**Raw, the whole ridge penalty is the convex half, and dropping it returns the ridge
+column to the model's own score**: 3.46 becomes 3.20 against HRRR's 3.23. The concave
+half is inert there, which is partly arithmetic — a ridge station's own pixel is convex
+by the same 500 m operator that classifies it — and the mirror holds in valleys, where
+the concave half carries the whole of the gain and the convex half does nothing at all.
+
+**Debiased, none of it survives.** Every one of the ten candidates lands between 2.53 and
+2.55 on ridges, HRRR included. That is the test the debiased table was added for, and it
+comes back negative: the ridge penalty was the gain — convex ground is where the term
+speeds the wind up, and speeding up a wind that is already about 1.7x too fast costs
+vector RMSE wherever it happens. It is not a fact about where the term puts the wind, so
+**hypothesis 1 as written is not supported**, and a candidate that clips the convex
+response would be fitting the bias rather than the physics.
+
+Two things that do not follow the same way:
+
+- **The valley gain is not the concave half either.** Debiased, the whole term scores
+  2.03 in valleys and each half alone scores 2.10 and 2.11, against HRRR's 2.17. Both
+  signs contribute, and neither reproduces the pair.
+- **Debiased, the whole ablation spans 0.06 m/s** — 2.19 to 2.25 against an error of
+  2.2 m/s. Once the bias is out, on this sample, none of the terrain terms is doing much
+  of anything in either direction. That is a smaller claim than "the correction hurts"
+  and a smaller one than "the correction helps".
+
+A second run over the *original* window agrees on the part that matters, on the 156 of
+312 pairs whose cycles NOMADS still had: ridge raw 3.50 model, 3.62 downscaled, 3.49 with
+the convex half dropped; ridge debiased 3.32, 3.30, 3.31. Same shape, same disappearance.
+
+*Measured. Caveats that do not shrink: a different day from measurements 1-5, so the
+strata are not in the same condition — the overall speed bias is +1.29 m/s here against
++1.62, and the ridge stratum is +0.81 against +0.30. 312 observations are 13 stations x 24
+consecutive hours. The debias scale is fitted on the pairs it is then scored against.
+"Convex" is the sign of `omegaC` at a 500 m length scale, which is a property of that
+operator and not of the landform.*
+
+Artefacts: `--ablate` over both windows.
+
 ## The hypotheses, and how much weight each one carries
 
 Roughly in the order the evidence supports them.
 
-1. **The curvature term is wrong on convex ground.** Split by stratum, every candidate
-   carrying curvature costs about 0.4 m/s of vector RMSE on ridges and the slope-only
-   candidates cost almost nothing, on the one stratum where HRRR was already right.
-   Supported by measurements 3 and 5.
+1. **The curvature term is wrong on convex ground — tested, and not supported.**
+   Measurements 3 and 5 put about 0.4 m/s of ridge penalty on the candidates carrying
+   curvature, and measurement 6 shows it is all of it on the convex half and none of it
+   left once each candidate's own speed bias is divided out: ten candidates inside
+   0.02 m/s on ridges. The term is not misplacing the wind on crests; it is multiplying
+   a wind that is already too fast, on the stratum with the least room for it. This is
+   hypothesis 3 wearing hypothesis 1's clothes.
 2. **Double counting on ridges — tested, and not supported through this pathway.** The
    model has resolved part of the landform, measurably: 41 m of ridge at these four
    stations. Subtracting a 1–3 km regional surface before deriving the weights recovers
@@ -257,11 +333,11 @@ Roughly in the order the evidence supports them.
 
 In cost order.
 
-- **Score a curvature term that cannot speed up a ridge**, since measurement 5 puts the
-  ridge penalty on curvature rather than on the absolute-versus-anomaly landform. The
-  cheap version is a candidate with the convex half of the curvature response clipped;
-  the honest version is finding out why a convex speed-up is wrong here at all, because
-  clipping a term to fit 96 correlated hours is curve fitting.
+- ~~**Score a curvature term that cannot speed up a ridge.**~~ Run: measurement 6. The
+  clipped candidate wins the raw ridge column and is indistinguishable from every other
+  candidate once the bias is out, which is the curve-fitting this bullet warned about,
+  caught by the debiased table rather than by judgement. **The successor question is the
+  bias itself**, since that is now the only thing the ridge column was measuring.
 - **Repeat measurement 5 at the terms' own wavelength.** The subtraction was done at 1 km
   and 3 km, which is HRRR's scale and not the terms' scale. A high-pass at 300–500 m
   would change the curvature input rather than leave it alone, and that is the version of
@@ -500,6 +576,10 @@ divided out, one scale fitted over every pair and never refitted inside a stratu
 Run it before drawing anything further from the ridge column. If the ridge penalty
 survives the debias it is a fact about where the term puts the wind; if it does not, it
 was the gain all along and hypothesis 1 is chasing an artifact.
+
+*Run — [measurement 6](#measurement-6-the-curvature-terms-two-halves-through-the-debiased-table).
+It does not survive: ten candidates inside 0.02 m/s on the ridge column once the bias is
+out. It was the gain.*
 
 ## What I did not verify
 
