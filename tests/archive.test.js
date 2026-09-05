@@ -300,3 +300,93 @@ describe("fetching a message by byte range", () => {
     await expect(archive.fetchArchiveRecords({ cycle: CYCLE })).rejects.toThrow(/wanted is required/);
   });
 });
+
+describe("the archive as a source the field service can use", () => {
+  // `cache.createHrrrVolumeSource` takes its fetcher as `nomads`, and asks it
+  // for a box, a cycle, a lead time, the filter's level names and a variable
+  // list. An archive source has to answer that same call, or every module
+  // downstream of the volume needs a second code path for historical data —
+  // which is the point at which "score another date" stops happening.
+  const BOX = { west: -105.30, south: 40.005, east: -105.26, north: 40.035 };
+
+  function source(opts) {
+    const s3 = fakeS3();
+    return {
+      s3: s3,
+      source: archive.createArchiveSource(Object.assign({ fetch: s3.fetch }, opts || {}))
+    };
+  }
+
+  async function land(made, extra) {
+    return made.source.fetchHrrrBox(Object.assign({
+      box: BOX, cycle: CYCLE, forecastHour: 1,
+      levels: ["surface"], variables: ["LAND"]
+    }, extra || {}));
+  }
+
+  test("it answers with the cropped records, not with the continent", async () => {
+    const made = source();
+    const got = await land(made);
+    expect(got.records.length).toBe(1);
+    expect(got.records[0].parameter).toBe("LAND");
+    expect(got.records[0].level).toEqual({ type: 1, name: "surface", value: 0 });
+    // 1,905,141 points went in. What comes out is the handful of cells the
+    // domain touches, with coordinates for those and no others.
+    expect(got.records[0].values.length).toBeLessThan(100);
+    expect(got.records[0].latitudes.length).toBe(got.records[0].values.length);
+    expect(got.url).toContain("hrrr.20250901/conus/hrrr.t12z.wrfsfcf01.grib2");
+    expect(got.bytes).toBe(LAND.length);
+  });
+
+  test("the filter's level names are translated to the sidecar's spelling", async () => {
+    // `heightAboveGround:10` is what the rest of the repository calls it,
+    // `10 m above ground` is what NCEP writes in the .idx, and a mismatch here
+    // is not an error — it is a selection that matches nothing.
+    expect(archive.indexLevel("10_m_above_ground")).toBe("10 m above ground");
+    expect(archive.indexLevel("surface")).toBe("surface");
+    expect(() => archive.indexLevel("heightAboveGround:10")).toThrow(/no archive index level/);
+  });
+
+  test("a variable published at none of the wanted levels is named and refused", async () => {
+    const made = source();
+    await expect(land(made, { variables: ["LAND", "UGRD"], levels: ["surface"] }))
+      .rejects.toThrow(/UGRD is published at none of surface/);
+  });
+
+  test("the sidecar is read once for a cycle, however many hours are scored", async () => {
+    // Thirteen stations over twenty-four hours is 312 calls, and the sidecar
+    // is a megabyte of text. Fetching it per call is the difference between a
+    // run that finishes and one that does not.
+    const made = source();
+    await land(made);
+    await land(made);
+    expect(made.s3.calls.filter(function (c) { return /\.idx$/.test(c.url); }).length).toBe(1);
+  });
+
+  test("a message is fetched once and cropped again for the next box", async () => {
+    const made = source();
+    const first = await land(made);
+    const second = await land(made, {
+      box: { west: -105.6, south: 40.3, east: -105.5, north: 40.4 }
+    });
+    expect(made.s3.calls.filter(function (c) { return c.range; }).length).toBe(1);
+    expect(second.records[0].values.length).toBeGreaterThan(0);
+    expect(second.records[0].latitudes[0]).not.toBeCloseTo(first.records[0].latitudes[0], 3);
+  });
+
+  test("a box off the grid is refused rather than answered empty", async () => {
+    const made = source();
+    await expect(land(made, { box: { west: 10, south: 40, east: 11, north: 41 } }))
+      .rejects.toThrow(/does not meet this grid/);
+  });
+
+  test("a call with no box, cycle, level or variable is refused", async () => {
+    const made = source();
+    await expect(made.source.fetchHrrrBox({ cycle: CYCLE })).rejects.toThrow(/box is required/);
+    await expect(made.source.fetchHrrrBox({ box: BOX })).rejects.toThrow(/cycle is required/);
+    await expect(made.source.fetchHrrrBox({ box: BOX, cycle: CYCLE, variables: ["LAND"] }))
+      .rejects.toThrow(/levels is required/);
+    await expect(made.source.fetchHrrrBox({ box: BOX, cycle: CYCLE, levels: ["surface"] }))
+      .rejects.toThrow(/variables is required/);
+  });
+});

@@ -23,6 +23,7 @@ const downscale = require("../downscale.js");
 const proj = require("../proj.js");
 const scoreWind = require("../tools/score-wind.js");
 const observationsModule = require("../observations.js");
+const roughness = require("../roughness.js");
 
 const STATION = JSON.parse(fs.readFileSync(
   path.join(__dirname, "fixtures", "nws-kbdu-station.json"), "utf8"));
@@ -723,6 +724,123 @@ describe("scoring the downscaling's terms one at a time", () => {
     const report = await ablated();
     expect(report.domain.fixedScales).toBeNull();
     expect(report.candidates.map(function (c) { return c.key; })).not.toContain("fixedScales");
+  });
+});
+
+describe("scoring the surface the station stands on", () => {
+  // The height correction is the one place in the tool that asserts a surface,
+  // and it asserts the same one — 0.03 m, mown grass — over every mast in the
+  // sample. These rows put a different surface under the same wind, and the
+  // two-step ones put a *second* surface under the model, which is the only
+  // mechanism here that can move a wind by the size of the observed bias.
+  const wind = { speedMps: 5, fromDeg: 270, referenceMps: 5 };
+
+  function raws(heightM) {
+    return stubSource({
+      station: async function () {
+        return Object.assign({}, station, { sensorHeightM: heightM });
+      }
+    });
+  }
+
+  async function exposed(extra) {
+    const opts = Object.assign({ sensorHeightM: 6.1, modelRoughnessM: 0.4 }, extra || {});
+    return scoreWind.buildReport(Object.assign({
+      source: raws(opts.sensorHeightM),
+      service: stubService(function () {
+        return Object.assign(stubField(wind), { modelRoughnessM: opts.modelRoughnessM });
+      }),
+      stations: ["KBDU"], hours: 4, endMs: END, exposure: true
+    }, opts.report || {}));
+  }
+
+  test("the rows are added and the rows that were there are untouched", async () => {
+    const report = await exposed();
+    const keys = report.candidates.map(function (c) { return c.key; });
+    expect(keys).toEqual(["model", "downscaled", "z0Rough", "z0Closed", "z0Model",
+      "exposureRough", "exposureVeryRough", "exposureClosed"]);
+    // Every candidate without an exposure block keeps the run's own single
+    // roughness, so an --exposure run's other rows are what they were without
+    // it and the two tables can be read side by side.
+    const height = report.stations[0].height;
+    expect(height.byCandidate.model).toBeCloseTo(height.factor, 6);
+    expect(height.byCandidate.downscaled).toBeCloseTo(height.factor, 6);
+    for (const key of keys) {
+      expect(report.overall[key].n).toBe(report.overall.model.n);
+    }
+  });
+
+  test("a one-step row is the log law over its own class, and nothing more", async () => {
+    const report = await exposed();
+    const height = report.stations[0].height;
+    expect(height.byCandidate.z0Rough)
+      .toBeCloseTo(downscale.heightFactor(10, 6.1, 0.25), 4);
+    expect(height.byCandidate.z0Closed)
+      .toBeCloseTo(downscale.heightFactor(10, 6.1, 1.0), 4);
+    // The whole plausible range of surfaces is worth about 13% over a 10 m to
+    // 6.1 m descent, which is why no one-step row can explain a 1.7 bias.
+    expect(height.byCandidate.z0Closed / height.byCandidate.model).toBeGreaterThan(0.85);
+  });
+
+  test("a two-step row moves a wind the heights alone cannot", async () => {
+    const report = await exposed();
+    const height = report.stations[0].height;
+    expect(height.byCandidate.exposureClosed).toBeCloseTo(roughness.exposureFactor({
+      fromHeightM: 10, toHeightM: 6.1, siteRoughnessM: 1.0, modelRoughnessM: 0.4
+    }), 4);
+    expect(height.byCandidate.exposureClosed).toBeLessThan(height.byCandidate.z0Closed);
+    // And the score follows it: the candidate's modelled mean is the model's
+    // own scaled by the factor, so the row is the surface and nothing else.
+    expect(report.stations[0].exposureClosed.speed.modelledMeanMps).toBeCloseTo(
+      report.stations[0].model.speed.modelledMeanMps *
+        (height.byCandidate.exposureClosed / height.factor), 3);
+  });
+
+  test("HRRR's own roughness reaches the row that names it", async () => {
+    const report = await exposed({ modelRoughnessM: 0.62 });
+    const height = report.stations[0].height;
+    expect(height.modelRoughnessM).toBeCloseTo(0.62, 3);
+    expect(height.byCandidate.z0Model)
+      .toBeCloseTo(downscale.heightFactor(10, 6.1, 0.62), 4);
+    expect(scoreWind.summarise(report)).toMatch(/SFCR/);
+  });
+
+  test("a volume with no SFCR leaves those rows empty rather than smooth", async () => {
+    // A missing surface is not a 0.03 m one. Scoring the row at the default
+    // under a name that says "the model's own roughness" is exactly the silent
+    // substitution this tool keeps finding elsewhere.
+    const report = await exposed({ modelRoughnessM: null });
+    const height = report.stations[0].height;
+    expect(height.modelRoughnessM).toBeNull();
+    expect(height.byCandidate.z0Model).toBeNull();
+    expect(height.byCandidate.exposureRough).toBeNull();
+    expect(height.byCandidate.z0Rough).not.toBeNull();
+    expect(report.overall.z0Model.n).toBe(0);
+    expect(report.overall.z0Rough.n).toBe(report.overall.model.n);
+  });
+
+  test("a station with no published height still gets the surface correction", async () => {
+    // The two-step question — whose surface does this 10 m wind belong to —
+    // does not need the mast to be anywhere in particular, and the one-step
+    // rows correctly do nothing.
+    const report = await exposed({ sensorHeightM: undefined });
+    const height = report.stations[0].height;
+    expect(height.sensorHeightM).toBeNull();
+    expect(height.byCandidate.z0Rough).toBe(1);
+    expect(height.byCandidate.exposureClosed).toBeLessThan(0.9);
+  });
+
+  test("without --exposure the report is unchanged and says nothing about surfaces", async () => {
+    const report = await exposed({ report: { exposure: false } });
+    expect(Object.keys(report.overall)).toEqual(["model", "downscaled"]);
+    expect(report.domain.blendingHeightM).toBeNull();
+    expect(scoreWind.summarise(report)).not.toMatch(/SFCR/);
+  });
+
+  test("the summary reports the blending height it used", async () => {
+    const text = scoreWind.summarise(await exposed());
+    expect(text).toContain("blended from SFCR at 60 m");
+    expect(text).toMatch(/not a measurement of any one mast's fetch/);
   });
 });
 

@@ -275,6 +275,43 @@ describe("modelElevation", () => {
     });
     expect(field.modelElevation(elsewhere, box)).toBeNull();
   });
+
+  test("the same reader answers for any surface field, roughness included", () => {
+    // HRRR publishes its own aerodynamic roughness as SFCR, and the scoring
+    // work in `docs/downscaling.md` needs it because the downscaler asserts
+    // one national 0.03 m. It is read through the same sampler as the model's
+    // ground rather than a second one: two readers of the same volume drift.
+    const withSfcr = Object.assign({}, volume, {
+      scalars: Object.assign({}, volume.scalars, {
+        SFCR: { surface: new Array(volume.pointCount).fill(0.42) }
+      })
+    });
+    expect(field.modelSurface(withSfcr, box, "SFCR")).toBeCloseTo(0.42, 6);
+    expect(field.modelSurface(volume, box, "SFCR")).toBeNull();
+  });
+});
+
+describe("the model's own surface roughness on an assembled field", () => {
+  const spec = { box: boxAround(CENTRE, 0.004), curvatureLengthM: 200 };
+  const grid = hill(60, 60, 10);
+
+  test("is absent unless the volume was asked for it", () => {
+    // The live service does not request SFCR, so this is null in production
+    // and the downscaler's own roughness is untouched by any of it.
+    expect(field.DEFAULT_VARIABLES).not.toContain("SFCR");
+    const built = field.assemble({ spec: spec, grids: [grid], volume: volume });
+    expect(built.modelRoughnessM).toBeNull();
+  });
+
+  test("is carried through when it is there", () => {
+    const withSfcr = Object.assign({}, volume, {
+      scalars: Object.assign({}, volume.scalars, {
+        SFCR: { surface: new Array(volume.pointCount).fill(0.31) }
+      })
+    });
+    const built = field.assemble({ spec: spec, grids: [grid], volume: withSfcr });
+    expect(built.modelRoughnessM).toBeCloseTo(0.31, 6);
+  });
 });
 
 describe("assemble", () => {

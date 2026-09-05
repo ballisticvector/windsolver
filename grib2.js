@@ -598,12 +598,94 @@ function toEarthRelativeWind(grid, lonDeg, uGrid, vGrid) {
 }
 
 /**
+ * The same field over a smaller rectangle of the same grid.
+ *
+ * The NOMADS filter subsets server-side; the archive does not, so a message
+ * pulled from S3 is the whole CONUS domain — 1,905,141 points for a question
+ * about one valley. Holding thirteen of those per cycle is what makes a
+ * multi-station archive run run out of memory rather than run slowly.
+ *
+ * This is a crop and not a resample: the values kept are the values decoded,
+ * and the projection is unchanged. Only the origin and the counts move, so
+ * `lat1Deg`/`lon1Deg` become the coordinate of the new first point and
+ * everything downstream — `gridIndexOf`, the wind rotation, the bilinear
+ * sample — is arithmetic on the same Lambert parameters. Anything that
+ * *changed* the projection here would put the wind in the wrong valley while
+ * still decoding cleanly.
+ *
+ * The corner is projected rather than read out of the record's coordinate
+ * arrays, so a record decoded with `{ coordinates: false }` can be cropped —
+ * which is the point, because building 1,905,141 coordinates costs nine times
+ * what unpacking the values does and all but 169 of them are thrown away.
+ */
+function cropToBox(record, box, opts) {
+  const o = opts || {};
+  const pad = o.paddingCells === undefined ? 1 : o.paddingCells;
+  const grid = record.grid;
+  if (!(pad >= 0)) throw fail("bad-crop", "paddingCells must be zero or more");
+  for (const side of ["west", "south", "east", "north"]) {
+    if (!Number.isFinite(box[side])) throw fail("bad-crop", "the box needs a finite " + side);
+  }
+
+  const k = lambertConstants(grid);
+  const origin = lambertForward(grid, k, grid.lat1Deg, grid.lon1Deg);
+  let iMin = Infinity, iMax = -Infinity, jMin = Infinity, jMax = -Infinity;
+  // The box's four corners bound it in projected space: a Lambert grid's rows
+  // are not parallels, so the northern edge of a box touches a different j at
+  // its two ends and taking only two corners clips the field at one of them.
+  for (const lat of [box.south, box.north]) {
+    for (const lon of [box.west, box.east]) {
+      const p = lambertForward(grid, k, lat, lon);
+      const i = (p.x - origin.x) / grid.dxMeters;
+      const j = (p.y - origin.y) / grid.dyMeters;
+      iMin = Math.min(iMin, i); iMax = Math.max(iMax, i);
+      jMin = Math.min(jMin, j); jMax = Math.max(jMax, j);
+    }
+  }
+
+  const i0 = Math.max(0, Math.floor(iMin) - pad);
+  const j0 = Math.max(0, Math.floor(jMin) - pad);
+  const i1 = Math.min(grid.ni - 1, Math.ceil(iMax) + pad);
+  const j1 = Math.min(grid.nj - 1, Math.ceil(jMax) + pad);
+  if (i1 < i0 || j1 < j0) {
+    throw fail("outside-grid", "the box " + box.west + "," + box.south + " to " + box.east + "," +
+      box.north + " does not meet this grid");
+  }
+
+  const ni = i1 - i0 + 1;
+  const nj = j1 - j0 + 1;
+  const corner = lambertInverse(grid, k, origin.x + i0 * grid.dxMeters, origin.y + j0 * grid.dyMeters);
+  const cropped = Object.assign({}, grid, {
+    ni: ni,
+    nj: nj,
+    lat1Deg: corner.lat,
+    lon1Deg: corner.lon
+  });
+
+  const values = new Array(ni * nj);
+  for (let j = 0; j < nj; j++) {
+    for (let i = 0; i < ni; i++) {
+      values[j * ni + i] = record.values[(j0 + j) * grid.ni + (i0 + i)];
+    }
+  }
+  const coords = gridCoordinates(cropped);
+
+  return Object.assign({}, record, {
+    grid: cropped,
+    latitudes: coords.latitudes,
+    longitudes: coords.longitudes,
+    values: values
+  });
+}
+
+/**
  * Decode every message in a buffer.
  *
  * Throws on the first message it cannot decode, rather than skipping it: a
  * missing u-component silently dropped from a field is a wind with no easting.
  */
-function decode(buffer) {
+function decode(buffer, opts) {
+  const withCoordinates = !opts || opts.coordinates !== false;
   if (!Buffer.isBuffer(buffer)) throw fail("not-grib", "expected a Buffer");
   if (buffer.length === 0) throw fail("not-grib", "buffer is empty");
   if (buffer.toString("ascii", 0, 4) !== "GRIB") {
@@ -635,7 +717,11 @@ function decode(buffer) {
     const values = rep.template === 0
       ? unpack(buffer, sections[7], rep, bitmap, pointCount)
       : unpackComplex(buffer, sections[7], rep, bitmap, pointCount);
-    const coords = gridCoordinates(grid);
+    // Nine tenths of the cost of decoding a CONUS message is here, and a caller
+    // that is about to crop to a county throws away every one of them. It is
+    // opt-out rather than lazy so that a record either carries its coordinates
+    // or plainly does not, instead of carrying them sometimes.
+    const coords = withCoordinates ? gridCoordinates(grid) : { latitudes: null, longitudes: null };
     // The discipline is in section 0, and it is part of the parameter's identity:
     // 0/0/1 is virtual temperature and 2/0/1 is the surface roughness length.
     // Assuming discipline 0 renames one as the other and nothing looks wrong.
@@ -669,6 +755,7 @@ module.exports = {
   PARAMETERS,
   SPHERE_RADII_M,
   decode,
+  cropToBox,
   gridCoordinates,
   gridNorthBearingDeg,
   toEarthRelativeWind,

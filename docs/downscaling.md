@@ -20,6 +20,7 @@ If you are picking this up cold: `downscale.js` is the module in question,
 - [Measurement 4: the ground the model thinks it is blowing over](#measurement-4-the-ground-the-model-thinks-it-is-blowing-over)
 - [Measurement 5: subtracting that ground, and scoring it](#measurement-5-subtracting-that-ground-and-scoring-it)
 - [Measurement 6: the curvature term's two halves, through the debiased table](#measurement-6-the-curvature-terms-two-halves-through-the-debiased-table)
+- [Measurement 7: six runs off the archive, and what roughness does to the bias](#measurement-7-six-runs-off-the-archive-and-what-roughness-does-to-the-bias)
 - [The hypotheses, and how much weight each one carries](#the-hypotheses-and-how-much-weight-each-one-carries)
 - [What would settle it](#what-would-settle-it)
 - [Things that would poison the answer](#things-that-would-poison-the-answer)
@@ -293,6 +294,130 @@ operator and not of the landform.*
 
 Artefacts: `--ablate` over both windows.
 
+## Measurement 7: six runs off the archive, and what roughness does to the bias
+
+Two things arrived together. `archive.js` reads HRRR out of the AWS Open Data bucket a
+message at a time, so a cycle NOMADS has forgotten can still be scored and "does it
+repeat" stops being a question about the last two days. And `roughness.js` gives the
+harness Davenport roughness classes and Wieringa's two-surface exposure correction, so
+the single national `z0 = 0.03 m` in `downscale.heightFactor` can be scored against
+alternatives instead of argued about. **Neither changes a default**: `roughness.js` is
+research-only, nothing imports it from the runtime path, and `nomads.js` is untouched.
+
+Six runs, all `--archive --exposure --ablate`: 2026-08-31, 09-02 and 09-04, each at f00
+and f06, 13 Colorado RAWS x 24 hours, 30-minute pairing tolerance. 1776 pairs. The new
+candidates all keep the default downscaling and change only the surface the wind is
+brought down over: `z0 0.25/1.0 m` are one-step log-law substitutions for the 0.03 m
+default, `z0 = SFCR` uses **HRRR's own published surface roughness at the station**, and
+the `exposure` rows go up to a 60 m blending height over HRRR's surface and back down
+over an asserted site surface, which is the correction Wieringa's method is actually for.
+
+Overall vector RMSE, m/s, and each candidate's own speed bias:
+
+```
+                 08-31 f00   08-31 f06   09-02 f00   09-02 f06   09-04 f00   09-04 f06
+candidate        bias  vec   bias  vec   bias  vec   bias  vec   bias  vec   bias  vec
+HRRR alone       0.94 3.12   1.43 3.92   1.08 3.03   1.42 3.47   1.30 3.24   1.47 3.62
+downscaled       1.10 3.14   1.60 4.00   1.20 3.02   1.54 3.50   1.42 3.27   1.59 3.69
+z0 0.25 m        0.95 3.04   1.43 3.86   1.05 2.92   1.38 3.37   1.24 3.16   1.41 3.56
+z0 = SFCR        0.89 2.99   1.35 3.79   0.99 2.90   1.31 3.34   1.18 3.12   1.34 3.52
+z0 1.0 m         0.70 2.90   1.14 3.65   0.80 2.78   1.10 3.17   0.95 3.00   1.10 3.37
+exposure rough   1.07 3.14   1.57 4.01   1.16 2.97   1.49 3.41   1.35 3.23   1.51 3.62
+exposure v.rough 0.75 2.92   1.20 3.70   0.83 2.74   1.13 3.13   1.00 2.97   1.14 3.32
+exposure closed  0.33 2.70   0.71 3.34   0.40 2.50   0.65 2.80   0.52 2.68   0.65 2.98
+```
+
+Three results, in increasing order of how much they should change anyone's mind.
+
+**The bias repeats, and forecast hour is not incidental to it.** Observed mean is
+2.13-2.15 m/s on all three days; HRRR is between +0.94 and +1.47 m/s fast, so "about 70%
+fast" was the top of a range that runs from about 44%. **On every date the f06 bias is
+0.17-0.49 m/s larger than the f00 bias from the same day.** These stations feed the
+analysis, so f00 is graded on a field that has already been pulled toward them; the gap
+is the size of that pull, and the f06 column is the honest one. Every earlier number in
+this note taken at f00 understates the bias by roughly that much.
+
+**Raw, the roughest exposure candidate wins every single run** — 0.4 to 0.6 m/s off the
+vector RMSE, 13-16%, on three days and two lead times without exception. It is the
+largest improvement anything in this investigation has produced.
+
+**Debiased, it buys nothing.** Divide each candidate's own overall scale out and the
+whole roughness family collapses onto the plain downscaling:
+
+```
+debiased vector RMSE       08-31 f00  08-31 f06  09-02 f00  09-02 f06  09-04 f00  09-04 f06
+HRRR alone                      2.63       2.97       2.41       2.54       2.42       2.60
+downscaled                      2.54       2.92       2.33       2.49       2.36       2.56
+z0 = SFCR                       2.55       2.92       2.36       2.51       2.39       2.59
+z0 1.0 m                        2.57       2.94       2.37       2.52       2.43       2.62
+exposure closed                 2.57       2.94       2.34       2.48       2.41       2.59
+```
+
+Every roughness row is within 0.03 m/s of the plain downscaling and in most runs very
+slightly *worse* than it. The fitted scales say the same thing from the other side: the
+sample needs about x0.60, the roughest defensible exposure correction supplies x0.77-0.87,
+and what it supplies is a **constant**. A per-station correction that behaves like a
+constant is not measuring the station.
+
+That is worth testing directly rather than inferring, so: per station, pooled over all
+six runs, the scale that station actually needs — its observed mean over its modelled
+mean — against HRRR's surface roughness under it.
+
+```
+station  class    n   SFCR   needs   z0=SFCR factor
+LSTC2    slope  144  0.633   0.208            0.821
+TS578    valley 144  0.154   0.303            1.000
+TT532    valley 144  0.156   0.310            1.000
+ESPC2    flat   144  0.241   0.402            0.867
+PKLC2    ridge  144  0.678   0.453            0.816
+KSHC2    ridge  144  0.311   0.507            0.858
+DYGC2    slope  144  0.173   0.587            0.878
+SODC2    slope  144  0.693   0.589            0.815
+PCPC2    valley 144  0.477   0.758            0.838
+BMOC2    flat   144  0.175   0.834            0.878
+TS723    valley  48  0.225   0.835            0.576
+RRAC2    ridge  144  0.623   1.225            0.822
+STOC2    ridge  144  0.251   1.676            0.866
+```
+
+**The stations do not need one bias; they need scales from x0.21 to x1.68**, and the
+correlation between what a station needs and the roughness under it is **r = -0.02**.
+Not weak — absent. The correction the model's own roughness field prescribes correlates
+with the correction the station wants at r = -0.27, which is the wrong sign. The +0.9 to
++1.5 m/s "bias" is the mean of a distribution eight times wider than itself, containing
+two stations the model is too *slow* over, and aerodynamic roughness predicts no part of
+where a station sits in it.
+
+**Hypothesis 3's roughness half is therefore not supported.** SFCR over these thirteen
+runs 0.15-0.69 m against the national 0.03 m, so the default really is wrong as a
+description of the ground — and correcting it does not make the wind land in a better
+place. It only slows everything down, and a single tuned constant does that better.
+
+One thing did correlate, and it is not offered as a result. Against the 500 m
+topographic position index the same needed scales give **r = +0.70**: sheltered ground
+needs the wind slowed hard, exposed ground barely at all, which is the sheltering signal
+the inert `Sx` term is supposed to carry. Then the leave-one-out checks: **drop STOC2 and
+r falls to 0.31** — one station of thirteen carries it — and predicting a held-out
+station's scale from the other twelve beats predicting the sample mean by 0.363 against
+0.427, a 15% improvement on a two-parameter fit. **That is a hypothesis with one leverage
+point under it, not a finding**, and it is the first thing more stations would settle.
+
+*Measured, except where noted. Caveats: the exposure candidates' site roughness is an
+asserted Davenport class, not a land-cover lookup at the station — "closed" is a
+statement that these towers stand in something like closed forest, which for a Colorado
+RAWS is a guess made to bracket the arithmetic. Three days is not a season, thirteen
+stations is not a region, and 24 consecutive hours are not 24 independent samples. f00
+is not independent of the analysis at all. The debias scale is fitted on the pairs it is
+scored against. Pairing tolerance is 30 minutes here against 10 in earlier runs, which
+changes which observations are in the sample.*
+
+*The archive can reach 2014. The observation account cannot: Synoptic refused history
+older than about six days with `does not have access to the requested history`, which is
+why three recent dates were scored rather than three seasons. Archive-backed repeats over
+arbitrary history are unblocked in the code and blocked on that token.*
+
+Artefacts: `--archive --exposure --ablate`, six runs, JSON kept outside the repo.
+
 ## The hypotheses, and how much weight each one carries
 
 Roughly in the order the evidence supports them.
@@ -314,18 +439,27 @@ Roughly in the order the evidence supports them.
    has not been.
 3. **The gain is the wrong thing to tune while the bias is 70%.** Whatever the terrain
    terms do, they are multiplying a wind that is far too fast over most of this sample.
-   Some of that is siting rather than model error — a RAWS tower stands in brush, not on
-   the mown grass the default `z0 = 0.03 m` assumes — so the roughness the height
-   correction uses is a candidate in its own right, and it is currently one constant for
-   every station in the country.
-4. **The slope term does nothing as scored.** `os = alongWind / (2 * maxSlope)` is
+   The siting half of this — a RAWS tower stands in brush, not on the mown grass the
+   default `z0 = 0.03 m` assumes — was **tested in measurement 7 and is not supported**:
+   the default is wrong about the ground (HRRR's own SFCR reads 0.15-0.69 m at these
+   stations) and correcting it improves nothing that a single constant does not improve
+   more. What the stations need runs from x0.21 to x1.68 and correlates with roughness at
+   r = -0.02. The bias is real, it repeats on three days, and it is **not** one bias: it
+   is a per-station offset eight times wider than its own mean that nothing measured so
+   far predicts.
+4. **The sheltering signal is real and the term carrying it is inert — untested.** The
+   same per-station scales correlate with the 500 m topographic position index at
+   r = +0.70, which is the shape `Sx` claims and 1/50th of the amplitude it applies. One
+   station of thirteen carries that correlation (drop it and r = 0.31), so this is where
+   the next stations should go, not where the next coefficient should.
+5. **The slope term does nothing as scored.** `os = alongWind / (2 * maxSlope)` is
    normalised by the domain's own steepest slope, so a station on a 20° slope in a domain
    containing a 50° cliff reads as gentle ground. Fixed physical scales exist now
    (`slopeScaleRad`, `curvatureScale`, `shelterScaleDeg`) but are off by default.
-5. **Diversion is unearned.** It is a plausible piece of physics with no measured support
+6. **Diversion is unearned.** It is a plausible piece of physics with no measured support
    in this sample and a small measured cost. It should either be justified against a
    station set where it can show itself, or turned off.
-6. **The shelter term is the wrong shape for wind.** `Sx` in this form comes from the
+7. **The shelter term is the wrong shape for wind.** `Sx` in this form comes from the
    snow-redistribution literature; a term that moves the answer by 0.6% is either
    mis-scaled, mis-signed, or measuring something that does not limit surface wind.
 
@@ -342,16 +476,23 @@ In cost order.
   and 3 km, which is HRRR's scale and not the terms' scale. A high-pass at 300–500 m
   would change the curvature input rather than leave it alone, and that is the version of
   hypothesis 2 that has not been scored.
-- **Repeat on other days.** Everything above is **one state and one day.** NOMADS keeps
-  roughly two days of cycles, so repeats either happen in near-real-time or come from the
-  HRRR archive on AWS Open Data (`noaa-hrrr-bdp-pds`), which is complete back to 2014 and
-  supports byte-range reads through the `.idx` files. Wiring that as a second source is
-  the enabler for every "does it repeat" question here.
+- ~~**Repeat on other days.**~~ Run: measurement 7. `archive.js` reads
+  `noaa-hrrr-bdp-pds` through the `.idx` byte ranges, so the model side is unblocked back
+  to 2014; three dates x two lead times agree on the bias and on the roughness result.
+  **What is still blocked is the observation side** — the Synoptic token refuses history
+  older than about six days, so "another season" needs an account that can reach one.
 - **Repeat on other terrain.** Colorado RAWS are a convenience sample of fire-prone
   ground with road access, in one climate. The Cascades, the Appalachians and the Great
   Basin are all different problems.
-- **Score with a per-station roughness** instead of one constant, from a land-cover
-  source, and see how much of the 2 m/s survives it.
+- ~~**Score with a per-station roughness** instead of one constant.~~ Run: measurement 7,
+  using HRRR's own SFCR as well as fixed Davenport classes. It survives all of it: the
+  correction is a constant in disguise and correlates with what the stations need at
+  r = -0.02. A land-cover source would be a better roughness and there is no longer a
+  reason to expect it to matter.
+- **Put stations where the sheltering hypothesis can be tested.** The one thing that did
+  correlate with the per-station scales is topographic position, at r = +0.70 with a
+  single leverage point holding it up. Ten more stations spread across the position index
+  would either promote that to a finding or kill it, and it is the only live lead.
 - **Separate the height correction from the terrain correction in the scoring** so a
   change in one cannot be credited to the other.
 
@@ -363,7 +504,9 @@ Written down because each one has already nearly happened here.
   consecutive hours; a station's error at 14:00 is most of its error at 15:00. Any
   significance claim has to account for that, and none in this document does.
 - **Forecast hour 0 grades an analysis fit, not a forecast.** NCEP assimilates surface
-  observations. Everything here is f06 for that reason.
+  observations, and measurement 7 puts a size on it: the f00 speed bias is 0.17-0.49 m/s
+  smaller than the f06 bias from the same cycle on the same day. An f00 run is worth
+  having beside an f06 one as a measure of that pull; it is not worth quoting alone.
 - **A terrain read that fails is not a model error.** `DMTC2` is excluded from the set
   because its domain returns `outside-tile`; counting it as a miss would flatter or
   damage the model at random.
@@ -565,6 +708,12 @@ per-station roughness is worth having on its own merits and it is not the explan
 
 *Measured: the log law at the heights and roughness the harness uses. The z0 labels are
 conventional values, not a land-cover lookup.*
+
+*Run — [measurement 7](#measurement-7-six-runs-off-the-archive-and-what-roughness-does-to-the-bias),
+with HRRR's own SFCR as well as fixed classes, and with Wieringa's two-surface form as
+well as the one-step law. This section is right and understates itself: roughness cannot
+carry hypothesis 3 even when the roughness is measured rather than assumed, because what
+the stations need does not correlate with it at all.*
 
 ## The missing cell now exists
 

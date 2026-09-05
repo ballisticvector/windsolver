@@ -215,7 +215,10 @@ function resolveOptions(opts) {
     timeoutMs: o.timeoutMs === undefined ? DEFAULT_TIMEOUT_MS : o.timeoutMs,
     retries: o.retries === undefined ? DEFAULT_RETRIES : o.retries,
     sleep: o.sleep || ((ms) => new Promise((r) => setTimeout(r, ms))),
-    signal: o.signal
+    signal: o.signal,
+    box: o.box,
+    paddingCells: o.paddingCells,
+    decode: o.decode !== false
   };
 }
 
@@ -296,6 +299,7 @@ async function fetchEntries(entries, opts) {
   }
   const url = objectUrl(opts);
   const out = [];
+  const buffers = [];
   let bytes = 0;
 
   for (const entry of entries) {
@@ -319,13 +323,26 @@ async function fetchEntries(entries, opts) {
         "the index and the object have drifted apart", { url: url, entry: entry.line });
     }
 
-    const records = grib2.decode(got.buffer);
-    for (const record of records) assertMatchesIndex(record, entry, url);
-    for (const record of records) out.push(record);
+    buffers.push(got.buffer);
     bytes += got.buffer.length;
+    // `decode: false` hands back the checked bytes and stops there, for a caller
+    // that wants to keep them: the same message is wanted once per station, and
+    // re-fetching 2 MB thirteen times to answer thirteen questions about the same
+    // hour is the archive's bandwidth spent on nothing.
+    if (!o.decode) continue;
+
+    // With a box, the CONUS coordinates are never built: `cropToBox` projects
+    // the corner it needs and generates coordinates for the crop alone, which
+    // is nine tenths of the decode. Without one the record is the full grid and
+    // costs about 45 MB, which is the archive's price for having no subsetter.
+    const records = grib2.decode(got.buffer, { coordinates: !o.box });
+    for (const record of records) assertMatchesIndex(record, entry, url);
+    for (const record of records) {
+      out.push(o.box ? grib2.cropToBox(record, o.box, { paddingCells: o.paddingCells }) : record);
+    }
   }
 
-  return { url: url, bytes: bytes, records: out };
+  return { url: url, bytes: bytes, records: out, buffers: buffers };
 }
 
 /**
@@ -380,6 +397,128 @@ async function fetchArchiveRecords(opts) {
   };
 }
 
+/**
+ * NOMADS' level names against the sidecar's.
+ *
+ * Two spellings of the same level again — the filter wants
+ * `10_m_above_ground` and NCEP's index says `10 m above ground` — and the
+ * translation is a table rather than a global underscore-to-space so that an
+ * unrecognised level is refused by name. `selectEntries` matches verbatim, so a
+ * near-miss here is not a wrong field; it is a `not-in-index` error naming a
+ * level that does exist, which is the confusing kind of correct.
+ */
+const INDEX_LEVELS = {
+  "surface": "surface",
+  "2_m_above_ground": "2 m above ground",
+  "10_m_above_ground": "10 m above ground",
+  "80_m_above_ground": "80 m above ground",
+  "1000_m_above_ground": "1000 m above ground"
+};
+
+/** A filter level name -> the sidecar's spelling of it. */
+function indexLevel(name) {
+  const level = INDEX_LEVELS[name];
+  if (!level) {
+    throw fail("unknown-level", "no archive index level is known for " + name +
+      "; known: " + Object.keys(INDEX_LEVELS).join(", "));
+  }
+  return level;
+}
+
+/**
+ * The archive wearing `nomads.js`'s face, so a scoring run can be pointed at a
+ * cycle from last year without anything downstream knowing.
+ *
+ * `cache.createHrrrVolumeSource` takes its NOMADS module as an option and calls
+ * exactly one method on it, which is the whole seam this uses. The live path is
+ * untouched: `field.js` still reaches for `nomads.js` unless a caller passes
+ * this in, and nothing in the service does.
+ *
+ * Two differences from the live source are unavoidable and are handled here:
+ *
+ * - **There is no subsetter**, so every message arrives as CONUS and is cropped
+ *   to the requested box on the way past. The crop is `grib2.cropToBox`, which
+ *   moves the grid's origin and nothing else.
+ * - **A variable is asked for at a set of levels**, as the filter's cross
+ *   product, and most combinations do not exist — there is no HPBL at 80 m. The
+ *   filter answers with the ones that do; this drops the ones the index does not
+ *   list, but refuses if a *variable* contributes nothing at all, because that is
+ *   a misspelled request rather than a level that happens not to be published.
+ *
+ * `messages` memoises the bytes of a message on `(object, byte range)`. A
+ * thirteen-station run asks for the same cycle thirteen times, and the sidecar
+ * plus 2 MB per station-hour is the difference between a run that takes minutes
+ * and one that takes an afternoon.
+ */
+function createArchiveSource(opts) {
+  const base = opts || {};
+  const messages = base.messages || new Map();
+  const indexes = base.indexes || new Map();
+
+  async function fetchHrrrBox(callOpts) {
+    const o = Object.assign({}, base, callOpts || {});
+    if (!o.box) throw fail("bad-request", "box is required");
+    if (!o.cycle) throw fail("bad-request", "cycle is required");
+    const forecastHour = o.forecastHour || 0;
+    const levels = (o.levels || []).map(indexLevel);
+    const variables = o.variables || [];
+    if (!levels.length) throw fail("bad-request", "levels is required");
+    if (!variables.length) throw fail("bad-request", "variables is required");
+
+    const url = objectUrl({ cycle: o.cycle, forecastHour: forecastHour, bucketUrl: o.bucketUrl,
+      product: o.product, region: o.region });
+    let index = indexes.get(url);
+    if (!index) {
+      index = await fetchIndex(Object.assign({}, o, { forecastHour: forecastHour }));
+      indexes.set(url, index);
+    }
+
+    const wanted = [];
+    for (const parameter of variables) {
+      const before = wanted.length;
+      for (const level of levels) {
+        if (index.entries.some(function (e) { return e.parameter === parameter && e.level === level; })) {
+          wanted.push({ parameter: parameter, level: level });
+        }
+      }
+      if (wanted.length === before) {
+        throw fail("not-in-index", parameter + " is published at none of " + levels.join(", ") +
+          " in " + index.url, { url: index.url, parameter: parameter, levels: levels });
+      }
+    }
+
+    const entries = selectEntries(index.entries, wanted);
+    const records = [];
+    let bytes = 0;
+    for (const entry of entries) {
+      const key = url + "#" + entry.start + "-" + entry.end;
+      let buffer = messages.get(key);
+      if (!buffer) {
+        const got = await fetchEntries([entry], Object.assign({}, o, { decode: false }));
+        buffer = got.buffers[0];
+        messages.set(key, buffer);
+      }
+      bytes += buffer.length;
+      for (const record of grib2.decode(buffer, { coordinates: false })) {
+        assertMatchesIndex(record, entry, url);
+        records.push(grib2.cropToBox(record, o.box, { paddingCells: o.paddingCells }));
+      }
+    }
+
+    return {
+      url: url,
+      indexUrl: index.url,
+      cycle: o.cycle,
+      forecastHour: forecastHour,
+      bytes: bytes,
+      attempts: 1,
+      records: records
+    };
+  }
+
+  return { fetchHrrrBox: fetchHrrrBox, messages: messages, indexes: indexes };
+}
+
 module.exports = {
   DEFAULT_BUCKET_URL,
   DEFAULT_PRODUCT,
@@ -395,5 +534,8 @@ module.exports = {
   assertMatchesIndex,
   fetchIndex,
   fetchEntries,
-  fetchArchiveRecords
+  fetchArchiveRecords,
+  INDEX_LEVELS,
+  indexLevel,
+  createArchiveSource
 };

@@ -38,6 +38,12 @@
  *                model's own scale — as a radius in metres (default 3000)
  *   --anomaly-resolution  metres for the wide read the smoothing runs over
  *                (default 100)
+ *   --exposure   also score the model wind brought to the station over a rougher
+ *                surface than the national 0.03 m, one-step and through
+ *                Wieringa's blending height, using HRRR's own SFCR as the
+ *                model's surface
+ *   --archive    read HRRR from the AWS Open Data archive instead of NOMADS, so
+ *                a cycle older than about two days can be scored
  *   --out        write the full result as JSON to this path
  *
  * **It costs one HRRR subset per station per hour** — a few KB each, but each
@@ -92,6 +98,23 @@
  * that can slow the wind down switched off. `--shelter` turns it on, at the
  * cost of a wider terrain read and the sector search.
  *
+ * **The height correction is a surface as well as a height.** `--exposure`
+ * scores the same model wind moved to the station over surfaces rougher than
+ * the national 0.03 m, and — through Wieringa's two-step correction — between
+ * HRRR's *own* roughness and the site's. The two-step rows are the only
+ * candidate in this tool that can move a wind by the size of the observed bias:
+ * a one-step correction from 10 m to 6.1 m is between 0.79 and 0.92 over any
+ * plausible surface, and the bias is 1.7. They are candidates and nothing more —
+ * the site roughness is a Davenport class chosen for the whole sample, not a
+ * measurement of any one mast's fetch.
+ *
+ * **`--archive` is how a second date happens at all.** NOMADS keeps about two
+ * days, which is why every run so far is one date and the note in
+ * `docs/downscaling.md` cannot say whether anything repeats. The archive keeps
+ * every cycle since 2014; `archive.createArchiveSource` presents it with
+ * `nomads.js`'s interface, so nothing downstream of the volume changes, and the
+ * live service still reaches for NOMADS.
+ *
  * **A station is dropped if its published elevation disagrees with the ground
  * under its published coordinate.** One of the two is then wrong, and the
  * coordinate is the one that decides which hillside the model is sampled on. A
@@ -108,7 +131,9 @@ const derive = require("../derive.js");
 const downscale = require("../downscale.js");
 const fieldModule = require("../field.js");
 const geo = require("../geo.js");
+const archive = require("../archive.js");
 const observationsModule = require("../observations.js");
+const roughness = require("../roughness.js");
 const synoptic = require("../synoptic.js");
 const verify = require("../verify.js");
 
@@ -121,8 +146,13 @@ const HOUR_MS = 3600 * 1000;
 const FLAGS = [
   "stations", "source", "end", "hours", "forecast", "radius", "resolution",
   "tolerance", "position", "elevation", "roughness", "no-height", "ablate",
-  "shelter", "scales", "anomaly", "anomaly-resolution", "out", "json"
+  "shelter", "scales", "anomaly", "anomaly-resolution", "exposure", "archive",
+  "out", "json"
 ];
+
+// HRRR's own surface roughness, which the exposure candidates need and the live
+// field never asks for. It is two more KB on a subset that is already fetched.
+const EXPOSURE_VARIABLES = fieldModule.DEFAULT_VARIABLES.concat(["SFCR"]);
 
 function parse(argv) {
   const out = {};
@@ -186,6 +216,33 @@ function candidatesFor(opts) {
     { key: "model", label: "HRRR alone", short: "hrrr", reference: true },
     { key: "downscaled", label: "downscaled", short: "down", options: {} }
   ];
+  // The same downscaled wind, brought to the station over a different surface.
+  // These rows do not touch the terrain weighting at all: they replace the
+  // height correction, which is the one place in this tool where a national
+  // 0.03 m is asserted about thirteen masts standing in sage and scrub oak.
+  //
+  // The one-step rows only say what a rougher surface does to the *height*
+  // change, and where a station is already at the model's height they do
+  // nothing whatever. The `exposure` rows are the two-step correction and are
+  // the ones with a mechanism big enough to matter: they treat HRRR's SFCR as
+  // the surface the model's wind belongs to and the class as the surface the
+  // mast stands on, and they move the wind even when the heights agree.
+  if (o.exposure) {
+    list.push(
+      { key: "z0Rough", label: "site z0 0.25 m", short: "z0r",
+        options: {}, exposure: { site: "rough" } },
+      { key: "z0Closed", label: "site z0 1.0 m", short: "z0c",
+        options: {}, exposure: { site: "closed" } },
+      { key: "z0Model", label: "site z0 = SFCR", short: "z0m",
+        options: {}, exposure: { site: "model" } },
+      { key: "exposureRough", label: "exposure rough", short: "expr",
+        options: {}, exposure: { site: "rough", model: true } },
+      { key: "exposureVeryRough", label: "exposure v.rough", short: "expvr",
+        options: {}, exposure: { site: "very-rough", model: true } },
+      { key: "exposureClosed", label: "exposure closed", short: "expc",
+        options: {}, exposure: { site: "closed", model: true } }
+    );
+  }
   if (!o.ablate) return list;
 
   list.push(
@@ -265,6 +322,42 @@ function candidatesFor(opts) {
     }
   }
   return list;
+}
+
+/**
+ * The factor a candidate applies for height and surface, at one station.
+ *
+ * The default is `downscale.heightFactor` over the run's single roughness, and
+ * every candidate without an `exposure` block gets exactly that, so an
+ * `--exposure` run's other rows are bit for bit what they were without it.
+ *
+ * Where the station's height is unpublished the correction is computed *to the
+ * model's own height* rather than skipped. For a one-step row that is a factor
+ * of 1 and changes nothing; for a two-step row it is the honest question —
+ * "whose surface does this 10 m wind belong to" — which does not need the mast
+ * to be anywhere in particular.
+ *
+ * Returns null when the candidate needs HRRR's roughness and the volume did not
+ * carry it. A missing surface is not a smooth one, and a row silently scored at
+ * 0.03 m under the name of the model's own roughness is the failure this whole
+ * tool keeps finding elsewhere.
+ */
+function exposureFactorFor(candidate, ctx) {
+  if (!candidate.exposure) return ctx.defaultFactor;
+  const from = ctx.fieldHeightAglM;
+  if (from === null) return null;
+  const to = ctx.sensorHeightM === null ? from : ctx.sensorHeightM;
+  const needsModel = candidate.exposure.model || candidate.exposure.site === "model";
+  if (needsModel && !(ctx.modelRoughnessM > 0)) return null;
+  const site = candidate.exposure.site === "model"
+    ? ctx.modelRoughnessM
+    : roughness.roughnessOf(candidate.exposure.site);
+  return roughness.exposureFactor({
+    fromHeightM: from,
+    toHeightM: to,
+    siteRoughnessM: site,
+    modelRoughnessM: candidate.exposure.model ? ctx.modelRoughnessM : null
+  });
 }
 
 /** The elevation grid a derived domain was built from, in the shape a reader wants. */
@@ -411,8 +504,10 @@ async function buildReport(options) {
   const useSensorHeight = o.sensorHeight === undefined ? true : !!o.sensorHeight;
   const useShelter = !!o.shelter;
   const anomaly = o.anomaly || null;
+  const useExposure = !!o.exposure;
   const candidates = o.candidates || candidatesFor({
-    ablate: o.ablate, shelter: useShelter, scales: o.scales, anomaly: !!anomaly });
+    ablate: o.ablate, shelter: useShelter, scales: o.scales, anomaly: !!anomaly,
+    exposure: useExposure });
   const wantsAnomaly = candidates.some(function (c) { return c.anomaly; });
   // The wide, coarse read the smoothing runs over. It is the same terrain cache
   // the fine domains come from, so a second station in the same valley pays for
@@ -466,7 +561,12 @@ async function buildReport(options) {
       fieldHeightAglM: null,
       roughnessM: roughnessM,
       factor: 1,
-      applied: false
+      applied: false,
+      // The same correction per candidate, because an exposure candidate is a
+      // different surface and not a different terrain weighting: two rows here
+      // can share every gain in the downscaling and still differ.
+      byCandidate: {},
+      modelRoughnessM: null
     };
 
     for (const validTime of validTimes) {
@@ -479,7 +579,11 @@ async function buildReport(options) {
           targetResolutionM: resolutionM,
           validTime: validTime,
           forecastHour: forecastHour,
-          shelter: useShelter ? true : undefined
+          shelter: useShelter ? true : undefined,
+          // Asked for only when a candidate reads it, so an ordinary run sends
+          // the request it always sent and its numbers stay comparable with
+          // every run in `docs/downscaling.md`.
+          variables: useExposure ? EXPOSURE_VARIABLES : undefined
         });
       } catch (err) {
         // One bad hour is a fact about NOMADS or about The National Map, not a
@@ -498,10 +602,22 @@ async function buildReport(options) {
         const factor = fieldHeight !== null && wanted !== null
           ? downscale.heightFactor(fieldHeight, wanted, roughnessM)
           : 1;
+        const ctx = {
+          defaultFactor: factor,
+          fieldHeightAglM: fieldHeight,
+          sensorHeightM: wanted,
+          modelRoughnessM: typeof field.modelRoughnessM === "number" ? field.modelRoughnessM : null
+        };
+        const byCandidate = {};
+        for (const candidate of candidates) {
+          byCandidate[candidate.key] = round(exposureFactorFor(candidate, ctx), 4);
+        }
         height = Object.assign({}, height, {
           fieldHeightAglM: fieldHeight,
           factor: factor,
-          applied: factor !== 1
+          applied: factor !== 1,
+          byCandidate: byCandidate,
+          modelRoughnessM: round(ctx.modelRoughnessM, 3)
         });
       }
 
@@ -585,12 +701,18 @@ async function buildReport(options) {
               : downscale.downscale(weights, reference,
                 Object.assign({ heightAglM: field.heightAglM }, candidate.options)),
             station.lat, station.lon);
-        byCandidate[candidate.key] = at
-          ? { speedMps: at.speedMps * height.factor, fromDeg: at.fromDeg }
+        const factor = height.byCandidate[candidate.key];
+        byCandidate[candidate.key] = at && factor !== null && factor !== undefined
+          ? { speedMps: at.speedMps * factor, fromDeg: at.fromDeg }
           : { speedMps: null, fromDeg: null };
-        if (at && referenceSpeed > 0) {
+        if (at && factor !== null && factor !== undefined && referenceSpeed > 0) {
           const g = gains[candidate.key] || { sum: 0, n: 0 };
-          gains[candidate.key] = { sum: g.sum + at.speedMps / referenceSpeed, n: g.n + 1 };
+          // The gain is what the candidate did to the model wind in total, so
+          // for an exposure row it is the surface correction and not the
+          // terrain weighting, which is exactly the comparison being made.
+          gains[candidate.key] = {
+            sum: g.sum + (at.speedMps * factor) / (referenceSpeed * height.factor), n: g.n + 1
+          };
         }
       }
 
@@ -750,6 +872,10 @@ async function buildReport(options) {
       positionRadiusM: positionRadiusM,
       positionThresholdM: verify.DEFAULT_POSITION_THRESHOLD_M,
       roughnessM: roughnessM,
+      // The height the two-step exposure candidates assume the two surfaces
+      // have stopped mattering by. It is a choice of Wieringa's and it changes
+      // the answer, so it travels with the report.
+      blendingHeightM: useExposure ? roughness.DEFAULT_BLENDING_HEIGHT_M : null,
       // Null means every term was divided by the largest value inside the box,
       // which makes the answer partly a fact about the request. Two reports
       // cannot be compared without knowing which of the two this was.
@@ -763,7 +889,7 @@ async function buildReport(options) {
     source: {
       observations: o.observationSource ||
         "NWS api.weather.gov station observations (ASOS/AWOS METAR)",
-      model: "HRRR via NOMADS",
+      model: o.archive ? "HRRR via the AWS Open Data archive" : "HRRR via NOMADS",
       terrain: "USGS 3DEP",
       independence: forecastHour === 0
         ? "NONE from HRRR: the analysis assimilates these stations. Downscaling is independent of them."
@@ -778,7 +904,10 @@ async function buildReport(options) {
         weights: c.reference ? null : Object.assign({}, downscale.DEFAULT_WEIGHTS,
           (c.options && c.options.weights) || {}),
         divert: c.reference ? null : !(c.options && c.options.divert === false),
-        terrain: c.anomaly ? "anomaly" : "absolute"
+        terrain: c.anomaly ? "anomaly" : "absolute",
+        // Null for every row that uses the run's own single roughness, which is
+        // all of them unless --exposure was given.
+        exposure: c.exposure || null
       };
     }),
     shelter: useShelter,
@@ -856,7 +985,10 @@ async function main() {
     source: chosen.source,
     observationSource: chosen.label,
     floor: chosen.floor,
-    service: fieldModule.createFieldService({}),
+    service: fieldModule.createFieldService(args.archive
+      ? { nomads: archive.createArchiveSource({}) }
+      : {}),
+    archive: !!args.archive,
     stations: ids,
     hours: number(args.hours, 12, "hours"),
     forecastHour: number(args.forecast, 0, "forecast"),
@@ -871,6 +1003,7 @@ async function main() {
     shelter: !!args.shelter,
     scales: fixedScales(args.scales),
     anomaly: anomalyOf(args),
+    exposure: !!args.exposure,
     endMs: endMs
   });
 
@@ -972,6 +1105,52 @@ function heights(report) {
     " (log law, z0 " + report.domain.roughnessM + " m; speed only, no veering)";
 }
 
+/**
+ * What surface each exposure candidate stood the station on, and what that did.
+ *
+ * Printed only when a run asked for them. The model's own roughness is a
+ * measurement and is reported as a range across the stations, because a single
+ * mean over thirteen sites would hide that HRRR already thinks some of them are
+ * six times rougher than the downscaler's national assumption.
+ */
+function surfaces(report) {
+  const candidates = candidatesOf(report).filter(function (c) { return c.exposure; });
+  if (!candidates.length) return [];
+
+  const model = [];
+  for (const s of report.stations) {
+    const z = s.height && s.height.modelRoughnessM;
+    if (typeof z === "number") model.push(z);
+  }
+  const out = [
+    "HRRR's own surface roughness at these stations (SFCR): " + (model.length
+      ? fixed(Math.min.apply(null, model), 3) + "–" + fixed(Math.max.apply(null, model), 3) +
+        " m over " + model.length + " stations, against the downscaler's " +
+        report.domain.roughnessM + " m"
+      : "not carried by the volume; the rows that need it are empty"),
+    "what each surface did to the model wind, as a factor on the height correction:"
+  ];
+  for (const c of candidates) {
+    const factors = [];
+    for (const s of report.stations) {
+      const f = s.height && s.height.byCandidate && s.height.byCandidate[c.key];
+      if (typeof f === "number") factors.push(f);
+    }
+    out.push("  " + c.label.padEnd(16) + (factors.length
+      ? " x" + fixed(Math.min.apply(null, factors), 3) + "–" +
+        fixed(Math.max.apply(null, factors), 3)
+      : " not scored") +
+      "   site " + c.exposure.site +
+      (c.exposure.model
+        ? ", blended from SFCR at " + report.domain.blendingHeightM + " m"
+        : ", one step"));
+  }
+  out.push("a site roughness is a Davenport class asserted over the whole sample, not a " +
+    "measurement of any one mast's fetch");
+  out.push("");
+  return out;
+}
+
 /** The candidates the report scored, oldest reports first. */
 function candidatesOf(report) {
   if (report.candidates && report.candidates.length) return report.candidates;
@@ -1007,6 +1186,7 @@ function summarise(report) {
     heights(report),
     ""
   );
+  for (const row of surfaces(report)) out.push(row);
 
   // What each term did, as distinct from whether it helped. A candidate that
   // multiplies the wind at every station by 1.2 and scores the same as the

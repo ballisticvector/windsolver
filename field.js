@@ -301,10 +301,15 @@ function referenceWind(volume, box, opts) {
 
 /** The model's own surface elevation over the domain, if the volume carries it. */
 function modelElevation(volume, box) {
-  if (!volume.scalars || !volume.scalars.HGT) return null;
+  return modelSurface(volume, box, "HGT");
+}
+
+/** A surface scalar at the domain's centre, if the volume carries it. */
+function modelSurface(volume, box, parameter) {
+  if (!volume.scalars || !volume.scalars[parameter]) return null;
   const centre = { lat: (box.south + box.north) / 2, lon: (box.west + box.east) / 2 };
   try {
-    return volumeModule.sampleScalar(volume, "HGT", centre.lat, centre.lon, "surface");
+    return volumeModule.sampleScalar(volume, parameter, centre.lat, centre.lon, "surface");
   } catch (err) {
     if (err.code === "no-such-level" || err.code === "no-such-parameter") return null;
     throw err;
@@ -328,7 +333,7 @@ function assemble(input) {
     heightAglM: reference.heightAglM
   }));
 
-  const modelZ = modelElevation(input.volume, domain.box);
+  const modelZ = modelSurface(input.volume, domain.box, "HGT");
 
   return Object.assign({}, field, {
     schemaVersion: FIELD_VERSION,
@@ -350,6 +355,12 @@ function assemble(input) {
       requests: input.requests === undefined ? null : input.requests
     },
     offset: modelZ === null ? null : downscale.terrainOffset(weights, modelZ),
+    // HRRR's own aerodynamic roughness for the cell, when it was asked for. It
+    // is not in `DEFAULT_VARIABLES` and the live path never requests it: the
+    // downscaler assumes 0.03 m everywhere and this is the field that says what
+    // the model assumed instead, which is a question `tools/score-wind.js` asks
+    // and windsolver.com does not.
+    modelRoughnessM: modelSurface(input.volume, domain.box, "SFCR"),
     weights: weights,
     derived: derived
   });
@@ -479,6 +490,7 @@ module.exports = {
   heightOf,
   referenceWind,
   modelElevation,
+  modelSurface,
   groundBytes,
   assemble,
   createFieldService

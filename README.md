@@ -44,6 +44,7 @@ why a `forShot=` parameter is the way it dies.
 | `cog.js` | Reads a GeoTIFF: directories, tags, LZW and Deflate, the floating-point predictor, and which bytes a lat/long box needs. No network |
 | `terrain.js` | The only other module that makes a request. Turns a box into elevation grids over HTTP range reads |
 | `derive.js` | What the ground does to the wind: slope, aspect, curvature, roughness and directional sheltering over an elevation grid. Pure arithmetic, no network |
+| `roughness.js` | Davenport roughness classes and Wieringa's two-surface exposure correction, for scoring the wind at a station whose ground is not the national `z0 = 0.03 m`. Research only: nothing in the runtime path imports it |
 | `downscale.js` | Puts the two halves together: a 3 km model wind × the terrain, giving east/north over every pixel of the domain. Pure arithmetic, no network |
 | `field.js` | The whole chain in one call: a coordinate in, terrain read, derived and cached, live HRRR fetched and cached, an east/north field over the domain out |
 | `slice.js` | The view a consumer cuts out of a field: a WGS84 geodesic from a point and a bearing, the wind resolved onto it, stacked over a set of heights, and serialised as a `windProfile`. Pure arithmetic, no network |
