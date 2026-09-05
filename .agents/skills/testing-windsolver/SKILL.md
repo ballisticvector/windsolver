@@ -1,6 +1,6 @@
 ---
 name: testing-windsolver
-description: Browser-test the WindSolver public map page and /v1/field service. Covers starting the static+API server, warm vs cold solves, coordinates that reliably produce full / partial / no 3DEP coverage, checking provenance against the raw JSON, and the mobile-layout trap. Use when verifying anything in public/index.html, public/map.js, public/wind-map.js, server.js static serving, or terrain-coverage behaviour.
+description: Browser-test the WindSolver public map page and /v1/field service, locally or against the live windsolver.com. Covers starting the static+API server, warm vs cold solves, coordinates that reliably produce full / partial / no 3DEP coverage, checking provenance against the raw JSON, the mobile-layout trap, and verifying the API-key gate and its Sec-Fetch-Site same-origin door. Use when verifying anything in public/index.html, public/map.js, public/wind-map.js, auth.js, server.js static serving, or terrain-coverage behaviour.
 ---
 
 # Testing WindSolver in the browser
@@ -24,6 +24,45 @@ Page: `http://127.0.0.1:8123/`. Startup logs a JSON line with `staticDir`, `time
 The page needs outbound internet: unpkg (Leaflet CSS/JS with SRI), OpenStreetMap tiles,
 USGS 3DEP, NOAA NOMADS. Check reachability with curl **before** judging a grey map as a
 bug — a blank grey map means the CDN is blocked, not that the code is broken.
+
+## Testing the deployed site (windsolver.com)
+
+Nothing needs building or serving — `https://windsolver.com` is a droplet behind
+nginx. Point the same checks at it. The live box is well warmed, so Boulder comes back
+in ~0.4 s rather than the 20–40 s a cold local run takes; do not read a fast answer as a
+fake one, read the coordinates and elevation instead.
+
+## The API-key gate, and why it must be tested in a real browser
+
+`/v1/` is closed behind `WINDSOLVER_API_KEYS` (set in the droplet's systemd unit; the
+values are not in the repo and must never be read, printed or typed into a browser).
+`auth.js` refuses with 401 `no-key` / `bad-key` / `bad-authorization`. `/healthz` and the
+static page are never gated.
+
+The public map page cannot hold a key — it runs in a stranger's browser — so it is let
+through by `looksLikeThePage()`, which accepts `sec-fetch-site: same-origin`. **curl
+cannot prove this works**: curl can set that header by hand, but only a real Chrome shows
+whether the CDN/nginx in front preserves `Sec-Fetch-*`. Verify in the browser:
+
+- Solve on the page, then DevTools → Network → the `/v1/field` row → **Headers**. You want
+  `Status Code: 200 OK` and `Sec-Fetch-Site: same-origin` in Request Headers, with no
+  `authorization` / `x-api-key`. The dock-right panel is too narrow to show General and
+  Request Headers together — drag the DevTools splitter left to ~300 px and both fit in
+  one screenshot.
+- Confirm no key ships to the client with DevTools global search (`Ctrl+Shift+F`) for
+  `x-api-key`, `authorization`, `bearer`, `apikey`. **Always follow a "No matches found"
+  with a control term that must match** (e.g. `fieldQuery`, which hits 5 times in
+  `map.js`/`wind-map.js`) — otherwise an unpopulated search index looks like a clean bill
+  of health.
+- Cross-origin refusal: open `https://example.com`, and in its console run
+  `fetch("https://windsolver.com/v1/field?lat=40.0150&lon=-105.2705&radiusMiles=1&cols=48")`.
+  Expect **both** refusals at once — the Network row shows `401`, and because
+  `server.js` only echoes `access-control-allow-origin` for an allow-listed `Origin`, JS
+  cannot read it and the promise rejects with `TypeError: Failed to fetch`. A resolved
+  200 with a readable field would mean the same-origin door is too wide.
+
+Note `/v1/field` takes `radiusMiles` (+ optional `cols`), not `halfWidthM`; a wrong
+parameter name still 401s before validation, which can disguise a bad test.
 
 ## Cold vs warm solves
 
@@ -106,4 +145,7 @@ be visible without hunting.
 
 ## Devin Secrets Needed
 
-None. The service is unauthenticated and only needs outbound internet.
+None. A local checkout runs unauthenticated (no `WINDSOLVER_API_KEYS` means the gate is
+off) and only needs outbound internet. Testing the live site needs no credential either —
+every check above is deliberately doable from the public internet, and if a test seems to
+need an API key, the test is wrong.
