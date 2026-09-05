@@ -639,7 +639,9 @@ describe("scoring the downscaling's terms one at a time", () => {
     const report = await ablated();
     const keys = report.candidates.map(function (c) { return c.key; });
     expect(keys).toEqual([
-      "model", "downscaled", "slopeOnly", "curvatureOnly", "noDivert", "divertOnly"]);
+      "model", "downscaled", "slopeOnly", "curvatureOnly",
+      "noConvex", "noConcave", "convexOnly", "concaveOnly",
+      "noDivert", "divertOnly"]);
     for (const key of keys) {
       expect(report.overall[key].n).toBe(report.overall.model.n);
       expect(report.overall[key].distinctSamples).toBe(report.overall.model.distinctSamples);
@@ -656,6 +658,15 @@ describe("scoring the downscaling's terms one at a time", () => {
     expect(gain.downscaled).not.toBeCloseTo(1, 3);
     expect(gain.slopeOnly).not.toBeCloseTo(1, 3);
     expect(gain.curvatureOnly).not.toBeCloseTo(1, 3);
+    // The two halves of the curvature term have to add back up to it, or the
+    // split is measuring something other than the term it claims to divide.
+    // Each acts on the pixels the other leaves alone, so on any one domain
+    // one of the halves is the whole of the curvature and the other is inert;
+    // whichever way round it falls, the pair spans it.
+    expect(gain.convexOnly === gain.curvatureOnly || gain.concaveOnly === gain.curvatureOnly)
+      .toBe(true);
+    expect(gain.convexOnly === 1 || gain.concaveOnly === 1).toBe(true);
+    expect(gain.noConvex === gain.downscaled || gain.noConcave === gain.downscaled).toBe(true);
     // Turning is not a speed term: with every gain at zero the speed is the
     // model's exactly, so whatever that row scores is the turning alone.
     expect(gain.divertOnly).toBeCloseTo(1, 9);

@@ -78,6 +78,14 @@
  * once per station and every candidate is a re-weighting of it, so a fifth
  * candidate costs arithmetic over a 90 x 90 grid and no network at all.
  *
+ * **`Wc*Oc` is two claims, not one.** The curvature term speeds the wind up
+ * over convex ground and slows it down over concave ground with a single gain,
+ * and the strata say those cannot be graded together: HRRR is about right on
+ * ridges and roughly 2 m/s fast everywhere else. `--ablate` therefore scores
+ * the sign of `Oc` apart — `no convex speed-up`, `no concave slow-down`, and
+ * each half on its own — through `curvatureConvex` and `curvatureConcave`,
+ * which default to `curvature` so an ordinary run is unchanged.
+ *
  * **Sheltering is off unless it is asked for.** `derive` only computes Winstral
  * Sx when the spec says so, so `Wx*Ox` was identically zero in every score run
  * so far: what has been graded is the two speed-*up* terms with the one term
@@ -189,6 +197,23 @@ function candidatesFor(opts) {
       options: { weights: { curvature: 0, shelter: 0 } } },
     { key: "curvatureOnly", label: "curvature only", short: "curv",
       options: { weights: { slope: 0, shelter: 0 } } },
+    // The curvature term's two claims, taken apart. It speeds the wind up over
+    // convex ground and slows it down over concave ground, and the ablation so
+    // far grades those together while the strata say they cannot be the same:
+    // HRRR is already about right on ridges and roughly 2 m/s fast in valleys,
+    // flats and on slopes. `noConvex` is the row that tests "the correction is
+    // re-adding acceleration the model already has"; if the ridge penalty is
+    // that, it goes away here and nowhere else.
+    { key: "noConvex", label: "no convex speed-up", short: "noconv",
+      options: { weights: { curvatureConvex: 0 } } },
+    { key: "noConcave", label: "no concave slow-down", short: "noconc",
+      options: { weights: { curvatureConcave: 0 } } },
+    // And the same two halves with nothing else on, so a change cannot be the
+    // slope term moving underneath them.
+    { key: "convexOnly", label: "convex curvature only", short: "conv",
+      options: { weights: { slope: 0, shelter: 0, curvatureConcave: 0 } } },
+    { key: "concaveOnly", label: "concave curvature only", short: "conc",
+      options: { weights: { slope: 0, shelter: 0, curvatureConvex: 0 } } },
     // The speed weighting with the turning switched off, and the turning with
     // the speed weighting switched off. Direction and speed are scored
     // separately anyway, but the diverting angle is a function of the slope
