@@ -162,6 +162,51 @@ not, since the COG reads dominate (4.2 s cold vs 4.1 s warm on Boulder).
 Backgrounded servers in this environment die when the spawning shell ends; start them with
 `setsid nohup … &` and confirm with `curl /healthz` before driving the browser.
 
+## RAWS station markers (`/v1/stations`, `#stations`)
+
+The measured layer is separate from the modelled one all the way down: its own service
+(`stations.js`, USDA FEMS, anonymous, no token), its own route, its own Leaflet pane, its
+own caption `#stationNote`, its own failure text. Test it as an independent layer.
+
+- Selectors: checkbox `#stations` ("Measured wind at RAWS stations"), caption
+  `#stationNote`, markers `.leaflet-stations-pane .station-marker`.
+- Pane order is the assertion for "measured on top of modelled": stations **620** >
+  overlay (wind wash/arrows) **400** > relief **350**. Probe the pane `style.zIndex`
+  rather than eyeballing.
+- Reporting station = filled disc + white ring + arrow; non-reporting = `fill="transparent"`
+  with `stroke-dasharray="3 2"` and **no** arrow path, title `NAME — not reporting`, and
+  the popup must contain `Not calm: nothing was measured.`
+- **Find a naturally non-reporting station rather than stubbing.** Query a wide box with
+  curl and grep for `"observation":null`. At time of writing **SOUTH REPUBLICAN, id 51301,
+  39.62594 / -102.12239** reports no wind and is a reliable natural case; if it recovers,
+  re-scan: `curl -s ".../v1/stations?lat=39.5&lon=-105&radiusMiles=200&limit=200"`.
+  A 200-mile FEMS query can take more than 30 s the first time (directory download);
+  give it a long timeout.
+- FEMS timestamps are whole-hour labels, so the popup must read
+  `N h ago (…Z) · hour label, ±30 min` and `Not quality-controlled yet.` A bare exact
+  minute is a bug (see `AGENTS.md` on FEMS hour labels).
+- **Forcing a station-service outage without touching the repo:** DevTools request
+  blocking on `/v1/stations` gives `No stations — Failed to fetch` (client-side). To
+  exercise the *server's* refusal path instead, `createServer` accepts an injected
+  service, so a `/tmp` launcher is enough:
+  ```js
+  const server = require("/home/ubuntu/windsolver/server.js");
+  const broken = { inBox: async () => { const e = new Error("FEMS did not answer (test stub)");
+    e.code = "stations-unavailable"; throw e; } };
+  server.createServer({ stations: broken, staticDir: "/home/ubuntu/windsolver/public" })
+    .listen(8124, "127.0.0.1");
+  ```
+  Pass `staticDir` or you get the `/healthz` JSON instead of the map page. Expect the note
+  to name the refusal while `#status` stays green and the relief still draws.
+- A field/terrain refusal (e.g. 33.00 / -121.00) must **not** clear the station layer —
+  probe marker count and `#stationNote` before and after the refused solve.
+- Movement is debounced 400 ms: expect **one** `/v1/stations` per settled view. Count with
+  `performance.getEntriesByType("resource").filter(r => r.name.includes("/v1/stations"))`
+  after `performance.clearResourceTimings()` — cheaper and more reliable than reading the
+  Network panel.
+- An empty area legitimately reads `0 of 0 stations · RAWS via fems · locations only — no
+  observations read`; that is not a failure.
+
 ## Compare provenance with the raw JSON
 
 Run the identical query with curl and diff field by field — the panel is meant to be a
