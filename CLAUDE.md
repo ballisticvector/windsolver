@@ -361,6 +361,45 @@ grow it into a shadow model and then read shelter off it: directional sheltering
 is the term with the least evidence behind it. A relief that looks like a wind answer is
 the same failure as a modelled wind presented as a measured one.
 
+**`/v1/stations` is the only measured thing this service returns, and every line of it is
+about keeping that word.** The field, the line, the profile and the relief are all model
+output; the stations are anemometers. So the payload carries `modelled: false` and a
+`notice` a consumer cannot miss, and the map draws them in a pane above the wind wash
+with a legend saying which mark is which. Anything that merges the two — averaging an
+observation into the field, nudging the field towards a nearby station, drawing them in
+one style — has to be an explicit, labelled correction, not a quiet improvement.
+
+Four distinctions in there are load-bearing, and each one is a claim a tidier
+implementation would have destroyed:
+
+- **A station that reported nothing is not calm.** FEMS answers an unknown station, a
+  station that is down and an hour that has not happened yet with the same blank row; a
+  calm is `speedMps: 0, fromDeg: null, calm: true`. `observation: null` therefore carries
+  an `observationNote` and an `observationCode`, and the marker stays on the map as a
+  hollow ring rather than being dropped — a network that goes quiet must not be able to
+  look like a calm night.
+- **`timeIsHourBin` says the timestamp is a label.** FEMS dates a row to the nearest whole
+  hour and the real transmit slot runs :08 to :58, so the time can be half an hour out
+  where `tools/fems-stations.js` has not measured the station. Never drop the flag to
+  tidy the shape; `score-wind.js` pairs on 10–30 minutes, which is smaller than the
+  error it hides.
+- **`qcChecked: false` is "nothing has looked at this yet", which is not "checked and
+  passed".** The flag columns are empty in the last few days and populated in the
+  archive, and empty reads the same as `0` to anything that only looks for a value.
+- **`sensorHeightM: null` is "the provider did not say", never the model's 10 m.** RAWS
+  masts are nominally 6.1 m, so a station reading and a model level are different
+  quantities — which is exactly why the popup comparison prints the height note instead
+  of a bare ratio.
+
+**A provider outage is answered, not hidden and not fatal.** The station directory is
+quasi-static, so a refresh failure serves the retained list with `retrievedAt`, `ageS`,
+`stale: true` and the error that stopped it — the `docs/history.md` rule that old data is
+allowed exactly when it says how old it is. An observation outage is a `200` with the
+markers and `observed: false`; only a directory failure with nothing retained is a `502`.
+And the station service is a separate upstream from the field service on purpose: FEMS
+being down must not stop a wind solve, and a NOMADS outage must not empty the map of
+stations.
+
 ## Licensing, before anything is sold
 
 If a tier ends up driven by WindNinja's momentum solver, that solver is OpenFOAM, which

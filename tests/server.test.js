@@ -764,6 +764,197 @@ describe("limits", () => {
   }, 30000);
 });
 
+/**
+ * The stations.
+ *
+ * A stub station service, because the interesting failures here are the route's
+ * and not FEMS's: what the route says when the provider is down, and whether an
+ * observation can reach a caller without the word "measured" attached to it.
+ */
+function stubStations(opts) {
+  const o = opts || {};
+  return {
+    boxes: [],
+    inBox: async function (box, options) {
+      this.boxes.push({ box: box, options: options });
+      if (o.error) throw o.error;
+      const observed = options.observed !== false;
+      return {
+        matched: 24,
+        returned: 1,
+        truncated: true,
+        observed: observed && !o.observationsDown,
+        window: { start: "2026-09-04T11:00:00.000Z", end: "2026-09-04T17:00:00.000Z" },
+        directory: {
+          provider: "fems", network: "RAWS", count: 2088,
+          retrievedAt: "2026-09-04T00:00:00.000Z", ageS: 61200, stale: false, error: null
+        },
+        errors: o.observationsDown
+          ? [{ code: "observations-unavailable", error: "FEMS answered 502" }]
+          : [],
+        stations: [{
+          id: "50604", name: "SUGARLOAF", network: "RAWS", provider: "fems",
+          lat: 40.018, lon: -105.361, elevationM: 2052.2, sensorHeightM: null,
+          state: "CO", agency: "USFS", distanceM: 8123.4,
+          observation: observed && !o.observationsDown ? {
+            time: "2026-09-04T17:00:00.000Z", timeIsHourBin: true, transmitMinute: null,
+            hourLabel: "2026-09-04T17:00:00.000Z", speedMps: 1.34112, fromDeg: 110,
+            calm: false, gustMps: 3.57632, qcChecked: false, qcFlags: null, ageS: 600
+          } : null,
+          observationNote: o.observationsDown ? "FEMS answered 502" : null,
+          observationCode: o.observationsDown ? "observations-unavailable" : null
+        }]
+      };
+    }
+  };
+}
+
+describe("GET /v1/stations", () => {
+  test("answers with the stations round a point, and says they are measured", async () => {
+    const stations = stubStations();
+    const app = await listen({ field: stubService(), stations: stations });
+    try {
+      const res = await get(app.url, "/v1/stations?lat=40.0150&lon=-105.2705&radiusMiles=25");
+      expect(res.status).toBe(200);
+      expect(res.body.ok).toBe(true);
+      // The one field a consumer must not have to infer. Everything else on
+      // this service is modelled; this route is the only measured thing in it,
+      // and a client that merges the two without noticing has invented an
+      // observation.
+      expect(res.body.modelled).toBe(false);
+      expect(res.body.notice).toMatch(/Measured, not modelled/);
+      expect(res.body.units.direction).toBe("degrees the wind blows from");
+      expect(res.body.matched).toBe(24);
+      expect(res.body.truncated).toBe(true);
+
+      const s = res.body.stations[0];
+      expect(s.id).toBe("50604");
+      expect(s.network).toBe("RAWS");
+      expect(s.observation.speedMps).toBeCloseTo(1.34112, 5);
+      expect(s.observation.fromDeg).toBe(110);
+      // Kept out of the payload's tidiness on purpose: an hour label is up to
+      // half an hour from the measurement, and a client that pairs on it
+      // without knowing that gets a diurnal error that reads as a model error.
+      expect(s.observation.timeIsHourBin).toBe(true);
+      expect(s.observation.ageS).toBe(600);
+      expect(s.sensorHeightM).toBe(null);
+      expect(res.body.directory.provider).toBe("fems");
+    } finally {
+      await app.close();
+    }
+  });
+
+  test("the box is cut from the radius asked for", async () => {
+    const stations = stubStations();
+    const app = await listen({ field: stubService(), stations: stations });
+    try {
+      await get(app.url, "/v1/stations?lat=40&lon=-105&radiusMiles=10&limit=5");
+      const call = stations.boxes[0];
+      expect(call.options.limit).toBe(5);
+      expect(call.box.north).toBeGreaterThan(40);
+      expect(call.box.south).toBeLessThan(40);
+    } finally {
+      await app.close();
+    }
+  });
+
+  test("locations without observations when the caller says so", async () => {
+    const stations = stubStations();
+    const app = await listen({ field: stubService(), stations: stations });
+    try {
+      const res = await get(app.url, "/v1/stations?lat=40&lon=-105&observed=false");
+      expect(res.status).toBe(200);
+      expect(res.body.observed).toBe(false);
+      expect(res.body.stations[0].observation).toBe(null);
+      expect(stations.boxes[0].options.observed).toBe(false);
+    } finally {
+      await app.close();
+    }
+  });
+
+  test("a half-answered boolean is refused rather than guessed", async () => {
+    const app = await listen({ field: stubService(), stations: stubStations() });
+    try {
+      const res = await get(app.url, "/v1/stations?lat=40&lon=-105&observed=maybe");
+      expect(res.status).toBe(400);
+      expect(res.body.code).toBe("bad-parameter");
+      expect(res.body.parameter).toBe("observed");
+    } finally {
+      await app.close();
+    }
+  });
+
+  test("a radius bigger than the service will serve is refused, by number", async () => {
+    const app = await listen({ field: stubService(), stations: stubStations() });
+    try {
+      const res = await get(app.url, "/v1/stations?lat=40&lon=-105&radiusMiles=5000");
+      expect(res.status).toBe(400);
+      expect(res.body.code).toBe("bad-parameter");
+    } finally {
+      await app.close();
+    }
+  });
+
+  test("an observation outage keeps the markers and names itself", async () => {
+    // The alternative is a map that empties out and looks like a calm night.
+    const app = await listen({
+      field: stubService(), stations: stubStations({ observationsDown: true })
+    });
+    try {
+      const res = await get(app.url, "/v1/stations?lat=40&lon=-105");
+      expect(res.status).toBe(200);
+      expect(res.body.observed).toBe(false);
+      expect(res.body.stations[0].observation).toBe(null);
+      expect(res.body.stations[0].observationCode).toBe("observations-unavailable");
+      expect(res.body.errors[0].error).toMatch(/502/);
+    } finally {
+      await app.close();
+    }
+  });
+
+  test("a provider that is down is a bad gateway, not an empty country", async () => {
+    const err = new Error("FEMS did not answer");
+    err.code = "stations-unavailable";
+    const app = await listen({ field: stubService(), stations: stubStations({ error: err }) });
+    try {
+      const res = await get(app.url, "/v1/stations?lat=40&lon=-105");
+      expect(res.status).toBe(502);
+      expect(res.body.code).toBe("stations-unavailable");
+    } finally {
+      await app.close();
+    }
+  });
+
+  test("a station outage does not stop a wind solve", async () => {
+    const err = new Error("FEMS did not answer");
+    err.code = "stations-unavailable";
+    const app = await listen({ field: stubService(), stations: stubStations({ error: err }) });
+    try {
+      expect((await get(app.url, "/v1/stations?lat=40&lon=-105")).status).toBe(502);
+      const field = await get(app.url, "/v1/field?lat=40.0150&lon=-105.2705&cols=4");
+      expect(field.status).toBe(200);
+    } finally {
+      await app.close();
+    }
+  });
+
+  test("the key gate covers it like every other /v1/ route", async () => {
+    const KEY = "stations-key-0123456789abcdefghij";
+    const app = await listen({
+      field: stubService(), stations: stubStations(),
+      apiKeys: "ballisticvector:" + KEY, allowPageWithoutKey: false
+    });
+    try {
+      expect((await get(app.url, "/v1/stations?lat=40&lon=-105")).status).toBe(401);
+      const ok = await get(app.url, "/v1/stations?lat=40&lon=-105",
+        { authorization: "Bearer " + KEY });
+      expect(ok.status).toBe(200);
+    } finally {
+      await app.close();
+    }
+  });
+});
+
 describe("the browser calling it", () => {
   test("answers a preflight and allows a cross-origin read", async () => {
     const app = await listen({ field: stubService(), origins: ["https://ballisticvector.com"] });

@@ -26,6 +26,12 @@
  * from, drawn so the terrain the wind is bending around is visible rather than
  * asserted. It is a separate request because it is a separate cost: the ground
  * does not change between cycles and the wind does.
+ *
+ * **The stations go over the wind, and are drawn as a different kind of mark.**
+ * They are the only thing on this map that was measured. A disc with a ring and
+ * a heavy arrow against a flat wash with thin ones, above the wash rather than
+ * under it, so which is which survives a glance — and a station that reported
+ * nothing keeps a hollow marker rather than disappearing or reading as calm.
  */
 
 /* global L, WindMapLib */
@@ -67,6 +73,11 @@
   map.createPane("relief");
   map.getPane("relief").style.zIndex = 350;
   map.getPane("relief").style.pointerEvents = "none";
+
+  // Above the wind wash, which is in the overlay pane at 400: a measurement
+  // hidden under a model output is the wrong way round on this map.
+  map.createPane("stations");
+  map.getPane("stations").style.zIndex = 620;
 
   const pin = L.marker([START.lat, START.lon], { draggable: true }).addTo(map);
   let domainOutline = null;
@@ -265,6 +276,160 @@
     setReliefNote(lib.hillshadeCaption(placement));
   }
 
+  /**
+   * The anemometers, drawn over everything else.
+   *
+   * Deliberately not the same shape as the modelled wind. The field is a flat
+   * canvas wash with thin arrows and no outline; a station is a hard-edged disc
+   * with a white ring and a heavier arrow, sitting above both the relief and
+   * the wash. Someone glancing at the screen has to be able to say which marks
+   * were measured and which were computed without reading a legend — that is
+   * the entire reason both are on one map.
+   *
+   * A station that reported nothing keeps its marker and loses its arrow: a
+   * hollow ring is "an anemometer is here and it said nothing", which is a fact
+   * about the network. Removing it would make the map look healthier than the
+   * data.
+   */
+  const stationLayer = L.layerGroup([], { pane: "stations" }).addTo(map);
+  let stationRequest = null;
+  let stationTimer = null;
+
+  function setStationNote(text) {
+    const el = $("stationNote");
+    if (el) el.textContent = text || "";
+  }
+
+  function stationIcon(view) {
+    const size = 30;
+    const ring = view.stale ? "rgba(255,255,255,0.45)" : "#ffffff";
+    const fill = view.reporting ? (view.color || "#8b95a5") : "transparent";
+    const dash = view.reporting ? "" : " stroke-dasharray=\"3 2\"";
+    const parts = [
+      "<svg width=\"" + size + "\" height=\"" + size + "\" viewBox=\"0 0 30 30\">",
+      "<circle cx=\"15\" cy=\"15\" r=\"6.5\" fill=\"" + fill + "\" stroke=\"" + ring +
+        "\" stroke-width=\"2\"" + dash + "/>"
+    ];
+    // An arrow only when there is a direction to draw. Calm has no direction,
+    // and a marker with no observation has no wind at all.
+    if (view.reporting && !view.calm && Number.isFinite(view.towardDeg)) {
+      parts.push("<g transform=\"rotate(" + view.towardDeg.toFixed(1) + " 15 15)\">" +
+        "<path d=\"M15 2 L15 9\" stroke=\"" + ring + "\" stroke-width=\"2.4\" " +
+        "stroke-linecap=\"round\" transform=\"rotate(180 15 15)\"/>" +
+        "<path d=\"M15 26 L11.6 20.5 L18.4 20.5 Z\" fill=\"" + ring + "\"/></g>");
+    }
+    parts.push("</svg>");
+    return L.divIcon({
+      html: parts.join(""),
+      className: "station-marker",
+      iconSize: [size, size],
+      iconAnchor: [size / 2, size / 2]
+    });
+  }
+
+  /**
+   * Built when the popup opens, not when the marker is drawn.
+   *
+   * The comparison needs a solved field, and the stations usually arrive
+   * first: content fixed at draw time would say "nothing has been solved here
+   * yet" for the rest of the session, on a page where the answer is one click
+   * away.
+   */
+  function stationPopup(view) {
+    const lines = view.lines.slice();
+    const comparison = lib.compareStationToField(view, lastField);
+    if (comparison.comparable) {
+      const modelled = comparison.modelSpeedMph.toFixed(1) + " mph";
+      lines.push("Modelled here: " + modelled +
+        (comparison.ratio === null ? "" : " — " + comparison.ratio.toFixed(2) + "x measured") +
+        (comparison.directionDeltaDeg === null
+          ? ""
+          : ", " + Math.abs(Math.round(comparison.directionDeltaDeg)) + "\u00b0 " +
+            (comparison.directionDeltaDeg >= 0 ? "clockwise" : "anticlockwise")));
+      lines.push(comparison.heightNote);
+    } else if (comparison.reason) {
+      lines.push("Not compared with the model: " + comparison.reason + ".");
+    }
+    const escape = function (text) {
+      const div = document.createElement("div");
+      div.textContent = text;
+      return div.innerHTML;
+    };
+    return "<strong>" + escape(view.name) + "</strong><br>" +
+      lines.map(escape).join("<br>");
+  }
+
+  function drawStations(body) {
+    stationLayer.clearLayers();
+    if (!body || !body.ok) return;
+    for (const station of body.stations) {
+      const view = lib.stationView(station);
+      const marker = L.marker([view.lat, view.lon], {
+        icon: stationIcon(view),
+        pane: "stations",
+        title: view.title,
+        // Keyboard-reachable, and above the pin only when hovered: a station is
+        // information, the pin is the control.
+        riseOnHover: true
+      });
+      marker.bindPopup(function () { return stationPopup(view); });
+      stationLayer.addLayer(marker);
+    }
+  }
+
+  function clearStations() {
+    if (stationRequest) stationRequest.abort();
+    stationRequest = null;
+    stationLayer.clearLayers();
+    setStationNote("");
+  }
+
+  async function loadStations() {
+    if (!$("stations").checked) return clearStations();
+    if (stationRequest) stationRequest.abort();
+
+    const bounds = map.getBounds();
+    const spec = lib.viewSpec({
+      north: bounds.getNorth(), south: bounds.getSouth(),
+      east: bounds.getEast(), west: bounds.getWest()
+    });
+
+    const controller = new AbortController();
+    stationRequest = controller;
+    setStationNote("Reading the anemometers…");
+
+    let body;
+    try {
+      const response = await fetch(lib.stationsQuery({
+        lat: spec.lat, lon: spec.lon, radiusMiles: spec.radiusMiles, limit: 60
+      }), { signal: controller.signal });
+      body = await response.json().catch(function () { return null; });
+      if (!response.ok || !body || !body.ok) {
+        stationRequest = null;
+        stationLayer.clearLayers();
+        // A station outage is not a failed solve, exactly as a missing relief
+        // is not: the modelled wind does not depend on this request.
+        return setStationNote("No stations — " + lib.explain(body, response.status).text);
+      }
+    } catch (err) {
+      stationRequest = null;
+      if (err && err.name === "AbortError") return;
+      stationLayer.clearLayers();
+      return setStationNote("No stations — " + (err && err.message));
+    }
+    stationRequest = null;
+
+    drawStations(body);
+    setStationNote(lib.stationsCaption(body) +
+      (spec.capped ? " · zoom in: only the nearest are shown" : ""));
+  }
+
+  /** Panning re-asks, once the map has stopped: one request per view, not per pixel. */
+  function scheduleStations() {
+    if (stationTimer) clearTimeout(stationTimer);
+    stationTimer = setTimeout(loadStations, 400);
+  }
+
   function setStatus(text, kind) {
     const el = $("status");
     el.textContent = text || "";
@@ -328,6 +493,7 @@
     $("notice").textContent = summary.notice || "";
 
     fieldLayer.setField(body);
+    lastField = body;
 
     clearDomain();
     domainOutline = L.rectangle(
@@ -337,6 +503,9 @@
   }
 
   let inFlight = null;
+  // The last successful field, kept only so a station popup can say what the
+  // model made of the same place. Cleared with the wind it belongs to.
+  let lastField = null;
 
   function clearDomain() {
     if (!domainOutline) return;
@@ -367,6 +536,7 @@
   function clearWind() {
     if (inFlight) inFlight.abort();
     fieldLayer.clear();
+    lastField = null;
     clearDomain();
     $("result").hidden = true;
   }
@@ -454,6 +624,15 @@
     loadRelief(Number($("lat").value), Number($("lon").value), Number($("radius").value));
   });
 
+  $("stations").addEventListener("change", function () {
+    if (!$("stations").checked) return clearStations();
+    loadStations();
+  });
+
+  // The stations belong to the view rather than to the pin: they are what is on
+  // screen, not what was solved. Debounced, so a drag is one request.
+  map.on("moveend zoomend", scheduleStations);
+
   for (const id of ["lat", "lon"]) {
     $(id).addEventListener("change", function () {
       const lat = Number($("lat").value);
@@ -486,5 +665,6 @@
 
   renderLegend();
   renderApiExample(START.lat, START.lon, 1);
+  loadStations();
   setStatus("Drag the pin or click the map, then solve.", "");
 })();

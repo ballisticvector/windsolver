@@ -18,6 +18,16 @@
  * gets its caption from, and it always carries the source, the two resolutions
  * and the modelled notice. A page that can render a wind without them is a page
  * that will, on the day the panel is collapsed for space.
+ *
+ * **A measurement is not a model output, and the page may not blur them.** The
+ * station half of this module — `stationView`, `compareStationToField` — draws
+ * the only thing on the map that was measured by an instrument, and every way
+ * of getting it wrong is a claim rather than a pixel: a station that reported
+ * nothing drawn as calm, an hour-old reading drawn as now, an hour *label*
+ * drawn as an observation time, a 6.1 m anemometer compared with a 10 m model
+ * wind without saying so. Each of those is refused here rather than in `map.js`,
+ * because a claim that can only be checked by looking at the screen is a claim
+ * nobody checks.
  */
 
 "use strict";
@@ -339,6 +349,258 @@ function hillshadeCaption(placement) {
   return parts.join(" · ");
 }
 
+/**
+ * The `/v1/stations` query for what is on screen.
+ *
+ * Not the solve box: the field is a mile across by default and RAWS are about
+ * one per 1,500 square miles, so a station search over the solve box is an
+ * empty map almost everywhere. What a viewer wants is the anemometers they can
+ * see, so this asks about the *view* — and caps it, because a whole-country
+ * view is a dataset rather than a map layer.
+ */
+function stationsQuery(spec) {
+  const params = new URLSearchParams();
+  params.set("lat", String(round(spec.lat, 6)));
+  params.set("lon", String(round(spec.lon, 6)));
+  params.set("radiusMiles", String(round(spec.radiusMiles, 2)));
+  if (spec.limit) params.set("limit", String(Math.round(spec.limit)));
+  if (spec.observed === false) params.set("observed", "false");
+  return "/v1/stations?" + params.toString();
+}
+
+/** The centre and a radius in miles that covers a lat/lon box. */
+function viewSpec(bounds, opts) {
+  const o = opts || {};
+  const maxMiles = o.maxMiles === undefined ? 250 : o.maxMiles;
+  const minMiles = o.minMiles === undefined ? 5 : o.minMiles;
+  const lat = (bounds.north + bounds.south) / 2;
+  const lon = (bounds.east + bounds.west) / 2;
+  // Half the diagonal, so the corners of the view are inside the circle the
+  // box is cut from: a station in the corner of the screen is on the screen.
+  const halfLatM = ((bounds.north - bounds.south) / 2) * 111132.92;
+  const halfLonM = ((bounds.east - bounds.west) / 2) * 111132.92 *
+    Math.cos((lat * Math.PI) / 180);
+  const miles = Math.hypot(halfLatM, halfLonM) / 1609.344;
+  return {
+    lat: lat,
+    lon: lon,
+    radiusMiles: Math.min(maxMiles, Math.max(minMiles, miles)),
+    capped: miles > maxMiles
+  };
+}
+
+// Past this an observation is not "now" any more. A RAWS reports hourly and
+// misses hours, so an hour is normal and two is a station worth doubting.
+const STALE_OBSERVATION_S = 5400;
+
+/** "42 minutes ago", for a caption. Never a bare timestamp on a marker. */
+function ageText(seconds) {
+  if (!Number.isFinite(seconds)) return "age unknown";
+  if (seconds < 0) return "in the future";
+  const mins = Math.round(seconds / 60);
+  if (mins < 1) return "just now";
+  if (mins < 90) return mins + " min ago";
+  const hours = Math.round(seconds / 3600);
+  if (hours < 36) return hours + " h ago";
+  return Math.round(seconds / 86400) + " days ago";
+}
+
+/**
+ * How one station should be drawn, and what it is allowed to claim.
+ *
+ * Pure, and separate from Leaflet, because every mistake worth making here is
+ * a claim rather than a pixel: a station with no observation drawn as calm, an
+ * hour-old reading drawn as current, an hour *bin* drawn as a time. The page
+ * gets its marker, its caption and its popup from this and cannot assemble a
+ * different story.
+ */
+function stationView(station, opts) {
+  const o = opts || {};
+  const nowMs = o.nowMs === undefined ? Date.now() : o.nowMs;
+  const obs = station && station.observation;
+
+  const view = {
+    id: station.id,
+    name: station.name || station.id,
+    lat: station.lat,
+    lon: station.lon,
+    // The measured wind, or nothing. There is no third state, and in
+    // particular no zero: `reporting: false` is why the marker is hollow.
+    reporting: false,
+    calm: false,
+    speedMps: null,
+    speedMph: null,
+    fromDeg: null,
+    towardDeg: null,
+    gustMph: null,
+    color: null,
+    ageS: null,
+    stale: false,
+    approximateTime: false,
+    unchecked: false,
+    lines: [],
+    title: null
+  };
+
+  const place = [];
+  if (Number.isFinite(station.elevationM)) place.push(Math.round(station.elevationM) + " m");
+  if (station.state) place.push(station.state);
+  view.lines.push((station.network || "station") + " " + station.id +
+    (place.length ? " · " + place.join(" · ") : ""));
+
+  if (!obs) {
+    view.title = view.name + " — not reporting";
+    view.lines.push("No observation in the window" +
+      (station.observationNote ? " — " + station.observationNote : "") + ".");
+    // The one thing a blank must never become. FEMS answers an unknown
+    // station, a dead station and a quiet hour with the same empty row.
+    view.lines.push("Not calm: nothing was measured.");
+    return view;
+  }
+
+  view.reporting = true;
+  view.calm = obs.calm === true;
+  view.speedMps = obs.speedMps;
+  view.speedMph = mph(obs.speedMps);
+  view.fromDeg = obs.fromDeg;
+  view.towardDeg = Number.isFinite(obs.fromDeg) ? (obs.fromDeg + 180) % 360 : null;
+  view.gustMph = mph(obs.gustMps);
+  view.color = speedColor(obs.speedMps);
+  view.ageS = Number.isFinite(obs.ageS)
+    ? obs.ageS
+    : (obs.time ? Math.round((nowMs - Date.parse(obs.time)) / 1000) : null);
+  view.stale = Number.isFinite(view.ageS) && view.ageS > STALE_OBSERVATION_S;
+  view.approximateTime = obs.timeIsHourBin === true;
+  view.unchecked = obs.qcChecked !== true;
+
+  const speed = view.speedMph === null ? "—" : view.speedMph.toFixed(1) + " mph";
+  const dir = view.calm
+    ? "calm"
+    : (Number.isFinite(obs.fromDeg)
+      ? "from " + Math.round(obs.fromDeg) + "\u00b0 " + compassOf(obs.fromDeg)
+      : "direction not reported");
+  view.title = view.name + " — measured " + speed + ", " + dir;
+
+  view.lines.push("Measured " + speed + ", " + dir +
+    (view.gustMph === null ? "" : ", gusting " + view.gustMph.toFixed(1)));
+  view.lines.push(ageText(view.ageS) + (obs.time ? " (" + obs.time + ")" : "") +
+    // The label is the nearest whole hour for every station without a measured
+    // transmit minute, so the marker's time can be half an hour out. Saying so
+    // costs a line; not saying so turns a timing error into a wind error.
+    (view.approximateTime ? " · hour label, ±30 min" : ""));
+  if (view.unchecked) view.lines.push("Not quality-controlled yet.");
+  return view;
+}
+
+/**
+ * The measured wind beside the modelled wind at the same place.
+ *
+ * This is the reason the two layers are on one map: `docs/downscaling.md` says
+ * HRRR runs 43-70% fast over this network, and a ratio printed next to the
+ * arrow is that sentence in a form nobody has to take on trust.
+ *
+ * It refuses far more often than it answers, and every refusal is named. The
+ * station has to be inside the solved box and on a covered cell; the two have
+ * to be close in time; and the heights have to be comparable — a RAWS
+ * anemometer is nominally 6.1 m and the field is reported at its own
+ * `heightAglM`, so comparing them without saying so invents part of the
+ * difference it is measuring.
+ */
+function compareStationToField(view, body, opts) {
+  const o = opts || {};
+  const maxGapS = o.maxGapS === undefined ? 3600 : o.maxGapS;
+  const out = { comparable: false, reason: null, modelSpeedMph: null, ratio: null,
+    directionDeltaDeg: null, heightNote: null };
+
+  if (!view || !view.reporting) {
+    out.reason = "the station reported nothing";
+    return out;
+  }
+  if (!body || !body.ok || !body.grid) {
+    out.reason = "nothing has been solved here yet";
+    return out;
+  }
+  const grid = body.grid;
+  if (view.lat > grid.lats[0] || view.lat < grid.lats[grid.rows - 1] ||
+      view.lon < grid.lons[0] || view.lon > grid.lons[grid.cols - 1]) {
+    out.reason = "the station is outside the solved box";
+    return out;
+  }
+
+  const row = nearestIndex(grid.lats, view.lat);
+  const col = nearestIndex(grid.lons, view.lon);
+  const i = row * grid.cols + col;
+  const modelSpeed = grid.speedMps ? grid.speedMps[i] : null;
+  if (!Number.isFinite(modelSpeed)) {
+    out.reason = "no terrain under the station, so nothing was solved there";
+    return out;
+  }
+
+  const nowMs = o.nowMs === undefined ? Date.now() : o.nowMs;
+  const gapS = body.validTime && view.ageS !== null
+    ? Math.abs(Math.round((nowMs - Date.parse(body.validTime)) / 1000) - view.ageS)
+    : null;
+  if (gapS !== null && gapS > maxGapS) {
+    out.reason = "the observation and the model hour are " + ageText(gapS).replace(" ago", "") +
+      " apart";
+    return out;
+  }
+
+  out.comparable = true;
+  out.timeGapS = gapS;
+  out.modelSpeedMph = mph(modelSpeed);
+  out.ratio = view.speedMps > 0 ? modelSpeed / view.speedMps : null;
+  if (Number.isFinite(view.fromDeg) && Number.isFinite(grid.fromDeg[i])) {
+    out.directionDeltaDeg = signedDegrees(grid.fromDeg[i] - view.fromDeg);
+  }
+  // Not a caveat that can be dropped for space: the model is reported at its
+  // own height and a RAWS anemometer is nominally 6.1 m, and the wind between
+  // those two heights differs by more than most of the terms being argued
+  // about.
+  out.heightNote = "model at " +
+    (Number.isFinite(body.heightAglM) ? body.heightAglM + " m" : "its own height") +
+    " AGL, RAWS nominally 6.1 m — not height-matched";
+  return out;
+}
+
+function nearestIndex(values, target) {
+  let best = 0;
+  let bestD = Infinity;
+  for (let i = 0; i < values.length; i++) {
+    const d = Math.abs(values[i] - target);
+    if (d < bestD) { bestD = d; best = i; }
+  }
+  return best;
+}
+
+/** A difference of bearings in -180..180, so "17° right" survives 350 vs 7. */
+function signedDegrees(delta) {
+  return ((((delta % 360) + 540) % 360) - 180);
+}
+
+/** The line under the stations toggle: how many, from where, and how old. */
+function stationsCaption(body) {
+  if (!body || !body.ok) return "Stations unavailable.";
+  const parts = [];
+  parts.push(body.returned + " of " + body.matched +
+    (body.matched === 1 ? " station" : " stations"));
+  if (body.directory && body.directory.network) {
+    parts.push(body.directory.network +
+      (body.directory.provider ? " via " + body.directory.provider : ""));
+  }
+  if (!body.observed) {
+    parts.push("locations only — no observations read");
+  }
+  if (body.directory && body.directory.stale) {
+    // The retained-directory case, said out loud. An old list quietly served as
+    // a current one is the failure `docs/history.md` exists to refuse.
+    parts.push("station list is " + ageText(body.directory.ageS) +
+      " and could not be refreshed");
+  }
+  for (const err of body.errors || []) parts.push(err.error);
+  return parts.join(" · ");
+}
+
 function round(value, places) {
   const f = Math.pow(10, places);
   return Math.round(value * f) / f;
@@ -359,7 +621,15 @@ const api = {
   fieldQuery: fieldQuery,
   hillshadeQuery: hillshadeQuery,
   hillshadePlacement: hillshadePlacement,
-  hillshadeCaption: hillshadeCaption
+  hillshadeCaption: hillshadeCaption,
+  STALE_OBSERVATION_S: STALE_OBSERVATION_S,
+  stationsQuery: stationsQuery,
+  viewSpec: viewSpec,
+  ageText: ageText,
+  stationView: stationView,
+  compareStationToField: compareStationToField,
+  signedDegrees: signedDegrees,
+  stationsCaption: stationsCaption
 };
 
 if (typeof module !== "undefined" && module.exports) module.exports = api;

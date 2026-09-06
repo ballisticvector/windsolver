@@ -48,7 +48,14 @@
   .check { display:flex; align-items:center; gap:8px; margin:0 0 10px; font-size:13px; }
   .check input { width:auto; margin:0; }
   .check label { margin:0; color:#e6e6e6; font-size:13px; }
-  #reliefNote { font-size:12px; color:var(--dim); margin:-4px 0 12px; min-height:16px; }
+  #reliefNote, #stationNote { font-size:12px; color:var(--dim); margin:-4px 0 12px; min-height:16px; }
+  /* The marker is an SVG in a div overlay: Leaflet gives that a white box by
+     default, which would put a card behind every anemometer. */
+  .station-marker { background:none; border:none; }
+  .station-marker svg { filter:drop-shadow(0 1px 2px rgba(0,0,0,0.7)); }
+  .key { display:flex; align-items:center; gap:8px; font-size:12px;
+         color:var(--dim); padding:2px 0; }
+  .key svg { flex:0 0 26px; }
   .legend { display:flex; gap:0; margin-top:6px; }
   .legend span { flex:1; height:10px; }
   .legend-scale { display:flex; justify-content:space-between; font-size:10px;
@@ -102,6 +109,11 @@
       <label for="relief">Shaded relief under the wind</label>
     </div>
     <p id="reliefNote"></p>
+    <div class="check">
+      <input id="stations" type="checkbox" checked>
+      <label for="stations">Measured wind at RAWS stations</label>
+    </div>
+    <p id="stationNote"></p>
 
     <div class="row">
       <div><button id="solve">Solve the wind here</button></div>
@@ -127,6 +139,34 @@
       <div class="prov" id="prov"></div>
       <p class="note" id="notice"></p>
     </div>
+
+    <h2>Measured and modelled</h2>
+    <div class="key">
+      <svg width="26" height="26" viewBox="0 0 30 30" aria-hidden="true">
+        <circle cx="15" cy="15" r="6.5" fill="#00ccbc" stroke="#fff" stroke-width="2"></circle>
+        <path d="M15 26 L11.6 20.5 L18.4 20.5 Z" fill="#fff"></path>
+        <path d="M15 2 L15 9" stroke="#fff" stroke-width="2.4" stroke-linecap="round"
+              transform="rotate(180 15 15)"></path>
+      </svg>
+      <span>A station: an anemometer measured this.</span>
+    </div>
+    <div class="key">
+      <svg width="26" height="26" viewBox="0 0 30 30" aria-hidden="true">
+        <circle cx="15" cy="15" r="6.5" fill="none" stroke="rgba(255,255,255,0.6)"
+                stroke-width="2" stroke-dasharray="3 2"></circle>
+      </svg>
+      <span>Hollow: the station is there and reported nothing. Not calm.</span>
+    </div>
+    <div class="key">
+      <svg width="26" height="26" viewBox="0 0 30 30" aria-hidden="true">
+        <rect x="2" y="2" width="26" height="26" fill="#00ccbc" opacity="0.45"></rect>
+        <path d="M15 7 L15 23" stroke="rgba(12,16,22,0.85)" stroke-width="1.6"></path>
+        <path d="M15 24 L11.8 18.5 L18.2 18.5 Z" fill="rgba(12,16,22,0.85)"></path>
+      </svg>
+      <span>The wash and thin arrows: modelled, not measured.</span>
+    </div>
+    <p class="prov">Click a station to see what the model made of the same place.
+      They are not height-matched: a RAWS anemometer is nominally 6.1 m.</p>
 
     <h2>The API under it</h2>
     <p class="prov">This page is one caller of a public HTTP service.</p>
