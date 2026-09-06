@@ -1,9 +1,14 @@
-"""Dump GDAL's own reading of a GeoTIFF, for `tests/cog.test.js` to grade against.
+"""Dump GDAL's own reading of a raster, for the suites to grade against.
 
     python3 tools/gdal-reference.py tests/fixtures/cog-lzw-p3 ...
+    python3 tools/gdal-reference.py tests/fixtures/hillshade-sample.png
 
 Writes `<name>.gdal.json` (metadata) and `<name>.gdal.f32` (every level's
 pixels as little-endian float32, full resolution first).
+
+A name with no extension is a `.tif`, which is what the COG fixtures are. An
+extension is honoured as given, so a PNG this repository wrote can be graded by
+an independent reader rather than by the writer's own decoder.
 
 `ReadRaster` rather than `ReadAsArray`: the array API goes through
 `osgeo.gdal_array`, which needs GDAL and NumPy built against each other, and
@@ -12,6 +17,7 @@ buffers need neither.
 """
 
 import json
+import os
 import sys
 
 from osgeo import gdal, osr
@@ -20,7 +26,8 @@ gdal.UseExceptions()
 
 
 def dump(name):
-    ds = gdal.Open(name + ".tif")
+    path = name if os.path.splitext(name)[1] else name + ".tif"
+    ds = gdal.Open(path)
     band = ds.GetRasterBand(1)
     sr = osr.SpatialReference(wkt=ds.GetProjection())
     width, height = ds.RasterXSize, ds.RasterYSize
@@ -35,7 +42,7 @@ def dump(name):
     meta = {
         "gdal": gdal.VersionInfo("RELEASE_NAME"),
         "geoTransform": list(ds.GetGeoTransform()),
-        "epsg": int(sr.GetAuthorityCode(None)),
+        "epsg": int(sr.GetAuthorityCode(None)) if sr.GetAuthorityCode(None) else None,
         "nodata": band.GetNoDataValue(),
         "blockSize": band.GetBlockSize(),
         "dataType": gdal.GetDataTypeName(band.DataType),

@@ -1,0 +1,24 @@
+{
+ "gdal": "3.4.1",
+ "geoTransform": [
+  0.0,
+  1.0,
+  0.0,
+  0.0,
+  0.0,
+  1.0
+ ],
+ "epsg": null,
+ "nodata": 0.0,
+ "blockSize": [
+  32,
+  1
+ ],
+ "dataType": "Byte",
+ "levels": [
+  {
+   "width": 32,
+   "height": 24
+  }
+ ]
+}
