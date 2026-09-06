@@ -300,6 +300,15 @@ plain in the mountains. `sampleElevation` refuses to interpolate across a hole r
 than inventing ground between two real pixels, and a cliff or a plain that is not there
 is a wind feature the mountain does not have.
 
+**A hillshade is a picture of the ground, not a claim about the wind.** `hillshade.js`
+shades the same `derive.slopeAspect()` the downscaling reads, so what the map draws and
+what the solver bends the wind with cannot drift apart — but the shading says nothing
+about sheltering, and its lit and unlit faces are a sun angle rather than a lee. Do not
+grow it into a shadow model and then read shelter off it: directional sheltering is
+`derive.js`'s, it is measured against stations, and `docs/downscaling.md` records that it
+is the term with the least evidence behind it. A relief that looks like a wind answer is
+the same failure as a modelled wind presented as a measured one.
+
 ## Licensing, before anything is sold
 
 If a tier ends up driven by WindNinja's momentum solver, that solver is OpenFOAM, which

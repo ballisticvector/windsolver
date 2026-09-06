@@ -261,6 +261,84 @@ function fieldQuery(spec) {
   return "/v1/field?" + params.toString();
 }
 
+/**
+ * The `/v1/hillshade` query for the same pin the field is solved over.
+ *
+ * Deliberately the same `lat`/`lon`/`radiusMiles` the field call uses: the two
+ * pictures are drawn on top of each other, and a hillshade over a box half a
+ * mile off the wind is a mis-registration nobody looking at the screen can
+ * detect.
+ */
+function hillshadeQuery(spec) {
+  const params = new URLSearchParams();
+  params.set("lat", String(round(spec.lat, 6)));
+  params.set("lon", String(round(spec.lon, 6)));
+  params.set("radiusMiles", String(spec.radiusMiles));
+  if (spec.width) params.set("width", String(Math.round(spec.width)));
+  if (spec.azimuthDeg !== undefined) params.set("azimuthDeg", String(spec.azimuthDeg));
+  if (spec.altitudeDeg !== undefined) params.set("altitudeDeg", String(spec.altitudeDeg));
+  return "/v1/hillshade?" + params.toString();
+}
+
+/**
+ * Where a hillshade PNG goes, read off the headers rather than off the request.
+ *
+ * The service snaps and pads the box it was asked for, so the picture covers
+ * the domain it solved and not the query. Placing it on the requested box
+ * shifts the terrain under the wind by the padding — a few hundred metres of
+ * hillside that lines up with nothing, and looks like a plausible map.
+ *
+ * Returns `null` rather than a guess when the headers are missing or
+ * unreadable, so a caller cannot place an image by accident.
+ */
+function hillshadePlacement(headers) {
+  const get = function (name) {
+    if (!headers) return null;
+    const v = typeof headers.get === "function" ? headers.get(name) : headers[name];
+    return v === undefined ? null : v;
+  };
+
+  const bounds = String(get("x-windsolver-bounds") || "").split(",").map(Number);
+  if (bounds.length !== 4 || bounds.some(function (n) { return !Number.isFinite(n); })) {
+    return null;
+  }
+  if (bounds[2] <= bounds[0] || bounds[3] <= bounds[1]) return null;
+
+  // `Number(null)` is 0, and 0 here is "none of this box has terrain under it"
+  // — a caption that indicts the data because a header was absent.
+  const number = function (name) {
+    const raw = get(name);
+    if (raw === null || raw === "") return null;
+    const n = Number(raw);
+    return Number.isFinite(n) ? n : null;
+  };
+  const covered = number("x-windsolver-covered");
+  const resolutionM = number("x-windsolver-resolution-m");
+  return {
+    south: bounds[0],
+    west: bounds[1],
+    north: bounds[2],
+    east: bounds[3],
+    coveredFraction: covered,
+    resolutionM: resolutionM,
+    dataset: get("x-windsolver-terrain-dataset") || null
+  };
+}
+
+/** The caption under the relief toggle, in the words the headers support. */
+function hillshadeCaption(placement) {
+  if (!placement) return "Relief unavailable.";
+  const parts = ["Shaded relief"];
+  if (placement.dataset) parts.push("3DEP " + placement.dataset);
+  if (placement.resolutionM !== null) parts.push(round(placement.resolutionM, 1) + " m/px");
+  if (placement.coveredFraction !== null && placement.coveredFraction < 1) {
+    // The transparent part of the picture is ground nobody read, and it looks
+    // exactly like ground that happens to be flat.
+    parts.push(Math.round((1 - placement.coveredFraction) * 100) + "% no terrain");
+  }
+  return parts.join(" · ");
+}
+
 function round(value, places) {
   const f = Math.pow(10, places);
   return Math.round(value * f) / f;
@@ -278,7 +356,10 @@ const api = {
   compassOf: compassOf,
   summarise: summarise,
   explain: explain,
-  fieldQuery: fieldQuery
+  fieldQuery: fieldQuery,
+  hillshadeQuery: hillshadeQuery,
+  hillshadePlacement: hillshadePlacement,
+  hillshadeCaption: hillshadeCaption
 };
 
 if (typeof module !== "undefined" && module.exports) module.exports = api;

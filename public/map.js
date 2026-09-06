@@ -20,6 +20,12 @@
  * **The provenance panel is rendered from the answer, every time.** There is no
  * path through this file that draws a wind without also drawing where it came
  * from and that it is modelled.
+ *
+ * **The relief goes under the wind, and is placed on the bounds the service
+ * reports.** The hillshade is the same 3DEP ground the downscaling is computed
+ * from, drawn so the terrain the wind is bending around is visible rather than
+ * asserted. It is a separate request because it is a separate cost: the ground
+ * does not change between cycles and the wind does.
  */
 
 /* global L, WindMapLib */
@@ -54,6 +60,13 @@
     maxZoom: 18,
     attribution: "&copy; OpenStreetMap contributors | wind: WindSolver (HRRR + 3DEP, modelled)"
   }).addTo(map);
+
+  // Below the wind wash and above the basemap. Leaflet's own overlay pane holds
+  // both, so the order is set by pane rather than by the order they are added:
+  // a relief drawn over the arrows hides the answer.
+  map.createPane("relief");
+  map.getPane("relief").style.zIndex = 350;
+  map.getPane("relief").style.pointerEvents = "none";
 
   const pin = L.marker([START.lat, START.lon], { draggable: true }).addTo(map);
   let domainOutline = null;
@@ -167,6 +180,84 @@
   const fieldLayer = new FieldLayer();
   fieldLayer.addTo(map);
 
+  /**
+   * The shaded relief: one PNG from `/v1/hillshade`, placed on the bounds the
+   * service reports rather than on the box that was asked for.
+   *
+   * Fetched as a blob rather than set as an `<img src>` so the headers can be
+   * read — the placement is in them, and an image element throws them away.
+   */
+  const relief = {
+    layer: null,
+    url: null,
+    request: null,
+    placement: null
+  };
+
+  function clearRelief() {
+    if (relief.request) relief.request.abort();
+    relief.request = null;
+    if (relief.layer) {
+      map.removeLayer(relief.layer);
+      relief.layer = null;
+    }
+    if (relief.url) {
+      URL.revokeObjectURL(relief.url);
+      relief.url = null;
+    }
+    relief.placement = null;
+    setReliefNote("");
+  }
+
+  function setReliefNote(text) {
+    const el = $("reliefNote");
+    if (el) el.textContent = text || "";
+  }
+
+  async function loadRelief(lat, lon, radiusMiles) {
+    clearRelief();
+    if (!$("relief").checked) return;
+
+    const controller = new AbortController();
+    relief.request = controller;
+    setReliefNote("Reading the ground…");
+
+    let response;
+    let blob;
+    try {
+      response = await fetch(lib.hillshadeQuery({
+        lat: lat, lon: lon, radiusMiles: radiusMiles, width: 768
+      }), { signal: controller.signal });
+      if (!response.ok) {
+        const body = await response.json().catch(function () { return null; });
+        relief.request = null;
+        // A relief that will not load is a missing picture, never a failed
+        // solve: the wind is the answer and it does not depend on this.
+        return setReliefNote("No relief here — " + lib.explain(body, response.status).text);
+      }
+      blob = await response.blob();
+    } catch (err) {
+      relief.request = null;
+      if (err && err.name === "AbortError") return;
+      return setReliefNote("No relief here — " + (err && err.message));
+    }
+    relief.request = null;
+
+    const placement = lib.hillshadePlacement(response.headers);
+    if (!placement) {
+      return setReliefNote("No relief here — the service did not say where the " +
+        "picture goes, so it has not been placed.");
+    }
+
+    relief.placement = placement;
+    relief.url = URL.createObjectURL(blob);
+    relief.layer = L.imageOverlay(relief.url, [
+      [placement.south, placement.west],
+      [placement.north, placement.east]
+    ], { opacity: 0.85, pane: "relief", interactive: false }).addTo(map);
+    setReliefNote(lib.hillshadeCaption(placement));
+  }
+
   function setStatus(text, kind) {
     const el = $("status");
     el.textContent = text || "";
@@ -259,6 +350,7 @@
     if (inFlight) inFlight.abort();
     fieldLayer.clear();
     clearDomain();
+    clearRelief();
     $("result").hidden = true;
   }
 
@@ -273,6 +365,10 @@
     }
 
     renderApiExample(lat, lon, radiusMiles);
+    // Alongside the solve rather than after it: the ground is cached
+    // separately and costs no weather, so the relief usually arrives while the
+    // wind is still being fetched.
+    loadRelief(lat, lon, radiusMiles);
 
     if (inFlight) inFlight.abort();
     const controller = new AbortController();
@@ -335,6 +431,11 @@
   });
 
   $("solve").addEventListener("click", solve);
+
+  $("relief").addEventListener("change", function () {
+    if (!$("relief").checked) return clearRelief();
+    loadRelief(Number($("lat").value), Number($("lon").value), Number($("radius").value));
+  });
 
   for (const id of ["lat", "lon"]) {
     $(id).addEventListener("change", function () {

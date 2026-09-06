@@ -45,6 +45,10 @@
   .prov div { padding:2px 0; }
   .note { border-left:3px solid #d29922; padding:8px 0 8px 12px; color:#c9b88a;
           font-size:12px; margin-top:14px; }
+  .check { display:flex; align-items:center; gap:8px; margin:0 0 10px; font-size:13px; }
+  .check input { width:auto; margin:0; }
+  .check label { margin:0; color:#e6e6e6; font-size:13px; }
+  #reliefNote { font-size:12px; color:var(--dim); margin:-4px 0 12px; min-height:16px; }
   .legend { display:flex; gap:0; margin-top:6px; }
   .legend span { flex:1; height:10px; }
   .legend-scale { display:flex; justify-content:space-between; font-size:10px;
@@ -93,6 +97,12 @@
         </select>
       </div>
     </div>
+    <div class="check">
+      <input id="relief" type="checkbox" checked>
+      <label for="relief">Shaded relief under the wind</label>
+    </div>
+    <p id="reliefNote"></p>
+
     <div class="row">
       <div><button id="solve">Solve the wind here</button></div>
       <div style="flex:0 0 96px"><button id="locate" class="secondary">My location</button></div>
