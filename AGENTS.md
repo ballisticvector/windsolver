@@ -164,8 +164,12 @@ drift into another's job.
   March's offsets applied to September are worse than no correction at all. It is not
   shippable yet for a reason that is easy to miss — **a per-station table has no row for
   the pin a user actually clicked** — and the terrain regression that would bridge that
-  gap beats a pooled scale on eleven Colorado stations and stops beating it on ten. One
-  station is carrying it. More stations, not a better regression.
+  gap does not survive being tested properly. Measurement 11 put it on 37 stations chosen
+  by the ground they stand on rather than 11 chosen by convenience: terrain closes about
+  8% of the distance between a pooled scale and the station's own, and removing STOC2
+  still halves the correlation on every date. **Do not spend another Colorado run on it**
+  — the state's RAWS are 3 valleys in 93, so the sheltered half of the axis is not in
+  this catalogue.
 - **Climatology — what the wind usually does here, in March, at 09:00: a mode of its own.**
   Honest because nobody mistakes it for a forecast, provided it is shaped like a
   distribution over a stated period with no `validTime`, rather than a `/v1/field`
