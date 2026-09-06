@@ -49,6 +49,8 @@
  *   --archive    read HRRR from the AWS Open Data archive instead of NOMADS, so
  *                a cycle older than about two days can be scored
  *   --out        write the full result as JSON to this path
+ *   --pairs      write every model/observation pair to this path, as the
+ *                artefact a correction can be refitted from
  *
  * **It costs one HRRR subset per station per hour** — a few KB each, but each
  * one is a NOMADS round trip — plus one 3DEP terrain read per station, which is
@@ -112,6 +114,24 @@
  * the site roughness is a Davenport class chosen for the whole sample, not a
  * measurement of any one mast's fetch.
  *
+ * **`--out` is a summary, and a summary cannot be refitted.** A per-station
+ * *offset* can be scored on a day it was not fitted on out of the stored mean
+ * and RMSE alone — `tools/site-factor.js` does exactly that — but a per-station
+ * *scale* cannot, because `mean(model^2)` is nowhere in the summary. The
+ * evidence says the bias is proportional, so the form that cannot be scored is
+ * the form the correction probably has. `--pairs` writes the pairs themselves:
+ * one row per observation with the modelled wind from every candidate beside
+ * it, which is the smallest artefact any later fit can be graded on and about
+ * 90 KB for a 13-station day.
+ *
+ * It is deliberately not part of `--out`. The summary is a document people read
+ * and diff; the pairs are input to arithmetic, they are two orders of magnitude
+ * larger, and a reader who opens the wrong one should be able to tell
+ * immediately which they have. It is written on one line for the same reason
+ * `--out` is indented: this file is read by a program and grows with the
+ * station set, and pretty-printing it triples a size that is already the
+ * awkward part.
+ *
  * **`--archive` is how a second date happens at all.** NOMADS keeps about two
  * days, which is why every run so far is one date and the note in
  * `docs/downscaling.md` cannot say whether anything repeats. The archive keeps
@@ -155,7 +175,7 @@ const FLAGS = [
   "stations", "source", "fems-map", "end", "hours", "forecast", "radius", "resolution",
   "tolerance", "position", "elevation", "roughness", "no-height", "ablate",
   "shelter", "scales", "anomaly", "anomaly-resolution", "exposure", "archive",
-  "out", "json"
+  "out", "pairs", "json"
 ];
 
 // HRRR's own surface roughness, which the exposure candidates need and the live
@@ -929,7 +949,85 @@ async function buildReport(options) {
     elapsedMs: now() - started
   };
 
+  // The pairs are handed to a writer rather than added to the report, because
+  // they are a different kind of thing: the report is read by a person and the
+  // pairs are read by arithmetic. Nothing above this line changes when they are
+  // not asked for.
+  if (o.writePairs) o.writePairs(pairsDocument(report, allPairs, candidates));
+
   return report;
+}
+
+/**
+ * Every pair that was scored, with the modelled wind from each candidate beside
+ * the observation, as its own document.
+ *
+ * The summary answers "how did the run do". This answers "what happened", which
+ * is the only form a later fit can be graded on: a per-station *scale* needs
+ * `mean(model^2)` and a per-hour or per-direction condition needs the hour and
+ * the direction, and averaging has destroyed all three by the time `--out` is
+ * written. `tools/site-factor.js` reconstructs an additive correction from the
+ * summary exactly and cannot reconstruct a multiplicative one at all, which is
+ * the immediate reason this exists — measurement 8 says the bias is
+ * proportional, so the form that could not be scored is the likely one.
+ *
+ * **The observation is stored as the station published it**, unrounded and
+ * before any candidate touched it, so a reader can tell the measurement from
+ * the arithmetic done to it. Modelled speeds carry the sensor-height factor
+ * already applied, because that is the wind that was actually scored; the
+ * factor is in `stations[].heightFactor` so it can be taken back out.
+ *
+ * Terrain travels per station rather than per pair — it does not change between
+ * hours — and the position radius it was measured at travels with it, because a
+ * ridge at 500 m and a ridge at 3 km are different claims.
+ */
+function pairsDocument(report, pairs, candidates) {
+  const keys = candidates.map(function (c) { return c.key; });
+  return {
+    schemaVersion: 1,
+    kind: "score-wind-pairs",
+    generated: report.generated,
+    window: report.window,
+    domain: report.domain,
+    source: report.source,
+    candidates: report.candidates,
+    stations: report.stations.map(function (s) {
+      return {
+        id: s.id,
+        name: s.name,
+        lat: s.lat,
+        lon: s.lon,
+        elevationM: s.elevationM,
+        heightFactor: s.height ? s.height.factor : null,
+        terrain: s.terrain
+      };
+    }),
+    pairs: pairs.map(function (p) {
+      const modelled = {};
+      for (const key of keys) {
+        const m = p.sample && p.sample.byCandidate ? p.sample.byCandidate[key] : null;
+        modelled[key] = m && typeof m.speedMps === "number"
+          ? { speedMps: round(m.speedMps, 4), fromDeg: round(m.fromDeg, 2) }
+          : null;
+      }
+      return {
+        station: p.station.id,
+        time: p.time,
+        // The model hour this observation was matched to, and how far it was
+        // from the measurement. A run whose pairs all sit 25 minutes apart is
+        // measuring something different from one whose pairs sit on the hour,
+        // and only this column can say which happened.
+        sampleTimeMs: p.sample ? p.sample.timeMs : null,
+        offsetMinutes: round(p.offsetMs / 60000, 1),
+        observed: {
+          speedMps: p.observed.speedMps,
+          fromDeg: p.observed.calm ? null : p.observed.fromDeg,
+          calm: !!p.observed.calm
+        },
+        modelled: modelled
+      };
+    })
+  };
 }
 
 /**
@@ -1012,7 +1110,10 @@ async function main() {
     scales: fixedScales(args.scales),
     anomaly: anomalyOf(args),
     exposure: !!args.exposure,
-    endMs: endMs
+    endMs: endMs,
+    writePairs: args.pairs && args.pairs !== true
+      ? function (doc) { fs.writeFileSync(String(args.pairs), JSON.stringify(doc) + "\n"); }
+      : null
   });
 
   if (args.out && args.out !== true) {
@@ -1345,7 +1446,7 @@ function summarise(report) {
   return out.join("\n");
 }
 
-module.exports = { parse, hoursIn, bearingFrom, buildReport, summarise, sourceFor };
+module.exports = { parse, hoursIn, bearingFrom, buildReport, pairsDocument, summarise, sourceFor };
 
 if (require.main === module) {
   main().catch(function (err) {

@@ -23,6 +23,7 @@ If you are picking this up cold: `downscale.js` is the module in question,
 - [Measurement 7: six runs off the archive, and what roughness does to the bias](#measurement-7-six-runs-off-the-archive-and-what-roughness-does-to-the-bias)
 - [Measurement 8: the first day Synoptic would not sell](#measurement-8-the-first-day-synoptic-would-not-sell)
 - [Measurement 9: how much of the error belongs to the station](#measurement-9-how-much-of-the-error-belongs-to-the-station)
+- [Measurement 10: a scale instead of an offset, and the station the fit never saw](#measurement-10-a-scale-instead-of-an-offset-and-the-station-the-fit-never-saw)
 - [The hypotheses, and how much weight each one carries](#the-hypotheses-and-how-much-weight-each-one-carries)
 - [What would settle it](#what-would-settle-it)
 - [Things that would poison the answer](#things-that-would-poison-the-answer)
@@ -563,7 +564,7 @@ That is exactly what a proportional error looks like when it is corrected additi
 offset fitted on a 5.14 m/s day is far too large for a 2.14 m/s one, while one fitted on a
 calm day is merely too small. The right form is a scale, and a scale cannot be scored from
 these summaries — `mean(model^2)` is not in them. **That is the argument for storing the
-pairs**, and it is made in `docs/history.md`.
+pairs**, made in `docs/history.md` and acted on in measurement 10.
 
 **What this does not license.** It is not a correction that can ship, for one reason that
 no amount of extra data fixes on its own: it only exists *at a station*. A user drops a pin
@@ -571,7 +572,7 @@ on ground with no anemometer, and the per-station table has no row. Turning it i
 product means predicting the site factor from terrain — which is the same job the
 downscaling has been failing at, now with a target that is measurably repeatable and
 therefore worth regressing against. **The finding is that the target exists**, not that
-anything has hit it.
+anything has hit it. Measurement 10 takes the shot and reports what it hit.
 
 *Caveats: speed RMSE only, not vector — a speed offset says nothing about the 151°
 direction error at DYGC2. Thirteen Colorado stations, four days, one of them in another
@@ -584,6 +585,147 @@ measurements 7 and 8 is inherited whole.*
 
 Artefacts: `node tools/site-factor.js <run>.json …` over the measurement 7 and 8 JSON,
 kept outside the repo.
+
+## Measurement 10: a scale instead of an offset, and the station the fit never saw
+
+Measurement 9 ended on two things it could not do. It could not score a **multiplicative**
+correction, because `mean(model^2)` is not in a summary; and it could not say anything
+about a pin, because a per-station table has no row for ground with no anemometer. Both
+are answered here, and they do not come out the same way.
+
+`tools/score-wind.js --pairs` now writes the model/observation pairs it previously threw
+away after summarising — one row per station per hour, carrying the observation as the
+station published it, the matched model sample's own valid time, the pairing offset, every
+candidate's speed and direction, and the station's terrain. It is opt-in and separate from
+`--out`; nothing about the aggregate report changed. `tools/site-factor.js` reads either
+kind. A pairs document collapses on the way in to six numbers per station — `n` and the
+sums of `obs`, `obs^2`, `model`, `model^2` and `obs*model` — over which
+
+```
+scale = sum(model * obs) / sum(model^2)          (the least-squares fit)
+mean((k*model - obs)^2) = (k^2*sum(model^2) - 2*k*sum(model*obs) + sum(obs^2)) / n
+```
+
+are both exact. Each family is fitted by the rule that minimises the score it is then
+graded on, so the comparison is offset against scale and not one fitting rule against
+another.
+
+Four runs, all f00, 11 FEMS stations, 24 hours each: 31 August, 2 and 4 September, and
+14 March. **The scale beats the offset in all twelve out-of-sample cells**, and the
+cross-season pair is the one worth reading:
+
+```
+scored on   corrected by                       pairs     raw   offset:pooled  station    scale:pooled  station
+aug31       sep02                                262   2.455          2.321    1.916           2.146    1.656
+aug31       sep04                                262   2.455          2.321    1.896           2.146    1.651
+aug31       mar14                                262   2.455          2.321    3.093           2.146    1.439
+aug31       itself (hindsight, not a result)     262   2.455          2.321    1.584           2.146    1.301
+sep02       aug31                                264   2.332          2.120    1.801           1.863    1.493
+sep02       sep04                                264   2.332          2.120    1.629           1.863    1.290
+sep02       mar14                                264   2.332          2.120    3.242           1.863    1.405
+sep02       itself (hindsight, not a result)     264   2.332          2.120    1.442           1.863    1.160
+sep04       aug31                                262   2.329          1.981    1.716           1.702    1.505
+sep04       sep02                                262   2.329          1.981    1.559           1.702    1.305
+sep04       mar14                                262   2.329          1.981    2.861           1.702    1.337
+sep04       itself (hindsight, not a result)     262   2.329          1.981    1.363           1.702    1.138
+mar14       aug31                                264   4.542          3.970    3.496           3.715    2.246
+mar14       sep02                                264   4.542          3.970    3.694           3.715    2.562
+mar14       sep04                                264   4.542          3.970    3.391           3.715    2.395
+mar14       itself (hindsight, not a result)     264   4.542          3.970    2.283           3.715    1.708
+```
+
+**March's offsets applied to September are worse than no correction at all** — 2.33 → 3.24
+and 2.46 → 3.09 — while **March's scales survive the season**: on 31 August they are the
+best of the three corrections available, and on the other two days they are within 0.12 of
+the best, which is another September day three days away. That is the measurement 8 claim
+tested rather than asserted: the error is proportional, an offset fitted on a 5.14 m/s day
+is simply the wrong size on a 2.14 m/s one, and a scale is not. Six months does less
+damage to a scale than six months does to an offset.
+
+The scales themselves, per station, over the same four runs:
+
+```
+station  aug31  sep02  sep04  mar14
+BMOC2    x0.730 x0.762 x0.798 x0.868
+DYGC2    x0.728 x0.809 x0.468 x0.409
+ESPC2    x0.393 x0.393 x0.437 x0.525
+KSHC2    x0.401 x0.422 x0.752 x0.392
+LSTC2    x0.182 x0.223 x0.259 x0.377
+PCPC2    x0.617 x1.189 x0.964 x0.642
+PKLC2    x0.489 x0.411 x0.406 x0.510
+RRAC2    x1.083 x1.420 x1.160 x1.199
+SODC2    x0.633 x0.703 x0.573 x0.679
+STOC2    x2.054 x1.229 x1.157 x1.612
+TT532    x0.266 x0.332 x0.280 x0.166
+```
+
+### The pin, and why this still cannot ship
+
+A table of eleven rows is not a correction for ground a user chose. The only honest test
+is to predict a station's scale from **terrain alone, with that station absent from the
+fit** — leave one station out, regress `log(scale)` on one terrain descriptor over the
+remaining ten, and score the prediction on a *different day's* pairs at the held-out
+station. `--holdout` prints exactly that, for five descriptors: the 500 m topographic
+position index, the 3×3 one, slope, HRRR's orography offset, and elevation as a control.
+
+```
+scored on  fitted on  predictor        stns   pairs     raw  pooled  predicted     own
+sep04      aug31      positionIndexM     11     262   2.329   1.849      1.647   1.505
+sep04      aug31      tpi                11     262   2.329   1.849      1.595   1.505
+sep04      aug31      slopeDeg           11     262   2.329   1.849      2.033   1.505
+sep04      aug31      modelOffsetM       11     262   2.329   1.849      2.181   1.505
+sep04      aug31      demElevationM      11     262   2.329   1.849      2.112   1.505
+mar14      sep04      positionIndexM     11     264   4.542   3.960      3.072   2.395
+mar14      sep04      tpi                11     264   4.542   3.960      2.943   2.395
+mar14      sep04      slopeDeg           11     264   4.542   3.960      4.301   2.395
+mar14      sep04      modelOffsetM       11     264   4.542   3.960      4.290   2.395
+mar14      sep04      demElevationM      11     264   4.542   3.960      4.090   2.395
+```
+
+Read alone, that is the result the project has been looking for: both topographic-position
+descriptors beat the pooled scale in all six fit/eval combinations and close about half
+the distance to the station's own fitted scale, while slope, the model offset and the
+elevation control are all *worse* than pooling. It is out of sample in both axes at once —
+a station the fit never saw, on a day the fit never saw.
+
+**It does not survive dropping one station.** Remove STOC2 — the leverage point
+measurement 7 already flagged, whose 500 m TPI of +97 m is triple any other station's —
+and the terrain prediction lands exactly on the pooled scale:
+
+```
+without STOC2, 10 stations       raw  pooled  pred 500 m  pred 3x3     own
+sep04 <- aug31                 2.361   1.707       1.705     1.930   1.195
+aug31 <- sep04                 2.180   1.558       1.533     1.565   1.201
+sep02 <- aug31                 2.376   1.919       1.929     2.168   1.263
+mar14 <- sep04                 4.442   3.105       3.046     3.214   2.105
+```
+
+The 3×3 index becomes worse than pooling in three rows of four. So the honest reading is
+**one station of eleven is carrying the entire terrain signal**, which is the same
+sentence measurement 7 wrote about r = +0.70 falling to +0.31, now measured on the thing
+that matters — out-of-sample RMSE — rather than on a correlation. The correlations of
+`log(scale)` against the 500 m index over these four runs are r = 0.63, 0.34, 0.53, 0.63,
+lower than measurement 7's figure because this scale is least-squares over pairs rather
+than a ratio of means.
+
+**What does survive STOC2's removal is the per-station scale itself**: 2.361 raw → 1.591
+pooled → 1.195 transferred on the ten remaining stations. The site factor is real and
+repeatable; predicting it from terrain is not yet supported by anything.
+
+*Caveats, and one of them is new. Choosing the best of five predictors on eleven stations
+is selection, not validation: the leave-one-out loop holds out the station but not the
+choice of descriptor, so the predicted column is optimistic by an amount this sample
+cannot estimate. Speed only, not vector. Eleven Colorado stations, four days, one
+season boundary; 24 consecutive hours are not 24 independent samples and the three
+September days share a regime. All four runs are f00, which grades an analysis fit — the
+site factor may partly be a measure of how hard the assimilation pulled at each station,
+and an f06 pair set would separate those. `own` is the held-out station's own fitted
+scale on the fit run: a ceiling, not a prediction. Nothing here has moved a default;
+`downscale.js` is untouched.*
+
+Artefacts: `node tools/score-wind.js --source fems --archive --forecast 0 --tolerance 30
+--hours 24 --pairs <run>.pairs.json …` for the four dates, then
+`node tools/site-factor.js --holdout <run>.pairs.json …`, kept outside the repo.
 
 ## The hypotheses, and how much weight each one carries
 
@@ -614,11 +756,15 @@ Roughly in the order the evidence supports them.
    r = -0.02. The bias is real, it repeats on three days, and it is **not** one bias: it
    is a per-station offset eight times wider than its own mean that nothing measured so
    far predicts.
-4. **The sheltering signal is real and the term carrying it is inert — untested.** The
-   same per-station scales correlate with the 500 m topographic position index at
-   r = +0.70, which is the shape `Sx` claims and 1/50th of the amplitude it applies. One
-   station of thirteen carries that correlation (drop it and r = 0.31), so this is where
-   the next stations should go, not where the next coefficient should.
+4. **The sheltering signal is real and the term carrying it is inert — tested once, and
+   it rests on one station.** The same per-station scales correlate with the 500 m
+   topographic position index at r = +0.70, which is the shape `Sx` claims and 1/50th of
+   the amplitude it applies. Measurement 10 took that from a correlation to an
+   out-of-sample score: predicting a held-out station's scale from that index alone beats
+   one pooled scale on every fit/eval pair, and lands on the pooled scale exactly once
+   STOC2 is removed. One station of eleven is carrying it. This is still where the next
+   stations should go and not where the next coefficient should — but the target is now
+   well posed, which it was not before.
 5. **The slope term does nothing as scored.** `os = alongWind / (2 * maxSlope)` is
    normalised by the domain's own steepest slope, so a station on a 20° slope in a domain
    containing a 50° cliff reads as gentle ground. Fixed physical scales exist now
@@ -667,13 +813,14 @@ In cost order.
   topographic position rather than by which ids were already to hand.
 - **Separate the height correction from the terrain correction in the scoring** so a
   change in one cannot be credited to the other.
-- **Regress the per-station scale on terrain, now that the scale is known to repeat.**
-  Measurement 9 turns the sheltering bullet above into a better-posed question: instead of
-  asking which candidate scores best, ask which terrain descriptor predicts a quantity
-  that is stable at r = 0.90 within a week. That target is measurable at every station
-  with history, needs no new model run, and is the only route from a per-station table —
-  which cannot ship, because a user's pin is not a station — to a correction that works on
-  unvisited ground.
+- ~~**Regress the per-station scale on terrain, now that the scale is known to repeat.**~~
+  Run: measurement 10, with `score-wind.js --pairs` and `site-factor.js --holdout`. The
+  scale form is confirmed — it beats the offset in all twelve out-of-sample cells and,
+  unlike the offset, it survives six months. The terrain regression is not: it beats a
+  pooled scale on eleven stations and is indistinguishable from one on ten. **The
+  successor is more stations, not a better regression** — picking one of five descriptors
+  on eleven sites is selection rather than validation, and the fix for both problems is
+  the same station set spread across the position index.
 
 ## Things that would poison the answer
 

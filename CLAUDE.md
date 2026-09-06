@@ -95,7 +95,10 @@ to make a well-meant change wrong:
   and it correlates with aerodynamic roughness at r = -0.02 — so a per-station roughness,
   including HRRR's own `SFCR`, buys nothing a single constant does not buy. Do not spend
   another run on z0. `roughness.js` exists for scoring that question and is deliberately
-  not imported by the runtime path.
+  not imported by the runtime path. Fitted by least squares over the pairs rather than as
+  a ratio of means, the same per-station scale runs x0.17 to x2.05 over four days and
+  transfers between them; that is measurement 10 and it is the one correction in this
+  note with a measured out-of-sample effect.
 - **The model has its own mountains.** `tools/model-terrain.js` measures HRRR's surface
   orography against the 3DEP ground under a station: about 70 m above the floor of a
   valley station, 41 m below the top of a ridge one. A correction computed against the
@@ -145,11 +148,15 @@ drift into another's job.
   field in the contract able to describe it. A historical day is shown with its own date
   on it or not at all.
 - **Correcting today's model with past model-versus-measured pairs: the strongest lead in
-  the project.** Measurement 9 in `docs/downscaling.md`: a per-station offset measured on
-  one day and applied to another takes 23-37% off the speed RMSE, against 0.06 m/s
-  spanning every terrain candidate ever scored. It is not shippable yet for a reason that
-  is easy to miss — **a per-station table has no row for the pin a user actually clicked**
-  — and getting from one to the other is a terrain regression, not more stations.
+  the project.** Measurements 9 and 10 in `docs/downscaling.md`: a per-station correction
+  measured on one day and applied to another takes 23-37% off the speed RMSE, against
+  0.06 m/s spanning every terrain candidate ever scored. **Fit it as a scale, not an
+  offset** — the scale wins all twelve out-of-sample cells and survives six months, where
+  March's offsets applied to September are worse than no correction at all. It is not
+  shippable yet for a reason that is easy to miss — **a per-station table has no row for
+  the pin a user actually clicked** — and the terrain regression that would bridge that
+  gap beats a pooled scale on eleven Colorado stations and stops beating it on ten. One
+  station is carrying it. More stations, not a better regression.
 - **Climatology — what the wind usually does here, in March, at 09:00: a mode of its own.**
   Honest because nobody mistakes it for a forecast, provided it is shaped like a
   distribution over a stated period with no `validTime`, rather than a `/v1/field`
@@ -186,6 +193,10 @@ already hosts for free, with `.idx` byte ranges, buys nothing. The join with the
 anemometers is the part NOAA does not have. Store the pairs and not `score-wind.js`
 summaries: measurement 9 could reconstruct an additive correction from summaries and could
 not score a multiplicative one, which is the form the evidence actually points at.
+`tools/score-wind.js --pairs` writes one run's worth of that table — opt-in, alongside the
+report, never inside it — and `tools/site-factor.js` reads it. **A run artefact is not the
+database**: nothing accumulates, indexes or versions it, and the ingestion tool is still
+the unwritten step.
 
 ## What this is
 

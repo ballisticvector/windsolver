@@ -1367,8 +1367,28 @@ observed wind repeats at r = 0.90-0.94 across days.
 node tools/site-factor.js run-a.json run-b.json run-c.json
 ```
 
-That is measurement 9 in `docs/downscaling.md`, and it is a research result, not a
-correction that can ship: a per-station table has no row for the pin a user clicked on.
+**Fit it as a scale rather than an offset.** A summary cannot carry a multiplicative fit —
+`mean(model^2)` is not in one — so `--pairs` keeps the model/observation rows the report
+was summarising, and `site-factor.js` reads those as well:
+
+```bash
+node tools/score-wind.js --source fems --archive --tolerance 30 --hours 24 \
+  --end 2025-09-05T00:00:00Z --out sep04.json --pairs sep04.pairs.json
+
+node tools/site-factor.js --holdout aug31.pairs.json sep04.pairs.json mar14.pairs.json
+```
+
+Over four days the scale beats the offset in all twelve out-of-sample cells, and it
+survives a season where the offset does not: March's offsets applied to September are
+*worse than no correction at all*, while March's scales are as good a correction for
+September as another September day is. `--holdout` goes one step further and predicts a
+station's scale from terrain with that station left out of the fit, which is the only
+column that answers what ground with no anemometer would get — it beats a single pooled
+scale on eleven stations and stops beating it on ten.
+
+That is measurements 9 and 10 in `docs/downscaling.md`, and it is a research result, not a
+correction that can ship: a per-station table has no row for the pin a user clicked on,
+and the terrain prediction that would bridge that gap currently rests on one station.
 **`docs/history.md` is the note that argues out what to build on top of it** — why a
 matched past day must never be served as the current conditions, why an analog correction
 is worth the work, why climatology is a mode of its own, and why the database is a table
