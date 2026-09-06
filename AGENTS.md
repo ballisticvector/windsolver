@@ -164,11 +164,16 @@ drift into another's job.
 **Design the degraded mode for a USGS outage, not a NOAA one.** During the hillshade
 testing `tnmaccess` returned HTTP 200 with an error object for most of a day: every cold
 coordinate looked exactly like "no terrain here", while NOAA was fine. Weather history
-would not have helped at all. Two consequences, both currently unhandled: `listing.js`
-discards an expired entry even when the network has just refused, though a fifteen-day-old
-3DEP listing is almost certainly still true; and `cache.js` drops a stale volume rather
-than keeping a separate, explicitly-aged last-good copy. Also **point a health check at
-the endpoint that fails** — `/datasets` answered throughout that outage.
+would not have helped at all. `listing.js` now handles it: an expired entry is kept 180
+days, the network is still tried first, and the kept copy is read **only** after a
+refusal, carrying `storedAt`, a per-answer `ageS`, `stale` and the refusal itself out
+through `terrain.listing` on `/v1/field`, a header on `/v1/hillshade` and a caption on
+the map. Ground nobody has listed is still `no-terrain` — the fallback keeps a real
+answer through an outage, it does not invent one. **Do not let `ageS` be stored**: the
+terrain is cached and the arithmetic over it is not, so an age frozen at read time reads
+as an hour old forever. Still unhandled: `cache.js` drops a stale volume rather than
+keeping a separate, explicitly-aged last-good copy. Also **point a health check at the
+endpoint that fails** — `/datasets` answered throughout that outage.
 
 **An offline five-day pack cannot be HRRR.** Measured: the 00/06/12/18Z cycles reach
 `f48` and every other cycle stops at `f18`. Five days is NBM (`noaa-nbm-grib2-pds`,

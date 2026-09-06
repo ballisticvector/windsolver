@@ -309,6 +309,46 @@ describe("GET /v1/field", () => {
     }
   });
 
+  test("says when the product listing behind the terrain is a retained one", async () => {
+    const svc = stubService({
+      field: Object.assign({}, sharedField(), {
+        terrain: Object.assign({}, sharedField().terrain, {
+          listing: {
+            retained: true,
+            entries: 1,
+            storedAt: "2026-09-01T00:00:00.000Z",
+            ageS: 7200,
+            stale: true,
+            error: "The National Map answered 503"
+          }
+        })
+      })
+    });
+    const app = await listen({ field: svc });
+    try {
+      const res = await get(app.url, "/v1/field?lat=40.0150&lon=-105.2705&cols=5");
+      // Degraded, and saying so: the wind is as modelled as ever, but which
+      // 3DEP product was chosen was decided from a list nobody could refresh.
+      expect(res.body.terrain.listing).toMatchObject({
+        retained: true, stale: true, storedAt: "2026-09-01T00:00:00.000Z"
+      });
+      expect(res.body.terrain.listing.error).toMatch(/503/);
+    } finally {
+      await app.close();
+    }
+  });
+
+  test("a terrain read off a fresh listing carries no retained note", async () => {
+    const svc = stubService();
+    const app = await listen({ field: svc });
+    try {
+      const res = await get(app.url, "/v1/field?lat=40.0150&lon=-105.2705&cols=5");
+      expect(res.body.terrain.listing === undefined || res.body.terrain.listing === null).toBe(true);
+    } finally {
+      await app.close();
+    }
+  });
+
   test("asks the engine for the box the caller asked about", async () => {
     const svc = stubService();
     const app = await listen({ field: svc });
@@ -509,6 +549,39 @@ describe("GET /v1/hillshade", () => {
       expect(bounds[3]).toBeCloseTo(domain.east, 6);
       expect(res.headers.get("x-windsolver-sun")).toBe("315,45");
       expect(res.headers.get("x-windsolver-terrain-dataset")).toBe("1m");
+    } finally {
+      await app.close();
+    }
+  });
+
+  test("a relief drawn on a retained listing says how old that listing is", async () => {
+    // The picture is still the ground; which product was chosen to draw it was
+    // decided from a list The National Map would not refresh. A caller that
+    // draws this over a basemap has no other way to know.
+    const storedAt = new Date(Date.now() - 7200 * 1000).toISOString();
+    const svc = stubService({
+      ground: Object.assign({}, sharedGround(), {
+        listing: { retained: true, entries: 1, storedAt: storedAt, ageS: 0, stale: true, error: "503" }
+      })
+    });
+    const app = await listen({ field: svc });
+    try {
+      const res = await getBytes(app.url, "/v1/hillshade?lat=40.0150&lon=-105.2705&width=32");
+      const header = res.headers.get("x-windsolver-terrain-listing");
+      expect(header).toMatch(/^retained,/);
+      expect(header).toContain(storedAt);
+      expect(Number(header.split(",")[2])).toBeGreaterThanOrEqual(7200);
+    } finally {
+      await app.close();
+    }
+  });
+
+  test("a relief drawn on a listing The National Map answered carries no such header", async () => {
+    const svc = stubService();
+    const app = await listen({ field: svc });
+    try {
+      const res = await getBytes(app.url, "/v1/hillshade?lat=40.0150&lon=-105.2705&width=32");
+      expect(res.headers.get("x-windsolver-terrain-listing")).toBeNull();
     } finally {
       await app.close();
     }

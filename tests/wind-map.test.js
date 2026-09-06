@@ -192,6 +192,25 @@ describe("summarise", () => {
     expect(lib.summarise(answer({ confidence: 0.4 })).lines).toContain("Confidence: 0.4");
   });
 
+  test("says when the ground was chosen from a listing nobody could refresh", () => {
+    const body = answer({
+      terrain: {
+        dataset: "1m",
+        resolutionM: 8,
+        listing: { retained: true, storedAt: "2026-09-04T15:00:00.000Z", ageS: 10800, stale: true }
+      }
+    });
+    const joined = lib.summarise(body).lines.join(" | ");
+    expect(joined).toContain("Terrain product list last read 3 h ago");
+    // And it stays a caption about the terrain listing: the wind on this
+    // screen is as current as it ever was, and must not read as three hours old.
+    expect(joined).toContain("WindSolver HRRR 2026-09-04T18:00:00.000Z");
+  });
+
+  test("a fresh listing is not mentioned at all", () => {
+    expect(lib.summarise(answer()).lines.join(" | ")).not.toContain("Terrain product list");
+  });
+
   test("refuses to caption an answer that is not one", () => {
     expect(() => lib.summarise({ ok: false })).toThrow(/successful field answer/);
   });

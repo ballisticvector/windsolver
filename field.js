@@ -349,6 +349,7 @@ function assemble(input) {
       sources: grid.sources,
       voidFraction: grid.voidFraction,
       filledCount: grid.filledCount,
+      listing: terrainModule.agedListing(input.listing, input.now),
       coarserDataset: input.coarserDataset === undefined ? null : input.coarserDataset,
       filledFromCoarser: input.filledFromCoarser === undefined ? 0 : input.filledFromCoarser,
       bytesRead: input.bytesRead === undefined ? null : input.bytesRead,
@@ -412,6 +413,7 @@ function createFieldService(opts) {
       const derived = derive.derive(grid, spec);
       return {
         dataset: read.dataset ? read.dataset.id : null,
+        listing: read.listing || (coarse && coarse.listing) || null,
         coarserDataset: coarse && coarse.dataset ? coarse.dataset.id : null,
         filledFromCoarser: coarse ? grid.filledCount : 0,
         grid: grid,
@@ -478,6 +480,7 @@ function createFieldService(opts) {
       weights: land.weights,
       volume: volume,
       dataset: land.dataset,
+      listing: land.listing,
       coarserDataset: land.coarserDataset,
       filledFromCoarser: land.filledFromCoarser,
       bytesRead: land.bytesRead,

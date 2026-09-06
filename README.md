@@ -896,6 +896,56 @@ measured against the domain that was actually asked for, never against the snapp
 
 `listingCache: false` bypasses it for a caller that needs what TNM says right now.
 
+### An expired listing is kept for the outage, and dated when it is used
+
+Fourteen days is when a listing stops being trusted, not when it stops being useful. The
+entry stays on disk for **180 days** (`retainMs`), and it is read only in one situation:
+the entry has expired, the network was asked, and **the network refused**. A listing that
+is still inside its 14 days is served without a word; a refusal over ground nobody has
+listed before is still `no-terrain`, because the alternative is inventing terrain during
+an outage.
+
+This exists because it was watched happening. During the hillshade testing
+`tnmaccess.nationalmap.gov` answered HTTP 200 with `{"error": "Expecting value: line 1
+column 1"}` for hours, and every *cold* coordinate read as "no terrain here" while NOAA
+was perfectly healthy. 3DEP projects are re-flown monthly at best, so a fifteen-day-old
+answer to "which tiles cover this box" is almost certainly still true — but only if
+whoever reads it is told how old it is.
+
+So the answer says so, everywhere it surfaces. `readTerrain()` returns, and `/v1/field`
+carries on `terrain`:
+
+```json
+"listing": {
+  "retained": true,
+  "entries": 1,
+  "storedAt": "2026-09-04T15:00:00.000Z",
+  "ageS": 10800,
+  "stale": true,
+  "error": "The National Map answered 503"
+}
+```
+
+`listing` is `null` — never absent-and-meaningful — whenever the listing came from the
+network. `/v1/hillshade` carries the compact form in
+`X-WindSolver-Terrain-Listing: retained,<storedAt>,<ageS>`, and the map page captions it
+in words.
+
+**`ageS` is derived per answer, from `storedAt`.** The terrain and its derivatives are
+cached and the wind over them is not, so an age captured when the listing was read would
+still say "one hour" a week later — which is the exact failure the whole field is here to
+prevent. `storedAt` is the fact that keeps.
+
+The note stays with a domain for as long as its prepared ground is cached, which is
+correct rather than sticky: that ground really was chosen from a list nobody had
+confirmed, and `ageS` keeps counting up. It clears when the terrain cache does, and the
+next cold read after TNM recovers has no note at all.
+
+**A retained listing does not make the wind old.** It says which 3DEP product was chosen
+from a list that could not be refreshed; the terrain under it and the weather over it are
+as current as they ever were. `docs/history.md` sets out the general rule this is one
+instance of: old data may be served, never disguised.
+
 ## Measured, not assumed
 
 Run live against a 2-mile display domain at **36.77, −104.49** — the coordinate from the

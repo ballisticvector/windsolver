@@ -137,6 +137,81 @@ describe("listing — pruning", () => {
   });
 });
 
+describe("listing — an expired entry, kept for the outage", () => {
+  test("expiring does not delete the file, so there is something to fall back to", async () => {
+    // The whole degraded mode rests on this: the TTL is when a listing stops
+    // being trusted without asking, not when it stops existing.
+    let now = 1000;
+    const cache = listing.createListingCache({ dir: tempDir(), ttlMs: 100, now: () => now });
+    await cache.put("u", { items: [{ title: "t" }] });
+    now = 5000;
+    expect(await cache.get("u")).toBeNull();
+    expect(fs.existsSync(cache.path("u"))).toBe(true);
+  });
+
+  test("a retained entry comes back dated and marked stale", async () => {
+    let now = 1000;
+    const cache = listing.createListingCache({
+      dir: tempDir(), ttlMs: 100, retainMs: 10000, now: () => now
+    });
+    await cache.put("u", { items: [{ title: "t" }] });
+    now = 4000;
+
+    const kept = await cache.getRetained("u");
+    expect(kept.body.items[0].title).toBe("t");
+    expect(kept.storedAt).toBe(1000);
+    expect(kept.ageMs).toBe(3000);
+    expect(kept.stale).toBe(true);
+    expect(cache.stats().retained).toBe(1);
+  });
+
+  test("an entry still inside the ttl is retained without being called stale", async () => {
+    let now = 1000;
+    const cache = listing.createListingCache({ dir: tempDir(), ttlMs: 1000, now: () => now });
+    await cache.put("u", { items: [] });
+    now = 1500;
+    expect((await cache.getRetained("u")).stale).toBe(false);
+  });
+
+  test("past the retention window there is nothing to offer", async () => {
+    // "We have nothing recent for this box" is the honest answer once a
+    // listing is older than about two publishing seasons. Ground chosen from
+    // a list nobody has been able to confirm since is not better than none.
+    let now = 1000;
+    const cache = listing.createListingCache({
+      dir: tempDir(), ttlMs: 100, retainMs: 1000, now: () => now
+    });
+    await cache.put("u", { items: [] });
+    now = 2001;
+    expect(await cache.getRetained("u")).toBeNull();
+  });
+
+  test("a clock that moved backwards is not a retained entry either", async () => {
+    let now = 5000;
+    const cache = listing.createListingCache({ dir: tempDir(), now: () => now });
+    await cache.put("u", { items: [] });
+    now = 4000;
+    expect(await cache.getRetained("u")).toBeNull();
+  });
+
+  test("a half-written entry is not resurrected by the fallback path", async () => {
+    const cache = listing.createListingCache({ dir: tempDir() });
+    await cache.put("u", { items: [] });
+    fs.writeFileSync(cache.path("u"), "{\"format\":1,\"storedAt\":");
+    expect(await cache.getRetained("u")).toBeNull();
+    expect(await cache.get("u")).toBeNull();
+  });
+
+  test("an entry from a future format is not retained", async () => {
+    const cache = listing.createListingCache({ dir: tempDir() });
+    await cache.put("u", { items: [] });
+    fs.writeFileSync(cache.path("u"), JSON.stringify({
+      format: listing.FORMAT + 1, url: "u", storedAt: Date.now(), body: { items: [] }
+    }));
+    expect(await cache.getRetained("u")).toBeNull();
+  });
+});
+
 describe("listing — the caching reader", () => {
   test("the second ask for the same URL does not reach The National Map", async () => {
     const asked = [];
@@ -189,6 +264,71 @@ describe("listing — the caching reader", () => {
     await expect(read("u")).rejects.toThrow("nope");
     await expect(read("u")).rejects.toThrow("nope");
     expect(calls).toBe(2);
+  });
+
+  test("a refusal over ground we have seen before serves the kept listing, dated", async () => {
+    let now = 1000;
+    const cache = listing.createListingCache({
+      dir: tempDir(), ttlMs: 100, retainMs: 100000, now: () => now
+    });
+    let fail = false;
+    const read = listing.cachingJsonReader(async () => {
+      if (fail) throw new Error("The National Map answered 503");
+      return { items: [{ title: "warm" }] };
+    }, cache);
+
+    expect((await read("u")).items[0].title).toBe("warm");
+    now = 4000;
+    fail = true;
+
+    expect((await read("u")).items[0].title).toBe("warm");
+    const kept = read.retained();
+    expect(kept).toHaveLength(1);
+    expect(kept[0]).toMatchObject({ url: "u", storedAt: 1000, ageMs: 3000, stale: true });
+    expect(kept[0].error).toMatch(/503/);
+  });
+
+  test("a refusal over ground nobody has visited is still a refusal", async () => {
+    // The fallback must not become "invent terrain during an outage": a cold
+    // box has nothing to be stale about.
+    const read = listing.cachingJsonReader(async () => {
+      throw new Error("The National Map answered 503");
+    }, listing.createListingCache({ dir: tempDir() }));
+
+    await expect(read("cold")).rejects.toThrow(/503/);
+    expect(read.retained()).toBeNull();
+  });
+
+  test("a listing kept past the retention window is not served during an outage", async () => {
+    let now = 1000;
+    const cache = listing.createListingCache({
+      dir: tempDir(), ttlMs: 100, retainMs: 1000, now: () => now
+    });
+    let fail = false;
+    const read = listing.cachingJsonReader(async () => {
+      if (fail) throw new Error("The National Map answered 503");
+      return { items: [] };
+    }, cache);
+
+    await read("u");
+    now = 100000;
+    fail = true;
+    await expect(read("u")).rejects.toThrow(/503/);
+    expect(read.retained()).toBeNull();
+  });
+
+  test("a successful refresh replaces an expired entry and says nothing is retained", async () => {
+    let now = 1000;
+    const cache = listing.createListingCache({ dir: tempDir(), ttlMs: 100, now: () => now });
+    let title = "old";
+    const read = listing.cachingJsonReader(async () => ({ items: [{ title: title }] }), cache);
+
+    await read("u");
+    now = 9000;
+    title = "new";
+    expect((await read("u")).items[0].title).toBe("new");
+    expect(read.retained()).toBeNull();
+    expect((await cache.get("u")).body.items[0].title).toBe("new");
   });
 
   test("a reader with nothing to fall back to is refused at construction", () => {

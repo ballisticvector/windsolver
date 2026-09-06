@@ -237,6 +237,43 @@ function describeConsidered(considered) {
 }
 
 /**
+ * The retained listings a reader fell back to, as one fact about the answer.
+ *
+ * The oldest entry is the one quoted, because a mosaic is only as confirmed as
+ * its least-confirmed part and a caption saying "three days old" over ground
+ * chosen from a five-month-old list would be true of the wrong entry.
+ */
+function summariseRetained(entries) {
+  if (!entries || !entries.length) return null;
+  const oldest = entries.reduce(function (a, b) { return b.ageMs > a.ageMs ? b : a; });
+  return {
+    retained: true,
+    entries: entries.length,
+    storedAt: new Date(oldest.storedAt).toISOString(),
+    ageS: Math.round(oldest.ageMs / 1000),
+    stale: entries.some(function (e) { return e.stale; }),
+    error: oldest.error
+  };
+}
+
+/**
+ * A retained-listing note, re-aged at the moment it is answered with.
+ *
+ * The prepared ground is cached and the arithmetic over it is not, so an age
+ * measured when the listing was read would be frozen at whatever it was the
+ * first time this domain was solved, and would still read as "forty seconds
+ * old" a day later. `storedAt` is the fact that does not rot; the age a person
+ * sees is derived from it per request.
+ */
+function agedListing(note, now) {
+  if (!note) return null;
+  const at = Date.parse(note.storedAt);
+  return Object.assign({}, note, {
+    ageS: Number.isFinite(at) ? Math.round(((now || Date.now()) - at) / 1000) : null
+  });
+}
+
+/**
  * Discover the best product over a box and read a window of it.
  *
  * Terrain arrives as a mosaic — a domain that straddles two 3DEP tiles needs
@@ -246,14 +283,19 @@ function describeConsidered(considered) {
  */
 async function readTerrain(box, opts) {
   const o = opts || {};
-  const found = o.selection ||
-    await dem.discover(box, o.fetchJson || cachedJsonReaderFor(o), o);
+  const reader = o.fetchJson || cachedJsonReaderFor(o);
+  const found = o.selection || await dem.discover(box, reader, o);
+  // A listing served out of the cache after TNM refused to refresh it is
+  // terrain chosen from a list nobody has confirmed today. That is the right
+  // answer during an outage and the wrong one to hand over unlabelled, so it
+  // rides out with the result rather than staying in the cache's statistics.
+  const retained = typeof reader.retained === "function" ? reader.retained() : null;
   if (!found.dataset) {
     throw fail(
       "no-terrain",
       "no 3DEP product covers this box well enough to use " +
       "(considered " + describeConsidered(found.considered) + ")",
-      { considered: found.considered }
+      { considered: found.considered, listing: summariseRetained(retained) }
     );
   }
 
@@ -279,6 +321,7 @@ async function readTerrain(box, opts) {
   return {
     dataset: found.dataset,
     coverage: found.coverage,
+    listing: summariseRetained(retained),
     grids: grids,
     allVoid: grids.every(function (g) { return g.voidFraction === 1; }),
     bytesRead: grids.reduce(function (n, g) { return n + (g.bytesRead || 0); }, 0),
@@ -308,6 +351,8 @@ module.exports = {
   rangeReaderFor,
   jsonReaderFor,
   cachedJsonReaderFor,
+  summariseRetained,
+  agedListing,
   openCog,
   readWindow,
   readTerrain,
