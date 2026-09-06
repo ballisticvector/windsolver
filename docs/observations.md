@@ -145,10 +145,11 @@ Synoptic   date_time        0.0 m/s     200°        2026-09-04T12:54
 FEMS       DateTime         0.0 m/s     200°        2026-09-04T13:00
 ```
 
-MADIS and Synoptic agree to the minute. **FEMS rounds the observation up to the
-following hour and discards the minute.** PCPC2 transmits at :57 and STOC2 at :58, so
-for those the FEMS label is 3 and 2 minutes late; a station transmitting at :05 would be
-labelled 55 minutes late, and nothing in the FEMS response says which.
+MADIS and Synoptic agree to the minute. **FEMS labels the observation with a whole hour
+and discards the minute.** PCPC2 transmits at :57 and STOC2 at :58, so for those the FEMS
+label is 3 and 2 minutes late — which made "it rounds up to the following hour" look like
+the rule until eleven stations were measured. It is not; see *Measuring it changed the
+rule* below. Either way nothing in the FEMS response says which minute it came from.
 
 `tools/score-wind.js` pairs on a 10-30 minute tolerance. **That tolerance is smaller than
 the disagreement between providers about when the measurement happened**, so a FEMS-fed
@@ -179,6 +180,32 @@ sample that makes "the label is the hour after the measurement" look like the ru
 as the rule it is a full hour wrong at those three stations and right at the other eight,
 which is the failure worth naming: not a wrong report, a report that is right in most
 columns.
+
+### Dating them correctly costs half the stations at the default tolerance
+
+Reconstructing the true minute does not make a FEMS station easier to pair — it makes the
+mismatch visible. `score-wind.js` defaults to a 10 minute window around the model's valid
+hour, and a slot at :24 or :35 is nowhere near it. A 24-hour run over the eleven
+calibrated stations scored six of them and reported the rest rather than quietly shrinking
+the sample:
+
+```
+5 station(s) reported, and none of it landed inside the 10 minute window:
+  TT532 ROAN PLATEAU   — nearest model hour 19 minutes away
+  PKLC2 PICKLE GULCH   — nearest model hour 24 minutes away
+  RRAC2 RAMPART RANGE  — nearest model hour 25 minutes away
+  DYGC2 DRY GULCH      — nearest model hour 22 minutes away
+  ESPC2 ESTES PARK     — nearest model hour 24 minutes away
+```
+
+`--tolerance 30` admits all eleven, and that is the right setting for a FEMS-fed run, but
+it is a real widening and not a formality: it pairs an observation up to half an hour old
+with a model hour. The alternative — interpolating the model between hours to the
+observation's own minute — is the better answer and has not been built.
+
+The uncomfortable version of this is that the METAR runs were never affected because
+airports report at :53, close enough to the hour that a 10 minute window works by
+accident. RAWS transmit whenever their GOES slot falls.
 
 ## What an adapter has to refuse
 
