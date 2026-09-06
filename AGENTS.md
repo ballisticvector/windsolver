@@ -12,6 +12,7 @@ code and that will otherwise be undone by accident.
 - [The contract is published, not internal](#the-contract-is-published-not-internal)
 - [The shooter's grid is a projection, not the native shape](#the-shooters-grid-is-a-projection-not-the-native-shape)
 - [The downscaling is under investigation](#the-downscaling-is-under-investigation-and-nothing-about-it-is-settled)
+- [A weather history is three products](#a-weather-history-is-three-products-and-one-of-them-must-never-ship)
 - [Things that bite](#things-that-bite)
 - [Licensing, before anything is sold](#licensing-before-anything-is-sold)
 - [Conventions](#conventions)
@@ -129,6 +130,37 @@ are :19 to :25 off the hour — and the run reports them rather than shrinking t
 quietly. The METAR runs never hit this because airports report at :53. Interpolating the
 model between hours to the observation's own minute is the better answer and does not
 exist yet.
+
+## A weather history is three products, and one of them must never ship
+
+"Keep a weather history and load a matching past day instead of pulling live feeds" is
+three separate proposals. `docs/history.md` argues them apart; the part that belongs in
+this file is which is which, because the way to get it wrong is to build one and let it
+drift into another's job.
+
+- **Serving a matched past day as the current conditions: never.** It saves about 2 KB —
+  the live subset behind a default solve is 1,576 bytes, and the seconds in a cold solve
+  are terrain, which is already cached with no time in its key. What it costs is a past
+  wind wearing a present timestamp, which is the measured-versus-modelled failure with no
+  field in the contract able to describe it. A historical day is shown with its own date
+  on it or not at all.
+- **Correcting today's model with past model-versus-measured pairs: the strongest lead in
+  the project.** Measurement 9 in `docs/downscaling.md`: a per-station offset measured on
+  one day and applied to another takes 23-37% off the speed RMSE, against 0.06 m/s
+  spanning every terrain candidate ever scored. It is not shippable yet for a reason that
+  is easy to miss — **a per-station table has no row for the pin a user actually clicked**
+  — and getting from one to the other is a terrain regression, not more stations.
+- **Climatology — what the wind usually does here, in March, at 09:00: a mode of its own.**
+  Honest because nobody mistakes it for a forecast, provided it is shaped like a
+  distribution over a stated period with no `validTime`, rather than a `/v1/field`
+  response with old numbers in it.
+
+**And the database is a table of model/observation pairs, not a copy of the weather.** One
+HRRR cycle is 142 MB at the surface and 697 MB on native levels; mirroring what AWS
+already hosts for free, with `.idx` byte ranges, buys nothing. The join with the
+anemometers is the part NOAA does not have. Store the pairs and not `score-wind.js`
+summaries: measurement 9 could reconstruct an additive correction from summaries and could
+not score a multiplicative one, which is the form the evidence actually points at.
 
 ## What this is
 

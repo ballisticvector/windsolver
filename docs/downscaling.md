@@ -22,6 +22,7 @@ If you are picking this up cold: `downscale.js` is the module in question,
 - [Measurement 6: the curvature term's two halves, through the debiased table](#measurement-6-the-curvature-terms-two-halves-through-the-debiased-table)
 - [Measurement 7: six runs off the archive, and what roughness does to the bias](#measurement-7-six-runs-off-the-archive-and-what-roughness-does-to-the-bias)
 - [Measurement 8: the first day Synoptic would not sell](#measurement-8-the-first-day-synoptic-would-not-sell)
+- [Measurement 9: how much of the error belongs to the station](#measurement-9-how-much-of-the-error-belongs-to-the-station)
 - [The hypotheses, and how much weight each one carries](#the-hypotheses-and-how-much-weight-each-one-carries)
 - [What would settle it](#what-would-settle-it)
 - [Things that would poison the answer](#things-that-would-poison-the-answer)
@@ -490,6 +491,100 @@ is scored against.*
 
 Artefacts: `--source fems --archive --tolerance 30`, JSON kept outside the repo.
 
+## Measurement 9: how much of the error belongs to the station
+
+Every measurement above asks what a *formula* can do with the terrain. This one asks the
+prior question: **how much of the error is a property of the site at all, rather than of
+the day?** If a station's error is the same next week, something can be learned from
+history and looked up. If it is not, there is nothing to store.
+
+It needed no new run. `tools/site-factor.js` reads the run summaries measurements 7 and 8
+already wrote and reconstructs what a score *would* have been with a constant subtracted
+from every error, out of the mean and the RMSE alone:
+
+```
+mean((d - c)^2) = rmse^2 - 2*c*bias + c^2
+```
+
+exactly, because the cross term is `n * bias` by definition. So an offset measured on one
+day can be scored against a different day with no pairs and no re-fetch. `pooled` below
+is one offset shared by every station; `station` is a per-station offset **measured on the
+run in the second column and applied to the run in the first**, which is out of sample
+whenever those differ.
+
+```
+scored on              corrected by                       pairs     raw   pooled  station
+2026-08-31-f0-t30      2026-09-02-f0-t30                    288   2.515    2.334    1.929
+2026-08-31-f0-t30      2026-09-04-f0-t30                    288   2.515    2.334    1.913
+2026-08-31-f0-t30      itself (hindsight, not a result)     288   2.515    2.334    1.625
+2026-09-02-f0-t30      2026-08-31-f0-t30                    288   2.344    2.078    1.746
+2026-09-02-f0-t30      2026-09-04-f0-t30                    288   2.344    2.078    1.581
+2026-09-02-f0-t30      itself (hindsight, not a result)     288   2.344    2.078    1.403
+2026-09-04-f0-t30      2026-08-31-f0-t30                    288   2.404    1.974    1.678
+2026-09-04-f0-t30      2026-09-02-f0-t30                    288   2.404    1.974    1.526
+2026-09-04-f0-t30      itself (hindsight, not a result)     312   2.318    1.922    1.300
+```
+
+**A one-line-per-station table, learned on a different day, takes 23-37% off the speed
+RMSE. One national offset takes 7-18%.** That is the largest effect anywhere in this note,
+and it is out of sample: the correction is twelve numbers measured on 31 August and
+graded on 4 September. Every terrain candidate scored in measurements 1-8 spans 0.06 m/s
+debiased. This is 0.6-0.9 m/s.
+
+The offsets are not noise being fitted, and the repeatability says so directly:
+
+```
+pair                                     stations   bias r  ratio r
+2026-08-31 vs 2026-09-02                       12     0.80     0.94
+2026-08-31 vs 2026-09-04                       12     0.84     0.90
+2026-09-02 vs 2026-09-04                       12     0.90     0.91
+2026-09-04 vs 2026-03-14 (fems)                11     0.77     0.68
+```
+
+The **ratio** — modelled mean over observed mean — is the more repeatable of the two
+within a week, r = 0.90-0.94, which agrees with measurement 8's finding that the bias is
+proportional. It runs from x0.45 at STOC2 to x6.17 at LSTC2. One national scale factor
+cannot be thirteen numbers spanning fourteen-fold, and measurement 7 already showed the
+thirteen are not sorted by the roughness under them (r = -0.02).
+
+**Across a season it decays but does not vanish**, and the decay is asymmetric in a way
+that matters:
+
+```
+scored on              corrected by                       pairs     raw   pooled  station
+fems-march30           2026-09-04-f0-t30                    264   4.542    3.969    3.394
+fems-march30           itself (hindsight, not a result)     264   4.542    3.969    2.283
+2026-09-04-f0-t30      fems-march30                         264   2.342    1.986    2.858
+```
+
+September's offsets still take 25% off March — better than March's own pooled offset — but
+**March's offsets applied to September are worse than no correction at all**, 2.34 → 2.86.
+That is exactly what a proportional error looks like when it is corrected additively: an
+offset fitted on a 5.14 m/s day is far too large for a 2.14 m/s one, while one fitted on a
+calm day is merely too small. The right form is a scale, and a scale cannot be scored from
+these summaries — `mean(model^2)` is not in them. **That is the argument for storing the
+pairs**, and it is made in `docs/history.md`.
+
+**What this does not license.** It is not a correction that can ship, for one reason that
+no amount of extra data fixes on its own: it only exists *at a station*. A user drops a pin
+on ground with no anemometer, and the per-station table has no row. Turning it into a
+product means predicting the site factor from terrain — which is the same job the
+downscaling has been failing at, now with a target that is measurably repeatable and
+therefore worth regressing against. **The finding is that the target exists**, not that
+anything has hit it.
+
+*Caveats: speed RMSE only, not vector — a speed offset says nothing about the 151°
+direction error at DYGC2. Thirteen Colorado stations, four days, one of them in another
+season; the same stations are used to fit and to grade, so this bounds a per-station
+calibration and says nothing about an unvisited site. 24 consecutive hours are not 24
+independent samples, and the three September dates share a synoptic regime. The hindsight
+rows are fitted and scored on the same numbers and are printed as a ceiling, not a result.
+The identity is exact arithmetic on stored output; no scoring was re-run, so any error in
+measurements 7 and 8 is inherited whole.*
+
+Artefacts: `node tools/site-factor.js <run>.json …` over the measurement 7 and 8 JSON,
+kept outside the repo.
+
 ## The hypotheses, and how much weight each one carries
 
 Roughly in the order the evidence supports them.
@@ -572,6 +667,13 @@ In cost order.
   topographic position rather than by which ids were already to hand.
 - **Separate the height correction from the terrain correction in the scoring** so a
   change in one cannot be credited to the other.
+- **Regress the per-station scale on terrain, now that the scale is known to repeat.**
+  Measurement 9 turns the sheltering bullet above into a better-posed question: instead of
+  asking which candidate scores best, ask which terrain descriptor predicts a quantity
+  that is stable at r = 0.90 within a week. That target is measurable at every station
+  with history, needs no new model run, and is the only route from a per-station table —
+  which cannot ship, because a user's pin is not a station — to a correction that works on
+  unvisited ground.
 
 ## Things that would poison the answer
 
