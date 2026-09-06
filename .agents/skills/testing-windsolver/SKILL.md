@@ -1,6 +1,6 @@
 ---
 name: testing-windsolver
-description: Browser-test the WindSolver public map page and /v1/field service, locally or against the live windsolver.com. Covers starting the static+API server, warm vs cold solves, coordinates that reliably produce full / partial / no 3DEP coverage, checking provenance against the raw JSON, the mobile-layout trap, and verifying the API-key gate and its Sec-Fetch-Site same-origin door. Use when verifying anything in public/index.html, public/map.js, public/wind-map.js, auth.js, server.js static serving, or terrain-coverage behaviour.
+description: Browser-test the WindSolver public map page, the /v1/field service and the /v1/hillshade shaded-relief overlay, locally or against the live windsolver.com. Covers starting the static+API server, warm vs cold solves, coordinates that reliably produce full / partial / no 3DEP coverage, checking provenance against the raw JSON, the mobile-layout trap, working around a USGS TNM listing outage, and verifying the API-key gate and its Sec-Fetch-Site same-origin door. Use when verifying anything in public/index.html, public/map.js, public/wind-map.js, auth.js, server.js static serving, hillshade/relief rendering, or terrain-coverage behaviour.
 ---
 
 # Testing WindSolver in the browser
@@ -83,6 +83,85 @@ The safety property to check on the partial case: uncovered cells are **skipped*
 (basemap shows through), never painted with the 0 mph colour. Zoom into the
 painted/unpainted boundary for evidence.
 
+## The shaded-relief overlay (`/v1/hillshade`, `#relief`)
+
+`GET /v1/hillshade?lat&lon&radiusMiles[&width&resolutionM&azimuthDeg&altitudeDeg]` returns
+an 8-bit greyscale PNG; byte `0` is a transparent hole where 3DEP has no terrain. Placement
+is **only** in response headers (`X-WindSolver-Bounds` south,west,north,east, `-Size`,
+`-Resolution-M`, `-Terrain-Resolution-M`, `-Terrain-Dataset`, `-Covered`, `-Sun`), because
+the solved domain is padded and snapped relative to the requested box. It fetches no
+weather (it calls `field.terrain()`), so it is gated, limited and timed out like
+`/v1/field` but fails independently of it.
+
+How to test it in the browser:
+
+- The checkbox is `#relief` ("Shaded relief under the wind"), the caption is `#reliefNote`
+  (e.g. `Shaded relief · 3DEP one-third · 8.4 m/px · 68% no terrain`). The image lives in a
+  Leaflet pane named `relief` at z-index 350, under `overlayPane` (400).
+- Measure rather than eyeball: `document.querySelectorAll('.leaflet-relief-pane img').length`
+  is **1** when drawn and **0** after unticking, after moving the pin, and after changing
+  radius. `clearRelief()` removes the layer and revokes the blob URL — a `display:none`
+  would be a regression.
+- Registration is the failure mode that matters. Boulder r=1 cannot discriminate it (the
+  requested box, `body.domain` and the header bounds coincide); use r=2 over strong relief
+  (Gross Reservoir 39.9469, -105.3575) and check ridges/valleys sit under the OSM roads and
+  the reservoir polygon. Cross-check the caption's `m/px` against `X-WindSolver-Resolution-M`
+  in the Network panel.
+- Partial coverage vs flat lit ground look identical on the basemap. The discriminator is a
+  pixel comparison: screenshot the same view with relief on and off and compare a pixel over
+  the uncovered part — identical RGB proves transparency, not a flat fill. Santa Monica
+  33.9700, -118.5600 r=2 gives `X-WindSolver-Covered: 0.321` → caption `68% no terrain`.
+- Non-fatal relief failure is the case a user actually hits: DevTools request blocking on
+  `/v1/hillshade` **only**, then solve on good ground. Expect a green `Solved in N s.`, a
+  rendered wind field, and the failure confined to `#reliefNote`
+  (`No relief here — Failed to fetch`).
+- No-terrain ground (Paris 48.8566, 2.3522): both routes 502 and **each refusal must have its
+  own words** — the main status carries the wind refusal, `#reliefNote` carries
+  `No relief here — …`. This was silent before commit `251e538`, because `solve()`'s refusal
+  path called `clearField()` → `clearRelief()`, which aborted the in-flight hillshade so
+  `loadRelief()` ended in `AbortError` before writing its note. The split is `clearWind()` on a
+  refusal, `clearField()` only for true invalidation (pin moved / box changed). If you touch
+  that area, re-test both halves: Paris (note must speak) and a pin move after a good solve
+  (relief pane `img` count must go to 0 and `#reliefNote` to "").
+- **Known issue (as of `251e538`): a revoked-blob console error on the coordinate-input pin
+  move.** Solve on good ground with relief, then edit `#lat` and blur: the relief clears
+  correctly but Chrome logs `GET blob:http://…/… net::ERR_FILE_NOT_FOUND`. Moving the pin by
+  clicking the map (no recentre) does not do it, so it looks like `URL.revokeObjectURL()`
+  racing Leaflet's re-render of the overlay `img`. Cosmetic — nothing stale is drawn — but do
+  not call the console clean without checking this path.
+- Chrome caches the hillshade PNG (`max-age`), so after switching servers a relief caption can
+  show the **previous** server's dataset (e.g. `one-third` when the field says `3DEP 1m`) with
+  no `/v1/hillshade` line in the server log at all. Tick DevTools → Network → **Disable cache**
+  before judging any caption or provenance mismatch.
+
+## When USGS TNM product listing is down
+
+TNM `/api/v1/products` sometimes returns HTTP 200 with an error object, which makes every
+coordinate look like "no terrain" and can wrongly condemn a branch. Check it directly first:
+
+```bash
+curl -s "https://tnmaccess.nationalmap.gov/api/v1/products?datasets=National+Elevation+Dataset+%28NED%29+1%2F3+arc-second&bbox=-105.28,40.00,-105.26,40.03&max=2"
+```
+
+If it is down, a **test-only** launcher in `/tmp` that intercepts only that listing call and
+returns known 1/3-arc-second S3 COG URLs (restricted to CONUS so Paris still has no terrain)
+keeps the COG reads, shading, PNG, headers and browser path real. Never edit repo source for
+this, and say in the report that the launcher bypasses `listing.js`'s disk cache
+(`~/.cache/windsolver/tnm`, TTL 14 days) so nothing observed says anything about that path.
+When TNM recovers, `rm -rf ~/.cache/windsolver/tnm` and re-shoot at least one solve through
+unmodified `node tools/serve.js` — the stale cache will otherwise keep serving the stub's
+answers. Terrain reading as `one-third` instead of `1m` is an outage/dataset artefact, not a
+branch change.
+
+To evidence the listing disk cache itself: `rm -rf ~/.cache/windsolver/tnm`, start the stock
+server, solve once (files appear, one per dataset — Boulder r=1 writes four), then **restart
+the server** so its in-process caches are empty and solve the same box again. A warm solve
+that writes no new cache file and mtimes that do not move is the cache hit; wall-clock time is
+not, since the COG reads dominate (4.2 s cold vs 4.1 s warm on Boulder).
+
+Backgrounded servers in this environment die when the spawning shell ends; start them with
+`setsid nohup … &` and confirm with `curl /healthz` before driving the browser.
+
 ## Compare provenance with the raw JSON
 
 Run the identical query with curl and diff field by field — the panel is meant to be a
@@ -146,6 +225,11 @@ be visible without hunting.
 ## Devin Secrets Needed
 
 None. A local checkout runs unauthenticated (no `WINDSOLVER_API_KEYS` means the gate is
-off) and only needs outbound internet. Testing the live site needs no credential either —
+off) and only needs outbound internet. To exercise the gate locally, restart the server
+with an **invented, non-secret** value — `WINDSOLVER_API_KEYS="localtest:<24+ chars>"`
+(`auth.js` requires `name:secret` and a secret of at least 24 characters, and startup logs
+`apiKeys:["localtest"]`). Keyless `curl /v1/hillshade` and `/v1/field` then return 401
+`no-key` while the page keeps working through the same-origin door. Never read or type a
+real key. Testing the live site needs no credential either —
 every check above is deliberately doable from the public internet, and if a test seems to
 need an API key, the test is wrong.
