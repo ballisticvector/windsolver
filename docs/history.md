@@ -13,6 +13,13 @@ build one thing and let it drift between the roles.
 | **Substitute** | serve a matched past day *as* the current conditions | **No.** It saves about 2 KB and costs the one thing the product cannot spend |
 | **Correction** | use past model-vs-measured pairs to correct today's model | **Yes**, and it is the strongest lead in the project — [measurement 9](downscaling.md#measurement-9-how-much-of-the-error-belongs-to-the-station) |
 | **Climatology** | answer "what does the wind usually do here, in March, at 09:00" | **Yes**, as its own labelled mode, and no live feed can answer it |
+| **Retained** | keep the last real answer, and the next five days, and say how old each is | **Yes** — and it is the *only* answer when the network or the upstream is gone |
+
+The fourth row is the same data as the first and the opposite decision, and the whole
+difference is one word on the screen. A past field with its own timestamp on it, offered
+as a choice, is honest and sometimes the only thing there is. The same bytes relabelled
+`now` are the failure. [Old data, labelled](#old-data-labelled-is-the-right-answer-twice)
+sets out the two cases.
 
 **Nothing described here is built.** This is the argument settled in one place before code
 exists, in the same spirit as `docs/downscaling.md`: what to build, what not to, and what
@@ -21,6 +28,7 @@ would make the answer wrong.
 ## Contents
 
 - [As a substitute for the live feed: no](#as-a-substitute-for-the-live-feed-no)
+- [Old data, labelled, is the right answer twice](#old-data-labelled-is-the-right-answer-twice)
 - [As a bias correction: yes, and it is the strongest lead there is](#as-a-bias-correction-yes-and-it-is-the-strongest-lead-there-is)
 - [As climatology: a mode, with its own label](#as-climatology-a-mode-with-its-own-label)
 - [The database is a table of pairs, not a copy of the weather](#the-database-is-a-table-of-pairs-not-a-copy-of-the-weather)
@@ -60,6 +68,85 @@ place at one moment.
 request, rather than 2 KB of free NOMADS. The response to that is a longer cache and a
 graceful degradation to the last real cycle with its age stated — not a different day
 wearing today's timestamp.
+
+## Old data, labelled, is the right answer twice
+
+The section above refuses a past day *disguised* as the present. It does not refuse past
+data, and there are two cases where old data is the best answer available and a live feed
+cannot produce one at all. Both are worth building; neither is an optimisation.
+
+### Degraded mode: the last real answer, with its age on it
+
+**The outage to design for is USGS, not NOAA, and weather history does not help with it.**
+This is not hypothetical: during the hillshade browser testing, `tnmaccess` returned
+HTTP 200 with `{"error": "Expecting value: line 1 column 1"}` for every query for most of
+a day. NOAA was perfectly healthy throughout. What broke was *terrain*, and the symptom
+was that every cold coordinate looked exactly like "there is no terrain here" — the
+service's honest refusal, produced for a dishonest reason.
+
+So the retention that matters for resilience is asymmetric, and it splits by which
+upstream is down:
+
+| upstream down | what is unavailable | what a retained copy buys |
+| --- | --- | --- |
+| USGS TNM listing | the *discovery* of 3DEP products for a new box | everything: the tiles themselves are on S3 and answer fine |
+| USGS S3 / the tiles | the elevation window | the box, if its terrain was kept rather than only its listing |
+| NOMADS / AWS HRRR | the current cycle | the previous cycle, which is an hour old and still a good wind |
+| the user's network | all of it | whatever is already on the device — see the next section |
+
+Two concrete gaps in what exists today, both small:
+
+- **`listing.js` throws away an expired entry even when the network has just refused.**
+  A listing older than fourteen days is counted `stale` and reported as a miss, and the
+  solve then fails — but 3DEP publishes new projects monthly-ish, so a fifteen-day-old
+  listing is almost certainly still true, and it is unambiguously better than "no
+  terrain here". Expiry should mean *prefer a refetch*, not *destroy the fallback*.
+- **`cache.js` drops a volume once it is stale rather than keeping it as a last
+  resort.** That is right for the normal path — a stale field must never be served
+  silently in place of a fresh one — and it means there is nothing to fall back to when
+  the fetch fails. The fix is a separate, explicitly-aged last-good entry, not a longer
+  freshness window.
+
+The rule for both: a retained answer is served **only after the live path has failed**,
+never as a shortcut, and it carries its own valid time, its age, and a `notice` saying
+the upstream refused. It is a different answer to the same question, not the same answer
+arriving late.
+
+**And a health check has to ask the endpoint that fails.** Through that entire USGS
+outage `/datasets` kept answering, so a monitor pointed at it would have reported
+everything fine while no cold coordinate in the country could be solved.
+
+### Offline packs: the forecast in the user's pocket
+
+**No signal is the normal condition in the terrain this service is about.** A pack of the
+next few days, downloaded while the user still has a connection and read on the device
+afterwards, is honest for exactly the reason a substitute is not: a forecast is *already*
+about a time that is not now, so it is the one product whose value survives being stored.
+
+The part that is a real decision rather than a download button:
+
+- **Five days cannot be HRRR.** Measured against `noaa-hrrr-bdp-pds`: the 00/06/12/18Z
+  cycles reach `f48` and every other cycle stops at `f18` — `hrrr.t13z.wrfsfcf19` is a
+  404, `hrrr.t00z.wrfsfcf48` is not. Five days means the National Blend of Models
+  (`noaa-nbm-grib2-pds`, CONUS, `f264`, back to 2020) or GFS, both free and both far
+  coarser than the 3 km field the downscaling is built on.
+- **NBM speaks a different dialect.** It publishes `WIND`/`WDIR` — speed and direction —
+  at 10, 30 and 80 m rather than `UGRD`/`VGRD`, so `grib2.js` would need the product
+  definitions and the conversion, and the conversion is not free of the same
+  grid-vs-true-north trap that already bites on HRRR. It also publishes an ensemble
+  standard deviation beside the wind, which is a genuinely better `confidence` than
+  anything derivable from a single deterministic run.
+- **What ships is downscaled, not raw.** The terrain correction is the reason to use this
+  service rather than a weather app, and it is the expensive half. A pack is therefore
+  solved server-side over a box and shipped as a field, which also means the device never
+  needs 3DEP.
+- **A pack has an expiry, and it says so before it is wrong.** `WIND` + `WDIR` at 10 m is
+  ~3 MB per lead hour over the whole CONUS NBM grid, so a box-sized pack is small — the
+  constraint is not bytes, it is that day five of a five-day pack downloaded three days
+  ago is day eight of a forecast, and the device is the one place nobody can push a
+  correction to.
+
+Neither case needs the pair database, and neither should wait for it.
 
 ## As a bias correction: yes, and it is the strongest lead there is
 
@@ -203,6 +290,12 @@ Deliberately smallest-first, and each step is useful even if the next one never 
 6. **Climatology**, which is an aggregate over the same rows and should not be started
    before there are enough of them to be honest about.
 
+**Degraded mode and offline packs are not in that list on purpose.** They share nothing
+with the pair database but the word *history*, they are blocked on nothing, and the two
+gaps named above — `listing.js` destroying its own fallback on expiry, `cache.js` keeping
+no last-good volume — are small changes to modules that already exist. Do them whenever
+they are wanted, in either order, without waiting for a single pair to be written.
+
 ## Things that would poison it
 
 - **Fitting and grading on the same station-days.** Measurement 9's hindsight column beats
@@ -236,6 +329,10 @@ Deliberately smallest-first, and each step is useful even if the next one never 
   the current model state is unlike anything in the record — which is exactly the storm
   day a user most wants an answer for.
 - **What the QC flags in FEMS actually mean.** `docs/observations.md` lists that as open.
+- **How coarse an offline pack is allowed to be.** NBM's grid over CONUS is 2.5 km and
+  its wind is a blend rather than a convection-allowing run; whether a terrain-downscaled
+  NBM field is still worth carrying at day four has not been scored against anything, and
+  the pairs table is exactly the instrument that would score it.
 - **Nothing here has been costed against a real deployment.** The transfer figures are
   measured; the row counts are arithmetic; no ingestion has been run, no table has been
   written, and no query has been timed.

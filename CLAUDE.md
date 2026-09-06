@@ -12,7 +12,7 @@ code and that will otherwise be undone by accident.
 - [The contract is published, not internal](#the-contract-is-published-not-internal)
 - [The shooter's grid is a projection, not the native shape](#the-shooters-grid-is-a-projection-not-the-native-shape)
 - [The downscaling is under investigation](#the-downscaling-is-under-investigation-and-nothing-about-it-is-settled)
-- [A weather history is three products](#a-weather-history-is-three-products-and-one-of-them-must-never-ship)
+- [A weather history is four products](#a-weather-history-is-four-products-and-one-of-them-must-never-ship)
 - [Things that bite](#things-that-bite)
 - [Licensing, before anything is sold](#licensing-before-anything-is-sold)
 - [Conventions](#conventions)
@@ -131,10 +131,10 @@ quietly. The METAR runs never hit this because airports report at :53. Interpola
 model between hours to the observation's own minute is the better answer and does not
 exist yet.
 
-## A weather history is three products, and one of them must never ship
+## A weather history is four products, and one of them must never ship
 
 "Keep a weather history and load a matching past day instead of pulling live feeds" is
-three separate proposals. `docs/history.md` argues them apart; the part that belongs in
+four separate proposals. `docs/history.md` argues them apart; the part that belongs in
 this file is which is which, because the way to get it wrong is to build one and let it
 drift into another's job.
 
@@ -154,6 +154,26 @@ drift into another's job.
   Honest because nobody mistakes it for a forecast, provided it is shaped like a
   distribution over a stated period with no `validTime`, rather than a `/v1/field`
   response with old numbers in it.
+- **Retaining the last real answer, and shipping the next few days to a device: yes.** The
+  same bytes as the first bullet and the opposite verdict, and the entire difference is
+  that these say how old they are. A retained field is served **only after the live path
+  has failed**, with its own valid time, its age and a `notice` naming the upstream that
+  refused — never as a shortcut. An offline pack is honest because a forecast is already
+  about a time that is not now.
+
+**Design the degraded mode for a USGS outage, not a NOAA one.** During the hillshade
+testing `tnmaccess` returned HTTP 200 with an error object for most of a day: every cold
+coordinate looked exactly like "no terrain here", while NOAA was fine. Weather history
+would not have helped at all. Two consequences, both currently unhandled: `listing.js`
+discards an expired entry even when the network has just refused, though a fifteen-day-old
+3DEP listing is almost certainly still true; and `cache.js` drops a stale volume rather
+than keeping a separate, explicitly-aged last-good copy. Also **point a health check at
+the endpoint that fails** — `/datasets` answered throughout that outage.
+
+**An offline five-day pack cannot be HRRR.** Measured: the 00/06/12/18Z cycles reach
+`f48` and every other cycle stops at `f18`. Five days is NBM (`noaa-nbm-grib2-pds`,
+`f264`) or GFS, and NBM publishes `WIND`/`WDIR` rather than `UGRD`/`VGRD`, so it is a
+decoder change and not a URL change.
 
 **And the database is a table of model/observation pairs, not a copy of the weather.** One
 HRRR cycle is 142 MB at the surface and 697 MB on native levels; mirroring what AWS
