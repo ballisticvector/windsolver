@@ -8,9 +8,9 @@
     "sensorHeightSource": "synoptic",
     "calibratedAgainst": {
       "source": "synoptic",
-      "start": "2026-09-03T14:00:00.000Z",
-      "end": "2026-09-06T14:00:00.000Z",
-      "hoursChecked": 72,
+      "start": "2026-09-03T20:00:00.000Z",
+      "end": "2026-09-06T20:00:00.000Z",
+      "hoursChecked": 71,
       "agreement": 1,
       "separationKm": 0
     }
@@ -24,8 +24,8 @@
     "sensorHeightSource": null,
     "calibratedAgainst": {
       "source": "synoptic",
-      "start": "2026-09-03T14:00:00.000Z",
-      "end": "2026-09-06T14:00:00.000Z",
+      "start": "2026-09-03T20:00:00.000Z",
+      "end": "2026-09-06T20:00:00.000Z",
       "hoursChecked": 72,
       "agreement": 1,
       "separationKm": 0
@@ -40,9 +40,9 @@
     "sensorHeightSource": "synoptic",
     "calibratedAgainst": {
       "source": "synoptic",
-      "start": "2026-09-03T14:00:00.000Z",
-      "end": "2026-09-06T14:00:00.000Z",
-      "hoursChecked": 72,
+      "start": "2026-09-03T20:00:00.000Z",
+      "end": "2026-09-06T20:00:00.000Z",
+      "hoursChecked": 71,
       "agreement": 1,
       "separationKm": 0
     }
@@ -56,8 +56,8 @@
     "sensorHeightSource": "synoptic",
     "calibratedAgainst": {
       "source": "synoptic",
-      "start": "2026-09-03T14:00:00.000Z",
-      "end": "2026-09-06T14:00:00.000Z",
+      "start": "2026-09-03T20:00:00.000Z",
+      "end": "2026-09-06T20:00:00.000Z",
       "hoursChecked": 72,
       "agreement": 1,
       "separationKm": 0.015
@@ -72,8 +72,8 @@
     "sensorHeightSource": "synoptic",
     "calibratedAgainst": {
       "source": "synoptic",
-      "start": "2026-09-03T14:00:00.000Z",
-      "end": "2026-09-06T14:00:00.000Z",
+      "start": "2026-09-03T20:00:00.000Z",
+      "end": "2026-09-06T20:00:00.000Z",
       "hoursChecked": 71,
       "agreement": 1,
       "separationKm": 0
@@ -88,8 +88,8 @@
     "sensorHeightSource": "synoptic",
     "calibratedAgainst": {
       "source": "synoptic",
-      "start": "2026-09-03T14:00:00.000Z",
-      "end": "2026-09-06T14:00:00.000Z",
+      "start": "2026-09-03T20:00:00.000Z",
+      "end": "2026-09-06T20:00:00.000Z",
       "hoursChecked": 72,
       "agreement": 1,
       "separationKm": 0.029
@@ -104,8 +104,8 @@
     "sensorHeightSource": "synoptic",
     "calibratedAgainst": {
       "source": "synoptic",
-      "start": "2026-09-03T14:00:00.000Z",
-      "end": "2026-09-06T14:00:00.000Z",
+      "start": "2026-09-03T20:00:00.000Z",
+      "end": "2026-09-06T20:00:00.000Z",
       "hoursChecked": 72,
       "agreement": 1,
       "separationKm": 0.021
@@ -120,8 +120,8 @@
     "sensorHeightSource": "synoptic",
     "calibratedAgainst": {
       "source": "synoptic",
-      "start": "2026-09-03T14:00:00.000Z",
-      "end": "2026-09-06T14:00:00.000Z",
+      "start": "2026-09-03T20:00:00.000Z",
+      "end": "2026-09-06T20:00:00.000Z",
       "hoursChecked": 72,
       "agreement": 1,
       "separationKm": 0
@@ -136,9 +136,9 @@
     "sensorHeightSource": "synoptic",
     "calibratedAgainst": {
       "source": "synoptic",
-      "start": "2026-09-03T14:00:00.000Z",
-      "end": "2026-09-06T14:00:00.000Z",
-      "hoursChecked": 72,
+      "start": "2026-09-03T20:00:00.000Z",
+      "end": "2026-09-06T20:00:00.000Z",
+      "hoursChecked": 71,
       "agreement": 1,
       "separationKm": 0
     }
@@ -152,9 +152,9 @@
     "sensorHeightSource": "synoptic",
     "calibratedAgainst": {
       "source": "synoptic",
-      "start": "2026-09-03T14:00:00.000Z",
-      "end": "2026-09-06T14:00:00.000Z",
-      "hoursChecked": 72,
+      "start": "2026-09-03T20:00:00.000Z",
+      "end": "2026-09-06T20:00:00.000Z",
+      "hoursChecked": 71,
       "agreement": 1,
       "separationKm": 0
     }
@@ -168,8 +168,440 @@
     "sensorHeightSource": "synoptic",
     "calibratedAgainst": {
       "source": "synoptic",
-      "start": "2026-09-03T14:00:00.000Z",
-      "end": "2026-09-06T14:00:00.000Z",
+      "start": "2026-09-03T20:00:00.000Z",
+      "end": "2026-09-06T20:00:00.000Z",
+      "hoursChecked": 71,
+      "agreement": 1,
+      "separationKm": 0
+    }
+  },
+  "BEKC2": {
+    "femsId": "53905",
+    "wrccId": "CBRC",
+    "name": "BEAR CREEK",
+    "transmitMinute": 34,
+    "sensorHeightM": 6.1,
+    "sensorHeightSource": "synoptic",
+    "calibratedAgainst": {
+      "source": "synoptic",
+      "start": "2026-09-03T20:00:00.000Z",
+      "end": "2026-09-06T20:00:00.000Z",
+      "hoursChecked": 72,
+      "agreement": 1,
+      "separationKm": 0
+    }
+  },
+  "TT689": {
+    "femsId": "55522215",
+    "wrccId": "CBLH",
+    "name": "BEULAH",
+    "transmitMinute": 11,
+    "sensorHeightM": null,
+    "sensorHeightSource": null,
+    "calibratedAgainst": {
+      "source": "synoptic",
+      "start": "2026-09-03T20:00:00.000Z",
+      "end": "2026-09-06T20:00:00.000Z",
+      "hoursChecked": 72,
+      "agreement": 1,
+      "separationKm": 0
+    }
+  },
+  "CUHC2": {
+    "femsId": "56203",
+    "wrccId": "CCUC",
+    "name": "BOSQUE",
+    "transmitMinute": 26,
+    "sensorHeightM": 6.1,
+    "sensorHeightSource": "synoptic",
+    "calibratedAgainst": {
+      "source": "synoptic",
+      "start": "2026-09-03T20:00:00.000Z",
+      "end": "2026-09-06T20:00:00.000Z",
+      "hoursChecked": 72,
+      "agreement": 1,
+      "separationKm": 0
+    }
+  },
+  "TT329": {
+    "femsId": "55905",
+    "wrccId": "CBUK",
+    "name": "BUCKLES",
+    "transmitMinute": 46,
+    "sensorHeightM": null,
+    "sensorHeightSource": null,
+    "calibratedAgainst": {
+      "source": "synoptic",
+      "start": "2026-09-03T20:00:00.000Z",
+      "end": "2026-09-06T20:00:00.000Z",
+      "hoursChecked": 72,
+      "agreement": 1,
+      "separationKm": 0
+    }
+  },
+  "CPTC2": {
+    "femsId": "53808",
+    "wrccId": "CCPT",
+    "name": "CARPENTER RIDGE",
+    "transmitMinute": 9,
+    "sensorHeightM": 6.1,
+    "sensorHeightSource": "synoptic",
+    "calibratedAgainst": {
+      "source": "synoptic",
+      "start": "2026-09-03T20:00:00.000Z",
+      "end": "2026-09-06T20:00:00.000Z",
+      "hoursChecked": 72,
+      "agreement": 1,
+      "separationKm": 0
+    }
+  },
+  "CHAC2": {
+    "femsId": "55704",
+    "wrccId": "CCHN",
+    "name": "CHAPIN",
+    "transmitMinute": 30,
+    "sensorHeightM": 6.1,
+    "sensorHeightSource": "synoptic",
+    "calibratedAgainst": {
+      "source": "synoptic",
+      "start": "2026-09-03T20:00:00.000Z",
+      "end": "2026-09-06T20:00:00.000Z",
+      "hoursChecked": 73,
+      "agreement": 0.986,
+      "separationKm": 0
+    }
+  },
+  "CHRC2": {
+    "femsId": "53102",
+    "wrccId": "CCHE",
+    "name": "CHEESMAN",
+    "transmitMinute": 23,
+    "sensorHeightM": 6.1,
+    "sensorHeightSource": "synoptic",
+    "calibratedAgainst": {
+      "source": "synoptic",
+      "start": "2026-09-03T20:00:00.000Z",
+      "end": "2026-09-06T20:00:00.000Z",
+      "hoursChecked": 71,
+      "agreement": 1,
+      "separationKm": 0
+    }
+  },
+  "CEKC2": {
+    "femsId": "51804",
+    "wrccId": "CCOC",
+    "name": "CORRAL CREEK",
+    "transmitMinute": 58,
+    "sensorHeightM": 6.1,
+    "sensorHeightSource": "synoptic",
+    "calibratedAgainst": {
+      "source": "synoptic",
+      "start": "2026-09-03T20:00:00.000Z",
+      "end": "2026-09-06T20:00:00.000Z",
+      "hoursChecked": 71,
+      "agreement": 1,
+      "separationKm": 0
+    }
+  },
+  "CMEC2": {
+    "femsId": "53805",
+    "wrccId": "CCOT",
+    "name": "COTTONWOOD BASIN",
+    "transmitMinute": 48,
+    "sensorHeightM": 6.1,
+    "sensorHeightSource": "synoptic",
+    "calibratedAgainst": {
+      "source": "synoptic",
+      "start": "2026-09-03T20:00:00.000Z",
+      "end": "2026-09-06T20:00:00.000Z",
+      "hoursChecked": 72,
+      "agreement": 1,
+      "separationKm": 0
+    }
+  },
+  "DJTC2": {
+    "femsId": "51606",
+    "wrccId": "CDOW",
+    "name": "DOWD JUNCTION",
+    "transmitMinute": 56,
+    "sensorHeightM": 6.1,
+    "sensorHeightSource": "synoptic",
+    "calibratedAgainst": {
+      "source": "synoptic",
+      "start": "2026-09-03T20:00:00.000Z",
+      "end": "2026-09-06T20:00:00.000Z",
+      "hoursChecked": 71,
+      "agreement": 1,
+      "separationKm": 0
+    }
+  },
+  "DRYC2": {
+    "femsId": "50207",
+    "wrccId": "CDRY",
+    "name": "DRY LAKE",
+    "transmitMinute": 56,
+    "sensorHeightM": 6.1,
+    "sensorHeightSource": "synoptic",
+    "calibratedAgainst": {
+      "source": "synoptic",
+      "start": "2026-09-03T20:00:00.000Z",
+      "end": "2026-09-06T20:00:00.000Z",
+      "hoursChecked": 71,
+      "agreement": 1,
+      "separationKm": 0
+    }
+  },
+  "DMTC2": {
+    "femsId": "51806",
+    "wrccId": "CDUM",
+    "name": "DUMONT",
+    "transmitMinute": 29,
+    "sensorHeightM": 6.1,
+    "sensorHeightSource": "synoptic",
+    "calibratedAgainst": {
+      "source": "synoptic",
+      "start": "2026-09-03T20:00:00.000Z",
+      "end": "2026-09-06T20:00:00.000Z",
+      "hoursChecked": 72,
+      "agreement": 1,
+      "separationKm": 0
+    }
+  },
+  "HMEC2": {
+    "femsId": "52813",
+    "wrccId": "CHUM",
+    "name": "HUNTSMAN MESA",
+    "transmitMinute": 48,
+    "sensorHeightM": 6.1,
+    "sensorHeightSource": "synoptic",
+    "calibratedAgainst": {
+      "source": "synoptic",
+      "start": "2026-09-03T20:00:00.000Z",
+      "end": "2026-09-06T20:00:00.000Z",
+      "hoursChecked": 72,
+      "agreement": 1,
+      "separationKm": 0
+    }
+  },
+  "IMRC2": {
+    "femsId": "50305",
+    "wrccId": "CINM",
+    "name": "INDEPENDENCE MOUNTAIN",
+    "transmitMinute": 42,
+    "sensorHeightM": 6.1,
+    "sensorHeightSource": "synoptic",
+    "calibratedAgainst": {
+      "source": "synoptic",
+      "start": "2026-09-03T20:00:00.000Z",
+      "end": "2026-09-06T20:00:00.000Z",
+      "hoursChecked": 72,
+      "agreement": 1,
+      "separationKm": 0
+    }
+  },
+  "JCRC2": {
+    "femsId": "52409",
+    "wrccId": "CJAC",
+    "name": "JACKS CANYON",
+    "transmitMinute": 50,
+    "sensorHeightM": 6.1,
+    "sensorHeightSource": "synoptic",
+    "calibratedAgainst": {
+      "source": "synoptic",
+      "start": "2026-09-03T20:00:00.000Z",
+      "end": "2026-09-06T20:00:00.000Z",
+      "hoursChecked": 72,
+      "agreement": 1,
+      "separationKm": 0
+    }
+  },
+  "JAYC2": {
+    "femsId": "52704",
+    "wrccId": "CJAY",
+    "name": "JAY",
+    "transmitMinute": 52,
+    "sensorHeightM": 6.1,
+    "sensorHeightSource": "synoptic",
+    "calibratedAgainst": {
+      "source": "synoptic",
+      "start": "2026-09-03T20:00:00.000Z",
+      "end": "2026-09-06T20:00:00.000Z",
+      "hoursChecked": 72,
+      "agreement": 1,
+      "separationKm": 0
+    }
+  },
+  "LKGC2": {
+    "femsId": "53002",
+    "wrccId": "CLGE",
+    "name": "LAKE GEORGE",
+    "transmitMinute": 46,
+    "sensorHeightM": 6.1,
+    "sensorHeightSource": "synoptic",
+    "calibratedAgainst": {
+      "source": "synoptic",
+      "start": "2026-09-03T20:00:00.000Z",
+      "end": "2026-09-06T20:00:00.000Z",
+      "hoursChecked": 72,
+      "agreement": 1,
+      "separationKm": 0.01
+    }
+  },
+  "LDRC2": {
+    "femsId": "52410",
+    "wrccId": "CLIT",
+    "name": "LITTLE DOLORES",
+    "transmitMinute": 49,
+    "sensorHeightM": 6.1,
+    "sensorHeightSource": "synoptic",
+    "calibratedAgainst": {
+      "source": "synoptic",
+      "start": "2026-09-03T20:00:00.000Z",
+      "end": "2026-09-06T20:00:00.000Z",
+      "hoursChecked": 72,
+      "agreement": 1,
+      "separationKm": 0
+    }
+  },
+  "LPFC2": {
+    "femsId": "56501",
+    "wrccId": "CLPF",
+    "name": "LODGE POLE FLATS",
+    "transmitMinute": 8,
+    "sensorHeightM": 6.1,
+    "sensorHeightSource": "synoptic",
+    "calibratedAgainst": {
+      "source": "synoptic",
+      "start": "2026-09-03T20:00:00.000Z",
+      "end": "2026-09-06T20:00:00.000Z",
+      "hoursChecked": 72,
+      "agreement": 1,
+      "separationKm": 0
+    }
+  },
+  "LUJC2": {
+    "femsId": "54702",
+    "wrccId": "CLUJ",
+    "name": "LUJAN",
+    "transmitMinute": 57,
+    "sensorHeightM": 6.1,
+    "sensorHeightSource": "synoptic",
+    "calibratedAgainst": {
+      "source": "synoptic",
+      "start": "2026-09-03T20:00:00.000Z",
+      "end": "2026-09-06T20:00:00.000Z",
+      "hoursChecked": 71,
+      "agreement": 1,
+      "separationKm": 0
+    }
+  },
+  "POLC2": {
+    "femsId": "53103",
+    "wrccId": "CPLH",
+    "name": "POLHEMUS",
+    "transmitMinute": 54,
+    "sensorHeightM": 6.1,
+    "sensorHeightSource": "synoptic",
+    "calibratedAgainst": {
+      "source": "synoptic",
+      "start": "2026-09-03T20:00:00.000Z",
+      "end": "2026-09-06T20:00:00.000Z",
+      "hoursChecked": 72,
+      "agreement": 1,
+      "separationKm": 0.013
+    }
+  },
+  "RDDC2": {
+    "femsId": "54001",
+    "wrccId": "CRCR",
+    "name": "RED CREEK",
+    "transmitMinute": 58,
+    "sensorHeightM": 6.1,
+    "sensorHeightSource": "synoptic",
+    "calibratedAgainst": {
+      "source": "synoptic",
+      "start": "2026-09-03T20:00:00.000Z",
+      "end": "2026-09-06T20:00:00.000Z",
+      "hoursChecked": 71,
+      "agreement": 1,
+      "separationKm": 0
+    }
+  },
+  "RDKC2": {
+    "femsId": "52902",
+    "wrccId": "CRED",
+    "name": "RED DEER",
+    "transmitMinute": 23,
+    "sensorHeightM": 6.1,
+    "sensorHeightSource": "synoptic",
+    "calibratedAgainst": {
+      "source": "synoptic",
+      "start": "2026-09-03T20:00:00.000Z",
+      "end": "2026-09-06T20:00:00.000Z",
+      "hoursChecked": 71,
+      "agreement": 1,
+      "separationKm": 0
+    }
+  },
+  "TT568": {
+    "femsId": "55522357",
+    "wrccId": "CRFD",
+    "name": "ROCKY FORD",
+    "transmitMinute": 7,
+    "sensorHeightM": null,
+    "sensorHeightSource": null,
+    "calibratedAgainst": {
+      "source": "synoptic",
+      "start": "2026-09-03T20:00:00.000Z",
+      "end": "2026-09-06T20:00:00.000Z",
+      "hoursChecked": 72,
+      "agreement": 1,
+      "separationKm": 0
+    }
+  },
+  "SDNC2": {
+    "femsId": "55503",
+    "wrccId": "CSDU",
+    "name": "SAND DUNES",
+    "transmitMinute": 44,
+    "sensorHeightM": 6.1,
+    "sensorHeightSource": "synoptic",
+    "calibratedAgainst": {
+      "source": "synoptic",
+      "start": "2026-09-03T20:00:00.000Z",
+      "end": "2026-09-06T20:00:00.000Z",
+      "hoursChecked": 72,
+      "agreement": 1,
+      "separationKm": 0
+    }
+  },
+  "BTAC2": {
+    "femsId": "50604",
+    "wrccId": "CBDR",
+    "name": "SUGARLOAF",
+    "transmitMinute": 25,
+    "sensorHeightM": 6.1,
+    "sensorHeightSource": "synoptic",
+    "calibratedAgainst": {
+      "source": "synoptic",
+      "start": "2026-09-03T20:00:00.000Z",
+      "end": "2026-09-06T20:00:00.000Z",
+      "hoursChecked": 72,
+      "agreement": 1,
+      "separationKm": 0
+    }
+  },
+  "UCNC2": {
+    "femsId": "56301",
+    "wrccId": "CUTE",
+    "name": "UTE CANYON",
+    "transmitMinute": 59,
+    "sensorHeightM": 6.1,
+    "sensorHeightSource": "synoptic",
+    "calibratedAgainst": {
+      "source": "synoptic",
+      "start": "2026-09-03T20:00:00.000Z",
+      "end": "2026-09-06T20:00:00.000Z",
       "hoursChecked": 71,
       "agreement": 1,
       "separationKm": 0
