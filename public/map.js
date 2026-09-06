@@ -198,6 +198,13 @@
     if (relief.request) relief.request.abort();
     relief.request = null;
     if (relief.layer) {
+      // The `src` goes before the URL does. Removing the layer detaches the
+      // element but Leaflet re-renders the overlay when the map recentres, and
+      // an element still holding a revoked `blob:` asks for it again — a
+      // console error on an ordinary path, measured by editing the latitude
+      // field, where moving the pin by clicking the map never showed it.
+      const img = relief.layer.getElement();
+      if (img) img.removeAttribute("src");
       map.removeLayer(relief.layer);
       relief.layer = null;
     }

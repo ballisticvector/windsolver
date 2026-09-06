@@ -378,6 +378,11 @@ describe("the parts of the page a unit test cannot run", () => {
     // map leaks a PNG per pin.
     expect(clear[1]).toContain("revokeObjectURL");
     expect(clearField[1]).toContain("clearRelief()");
+    // And the src is dropped before the URL is: Leaflet re-renders the overlay
+    // when the map recentres, and an element still holding a revoked blob asks
+    // for it again. Measured by editing the latitude field, which recentres.
+    expect(clear[1].indexOf("removeAttribute(\"src\")"))
+      .toBeLessThan(clear[1].indexOf("revokeObjectURL"));
   });
 
   test("a refused wind does not silence the relief's own refusal", () => {
