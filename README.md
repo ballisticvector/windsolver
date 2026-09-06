@@ -1244,6 +1244,26 @@ speed disagreement 0.0005 m/s** — which is Synoptic rounding the mph conversio
 That grades the reader, not the archive; the years FEMS is used for are the years
 Synoptic will not serve, so nothing checks those but MADIS.
 
+### The error at a station repeats, which is what a history could hold
+
+Free history on both sides makes a question askable that no single run can: **how much of
+the model's error belongs to the site rather than to the day?** `tools/site-factor.js`
+answers it out of the summaries `--out` already writes — a per-station offset measured on
+one day and applied to another takes **23-37% off the speed RMSE**, against 0.06 m/s
+spanning every terrain candidate ever scored, and the per-station ratio of modelled to
+observed wind repeats at r = 0.90-0.94 across days.
+
+```bash
+node tools/site-factor.js run-a.json run-b.json run-c.json
+```
+
+That is measurement 9 in `docs/downscaling.md`, and it is a research result, not a
+correction that can ship: a per-station table has no row for the pin a user clicked on.
+**`docs/history.md` is the note that argues out what to build on top of it** — why a
+matched past day must never be served as the current conditions, why an analog correction
+is worth the work, why climatology is a mode of its own, and why the database is a table
+of model/observation pairs rather than a copy of the weather.
+
 ## Resolution is a finding, not a setting
 
 1 m DEM comes from quality-level-2-or-better lidar and covers a subset of the country;
