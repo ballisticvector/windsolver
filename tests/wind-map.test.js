@@ -646,6 +646,14 @@ describe("the caption under the stations toggle", () => {
     expect(caption).toContain("locations only");
     expect(caption).toContain("FEMS answered 502");
   });
+
+  test("an empty view says so, without a clause about observations it has none of", () => {
+    const caption = lib.stationsCaption(Object.assign({}, body, {
+      matched: 0, returned: 0, observed: false
+    }));
+    expect(caption).toBe("No stations in this view · RAWS via fems");
+    expect(caption).not.toContain("locations only");
+  });
 });
 
 describe("the station layer on the page", () => {

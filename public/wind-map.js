@@ -582,13 +582,18 @@ function signedDegrees(delta) {
 function stationsCaption(body) {
   if (!body || !body.ok) return "Stations unavailable.";
   const parts = [];
-  parts.push(body.returned + " of " + body.matched +
-    (body.matched === 1 ? " station" : " stations"));
+  const empty = body.matched === 0;
+  parts.push(empty
+    ? "No stations in this view"
+    : body.returned + " of " + body.matched +
+      (body.matched === 1 ? " station" : " stations"));
   if (body.directory && body.directory.network) {
     parts.push(body.directory.network +
       (body.directory.provider ? " via " + body.directory.provider : ""));
   }
-  if (!body.observed) {
+  // "locations only" is about the observations of stations that are here; with
+  // none in view it describes nothing and only reads as a fault.
+  if (!body.observed && !empty) {
     parts.push("locations only — no observations read");
   }
   if (body.directory && body.directory.stale) {
