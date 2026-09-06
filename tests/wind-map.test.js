@@ -336,12 +336,15 @@ describe("the parts of the page a unit test cannot run", () => {
   const path = require("path");
   const js = fs.readFileSync(path.join(__dirname, "..", "public", "map.js"), "utf8");
   const clearField = /function clearField\(\) \{([\s\S]*?)\n {2}\}/.exec(js);
+  const clearWind = /function clearWind\(\) \{([\s\S]*?)\n {2}\}/.exec(js);
 
   test("clearing the field abandons the answer still on its way", () => {
     // Otherwise a solve that lands after the pin has moved paints a field for
     // the old box under a heading that says "At the pin".
+    expect(clearWind).not.toBeNull();
+    expect(clearWind[1]).toContain("inFlight.abort()");
     expect(clearField).not.toBeNull();
-    expect(clearField[1]).toContain("inFlight.abort()");
+    expect(clearField[1]).toContain("clearWind()");
   });
 
   test("a Leaflet that never loaded is said out loud, not left blank", () => {
@@ -375,6 +378,18 @@ describe("the parts of the page a unit test cannot run", () => {
     // map leaks a PNG per pin.
     expect(clear[1]).toContain("revokeObjectURL");
     expect(clearField[1]).toContain("clearRelief()");
+  });
+
+  test("a refused wind does not silence the relief's own refusal", () => {
+    // Measured at Paris, where both routes 502 no-terrain: clearing the relief
+    // on a field refusal aborts the hillshade mid-flight, so its request ends
+    // in an AbortError and the note it would have written is never written.
+    // The wind saying "no terrain" in full while the relief line says nothing
+    // is the one failure here that is invisible.
+    const refusal = /const explained = lib\.explain\(body, response\.status\);([\s\S]*?)return setStatus\(explained/.exec(js);
+    expect(refusal).not.toBeNull();
+    expect(refusal[1]).toContain("clearWind()");
+    expect(refusal[1]).not.toContain("clearField()");
   });
 });
 

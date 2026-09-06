@@ -347,10 +347,20 @@
    * to be abandoned, not just the pixels.
    */
   function clearField() {
+    clearWind();
+    clearRelief();
+  }
+
+  /**
+   * The wind alone. A refused solve is not a reason to abandon the ground: the
+   * box has not moved, the relief is a separate request over separate data, and
+   * aborting it mid-flight silences its own refusal — at Paris the wind said
+   * "no terrain" in full and the relief line said nothing at all.
+   */
+  function clearWind() {
     if (inFlight) inFlight.abort();
     fieldLayer.clear();
     clearDomain();
-    clearRelief();
     $("result").hidden = true;
   }
 
@@ -401,7 +411,7 @@
       // The service's own words, kept. A refusal it took the trouble to name is
       // more useful to whoever is looking at this than anything invented here.
       const explained = lib.explain(body, response.status);
-      clearField();
+      clearWind();
       return setStatus(explained.text, "error");
     }
 
