@@ -4,11 +4,15 @@
  *
  *   node tools/station-survey.js --state CO --out co-stations.json
  *   node tools/station-survey.js --state CO,WY --class valley --limit 10
+ *   node tools/station-survey.js --source fems --state CO --limit 200 --spread 30
  *
  * Options:
+ *   --source     synoptic (default) or fems, the catalogue the stations come from
  *   --state      comma-separated two-letter states (default CO)
  *   --network    Synoptic network id (default 2, RAWS)
  *   --limit      stop after this many stations have been read (default 60)
+ *   --spread     also choose this many stations spaced evenly across the
+ *                position index, and print them as a set
  *   --radius     domain radius in miles around each station (default 0.5)
  *   --resolution target terrain resolution in metres (default 30)
  *   --position   radius of the landform index, in metres (default 500)
@@ -35,6 +39,21 @@
  * disagrees with the 3DEP ground beneath it is one of the two. It is printed
  * as `suspect` rather than dropped, because at survey time the interesting
  * thing about it is that it exists — `score-wind.js` is where it is excluded.
+ *
+ * **`--source fems` is the one that can widen a sample.** Synoptic lists the
+ * same masts and is easier to query, but its observation history stops about
+ * six days back, so a station discovered through it still cannot be scored on
+ * a past season. FEMS lists 2,088 RAWS with 2005 behind them and no account.
+ * What a FEMS station then costs is a transmit minute — `tools/fems-stations.js`
+ * against Synoptic's free window — so this prints the FEMS id a calibration
+ * run needs beside the ground.
+ *
+ * **`--spread` chooses the set, and choosing it is the experiment.** Taking the
+ * first N of a listing takes N stations sorted by whatever the service sorts
+ * by; taking N spaced evenly across the position index puts stations at both
+ * ends of the landform range on purpose. It does not make the sample random,
+ * and it cannot: the ground a station is *on* is now chosen, so a difference
+ * between the two ends is a difference between two chosen groups.
  */
 
 "use strict";
@@ -42,12 +61,17 @@
 const derive = require("../derive.js");
 const field = require("../field.js");
 const synoptic = require("../synoptic.js");
+const fems = require("../fems.js");
 const verify = require("../verify.js");
 const cog = require("../cog.js");
 
 const DEFAULT_LIMIT = 60;
 const DEFAULT_POSITION_RADIUS_M = 500;
 const DEFAULT_ELEVATION_TOLERANCE_M = 50;
+const OPTIONS = [
+  "source", "state", "network", "limit", "spread", "radius", "resolution",
+  "position", "elevation", "class", "out"
+];
 
 function parseArgs(argv) {
   const out = {};
@@ -63,6 +87,13 @@ function parseArgs(argv) {
       i++;
     }
   }
+  // An unrecognised flag is refused rather than ignored. A value that arrives
+  // as its own word and is dropped produces a complete, plausible report with
+  // one option quietly absent, which reads exactly like a report where that
+  // option had nothing to say.
+  for (const key of Object.keys(out)) {
+    if (OPTIONS.indexOf(key) < 0) throw new Error("unrecognised option --" + key);
+  }
   return out;
 }
 
@@ -70,6 +101,41 @@ function round(value, places) {
   if (value === null || value === undefined || Number.isNaN(value)) return null;
   const f = Math.pow(10, places);
   return Math.round(value * f) / f;
+}
+
+/** Is this station in one of the states asked for? An unstated state is not. */
+function inStates(station, states) {
+  if (!states) return true;
+  const wanted = String(states).toUpperCase().split(",")
+    .map(function (s) { return s.trim(); }).filter(Boolean);
+  if (!wanted.length) return true;
+  if (typeof station.state !== "string" || !station.state) return false;
+  return wanted.indexOf(station.state.toUpperCase()) >= 0;
+}
+
+/**
+ * N stations spaced evenly across the position index, rather than the first N.
+ *
+ * The stations are ordered by landform and one is taken from each of N equal
+ * slices of the ordering, so both ends of the range are in the set by
+ * construction. Suspect coordinates and stations with no readable position are
+ * not eligible — a set chosen on a landform nobody has measured is the thing
+ * this is meant to prevent.
+ */
+function spread(stations, count) {
+  const eligible = stations
+    .filter(function (s) { return !s.suspect && Number.isFinite(s.positionIndexM); })
+    .sort(function (a, b) { return a.positionIndexM - b.positionIndexM; });
+
+  if (!count || count >= eligible.length) return eligible;
+  if (count === 1) return [eligible[Math.floor((eligible.length - 1) / 2)]];
+
+  const chosen = [];
+  for (let i = 0; i < count; i++) {
+    const at = Math.round((i * (eligible.length - 1)) / (count - 1));
+    if (chosen.indexOf(eligible[at]) < 0) chosen.push(eligible[at]);
+  }
+  return chosen;
 }
 
 /**
@@ -115,14 +181,25 @@ async function survey(opts) {
     ? DEFAULT_ELEVATION_TOLERANCE_M : o.elevationToleranceM;
 
   const found = await source.search({
-    state: o.states, network: o.network, status: "active"
+    state: o.states, network: o.network, status: "active", all: true
   });
   // Whether a station has an anemometer at all is not decided here: the
   // metadata's sensor list says only what position was published, and a wind
   // sensor with no published height reads the same as no wind sensor. The
   // timeseries is what settles it, and that is the scorer's business.
+  //
+  // The state is filtered here rather than in the query because FEMS' metadata
+  // endpoint does not take one: it answers with every station it has or with
+  // the ids it is given, so a state filter left to the service silently
+  // becomes no filter at all.
+  //
+  // Nor is a dead mast filtered out, because FEMS does not say which they are:
+  // `period_record_stop` reads `2024-12-31` for all 96 Colorado stations, live
+  // and dead alike, so it dates the historic record and not the station. What
+  // settles it is asking for observations, which is `tools/fems-stations.js`
+  // and the scorer.
   const candidates = found.filter(function (s) {
-    return Number.isFinite(s.lat) && Number.isFinite(s.lon);
+    return Number.isFinite(s.lat) && Number.isFinite(s.lon) && inStates(s, o.states);
   });
 
   const stations = [];
@@ -151,6 +228,10 @@ async function survey(opts) {
 
     stations.push({
       id: station.id,
+      // The ids a later step needs: a FEMS run keys on the number, and
+      // `tools/fems-stations.js` matches the two catalogues on the WRCC id.
+      wrccId: station.wrccId === undefined ? null : station.wrccId,
+      source: station.source === undefined ? null : station.source,
       name: station.name,
       lat: station.lat,
       lon: station.lon,
@@ -174,6 +255,8 @@ async function survey(opts) {
     byClass[s.class] = (byClass[s.class] || 0) + 1;
   }
 
+  const chosen = o.spread ? spread(stations, o.spread) : null;
+
   return {
     generatedAt: new Date().toISOString(),
     query: {
@@ -183,12 +266,15 @@ async function survey(opts) {
       resolutionM: o.resolutionM,
       positionRadiusM: positionRadiusM,
       elevationToleranceM: elevationToleranceM,
-      limit: limit
+      limit: limit,
+      spread: o.spread === undefined ? null : o.spread
     },
     listed: found.length,
+    eligible: candidates.length,
     read: stations.length,
     byClass: byClass,
     stations: stations,
+    spread: chosen ? chosen.map(function (s) { return s.id; }) : null,
     failures: failures
   };
 }
@@ -220,20 +306,47 @@ function summarise(report, opts) {
       "  " + (s.name || ""));
   }
 
+  if (report.spread && report.spread.length) {
+    const chosen = report.stations.filter(function (s) {
+      return report.spread.indexOf(s.id) >= 0;
+    }).sort(function (a, b) { return a.positionIndexM - b.positionIndexM; });
+    lines.push("");
+    lines.push(chosen.length + " chosen across the position index, " +
+      chosen[0].positionIndexM + " m to " +
+      chosen[chosen.length - 1].positionIndexM + " m:");
+    lines.push("");
+    lines.push(chosen.map(function (s) { return s.id; }).join(","));
+    if (chosen.some(function (s) { return s.wrccId; })) {
+      lines.push("");
+      lines.push("WRCC ids, for calibrating a transmit minute:");
+      lines.push(chosen.map(function (s) { return s.wrccId || s.id; }).join(","));
+    }
+  }
+
   lines.push("");
   lines.push("posM is the 500 m position index: the station's ground minus the mean of the");
   lines.push("disc around it. A class is only comparable with one measured at the same radius.");
   return lines.join("\n");
 }
 
+/** The catalogue the stations are listed from. */
+function sourceOf(name) {
+  if (name === undefined || name === "synoptic") {
+    const token = process.env.SYNOPTIC_API_TOKEN;
+    if (!token) throw new Error("SYNOPTIC_API_TOKEN is required in the environment");
+    return synoptic.createSynopticSource({ token: token });
+  }
+  if (name === "fems") return fems.createFemsSource({});
+  throw new Error("unknown --source " + JSON.stringify(name) + "; use synoptic or fems");
+}
+
 async function main(argv) {
   const args = parseArgs(argv);
-  const token = process.env.SYNOPTIC_API_TOKEN;
-  if (!token) throw new Error("SYNOPTIC_API_TOKEN is required in the environment");
 
   const report = await survey({
-    source: synoptic.createSynopticSource({ token: token }),
+    source: sourceOf(args.source === undefined ? undefined : String(args.source)),
     states: args.state ? String(args.state).toUpperCase() : "CO",
+    spread: args.spread === undefined ? null : Number(args.spread),
     network: args.network === undefined ? synoptic.RAWS_NETWORK_ID : Number(args.network),
     limit: args.limit === undefined ? DEFAULT_LIMIT : Number(args.limit),
     radiusMiles: args.radius === undefined ? 0.5 : Number(args.radius),
@@ -252,7 +365,7 @@ async function main(argv) {
   }) + "\n");
 }
 
-module.exports = { landformAt, survey, summarise, parseArgs };
+module.exports = { landformAt, survey, summarise, spread, inStates, parseArgs };
 
 if (require.main === module) {
   main(process.argv.slice(2)).catch(function (err) {

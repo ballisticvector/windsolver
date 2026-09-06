@@ -169,6 +169,25 @@ describe("surveying the ground before anything is scored", () => {
     expect(reads).toBe(3);
   });
 
+  test("a station in another state is not surveyed, whatever the catalogue answered", async () => {
+    // FEMS' metadata endpoint takes no state: it answers with all 2,088 or with
+    // the ids it is given, so a state left to the service is no filter at all.
+    let reads = 0;
+    const report = await survey.survey({
+      source: stubSource([
+        stationAt("HERE"),
+        Object.assign(stationAt("AWAY"), { state: "WY" }),
+        Object.assign(stationAt("UNSTATED"), { state: null })
+      ]),
+      service: stubService(function () { reads++; return RIDGE; }),
+      states: "CO"
+    });
+
+    expect(reads).toBe(1);
+    expect(report.stations.map(function (s) { return s.id; })).toEqual(["HERE"]);
+    expect(report.eligible).toBe(1);
+  });
+
   test("a station with no coordinate is never asked about", async () => {
     let reads = 0;
     const report = await survey.survey({
@@ -178,5 +197,66 @@ describe("surveying the ground before anything is scored", () => {
 
     expect(reads).toBe(1);
     expect(report.stations.map(function (s) { return s.id; })).toEqual(["HERE"]);
+  });
+});
+
+/**
+ * Choosing the set.
+ *
+ * The eleven stations already scored were the ids that happened to be to hand,
+ * and one of them carried the whole terrain signal. What replaces that is a set
+ * chosen on the ground it stands in, so these grade the choosing rather than
+ * the measuring.
+ */
+describe("choosing a set spread across the landform", () => {
+  function landform(id, positionIndexM, opts) {
+    return Object.assign(
+      { id: id, positionIndexM: positionIndexM, suspect: false }, opts || {});
+  }
+
+  test("both ends of the range are in the set, not just the first N rows", () => {
+    const stations = [];
+    for (let i = 0; i < 40; i++) stations.push(landform("S" + i, i * 5 - 100));
+
+    const chosen = survey.spread(stations, 5);
+    expect(chosen.map(function (s) { return s.positionIndexM; }))
+      .toEqual([-100, -50, 0, 45, 95]);
+  });
+
+  test("a station the ground disagrees with is not eligible to be chosen", () => {
+    const chosen = survey.spread([
+      landform("LOW", -80),
+      landform("BAD", 200, { suspect: true }),
+      landform("BLIND", null),
+      landform("HIGH", 60)
+    ], 2);
+
+    expect(chosen.map(function (s) { return s.id; })).toEqual(["LOW", "HIGH"]);
+  });
+
+  test("asking for more than there are gives every station, ordered by landform", () => {
+    const chosen = survey.spread([landform("B", 10), landform("A", -10)], 50);
+    expect(chosen.map(function (s) { return s.id; })).toEqual(["A", "B"]);
+  });
+
+  test("the chosen set is reported as ids a calibration run can be given", async () => {
+    const report = await survey.survey({
+      source: stubSource([stationAt("PCPC2"), stationAt("STOC2")]),
+      service: stubService(function () { return RIDGE; }),
+      spread: 2
+    });
+
+    expect(report.spread).toEqual(["PCPC2", "STOC2"]);
+    expect(survey.summarise(report)).toContain("PCPC2,STOC2");
+  });
+});
+
+describe("the survey's command line", () => {
+  test("an unrecognised flag is refused rather than quietly dropped", () => {
+    // `--spred 30` parsed as an unknown key would produce a complete, plausible
+    // report of the first 60 stations, which reads exactly like a spread.
+    expect(() => survey.parseArgs(["--spred", "30"]))
+      .toThrow("unrecognised option --spred");
+    expect(survey.parseArgs(["--spread", "30"])).toEqual({ spread: "30" });
   });
 });
