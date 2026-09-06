@@ -64,6 +64,12 @@ npm run lint
 > - **The terrain downscaling is not yet known to help, and on ridges it measurably
 >   hurts.** `docs/downscaling.md` is the standing note: read it before changing anything
 >   in `downscale.js`, and add to it rather than starting a new one.
+> - **Three observation providers put three different timestamps on the same wind.** For
+>   one RAWS report MADIS and Synoptic both say `12:54`; FEMS says `13:00`, because it
+>   rounds up to the following hour and throws the minute away. `tools/score-wind.js`
+>   pairs on 10-30 minutes, which is smaller than the disagreement, so changing source
+>   without correcting for it buys a diurnal-cycle error that reads as a model error.
+>   `docs/observations.md` has the measurement.
 
 ## The downscaling is under investigation, and nothing about it is settled
 
@@ -89,6 +95,16 @@ to make a well-meant change wrong:
 **Do not change a default, a coefficient or the formula on one state and one day of
 observations.** Add a candidate to `tools/score-wind.js --ablate` instead, so the change
 is scored beside the others on the same pairs before it is anywhere near a default.
+
+**The measured wind is the scarce half, and it no longer has to be.** `archive.js`
+reaches 2014 on the model side; the Synoptic token refuses observation history older than
+about a week, which is what actually blocks seasons, other states and a station set
+chosen by topographic position. `docs/observations.md` surveys the alternatives, all
+tested: **USDA FEMS** serves 2,088 RAWS back to 2005 as bulk CSV with no account — eleven
+of the thirteen stations already scored, matched to 0.00 km, and thirteen stations for a
+full year is 113,892 hourly observations in one 7-second request — and **MADIS** publishes
+every network NOAA ingests with a per-observation QC verdict, also with no account.
+Nothing is integrated yet, and no paid tier is needed for any question currently open.
 
 ## What this is
 
