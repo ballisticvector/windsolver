@@ -121,18 +121,27 @@ paid tier is needed for any question currently open.
 
 `fems.js` reads the first of those, behind the same interface as `synoptic.js`, and
 `tools/score-wind.js --source fems` scores against it. **What it costs is calibration,
-not money**: only the eleven stations in `data/fems-stations.json` have a measured
-transmit minute, and a twelfth needs `tools/fems-stations.js` run against Synoptic inside
-its free window before FEMS can date its observations. Widening the station set is
+not money**: only the 38 stations in `data/fems-stations.json` have a measured
+transmit minute, and a thirty-ninth needs `tools/fems-stations.js` run against Synoptic
+inside its free window before FEMS can date its observations. Widening the station set is
 therefore a two-step job, and the second step is the one with a deadline on it.
+
+**Choose the set by the ground, not by the ids already to hand.**
+`tools/station-survey.js --source fems --state CO --spread 30` reads 3DEP under every
+RAWS in the catalogue and picks a set spaced across the 500 m position index, which is
+what measurement 10 asked for. The survey's own finding is the caveat on everything
+fitted to it: over 93 readable Colorado RAWS the split is 34 flat, 33 ridge, 19 slope and
+**3 valley**, because RAWS are sited on exposed fire-weather ground on purpose. A terrain
+regression fitted here is far better constrained on crests than in hollows, and no amount
+of spreading fixes a catalogue that has no valleys in it.
 
 **Score FEMS with `--tolerance 30`.** Dating a RAWS correctly does not move it closer to
 the model's whole hour; it makes the distance visible. At the 10-minute default, five of
-the eleven calibrated stations have no observation inside the window at all — their slots
-are :19 to :25 off the hour — and the run reports them rather than shrinking the sample
-quietly. The METAR runs never hit this because airports report at :53. Interpolating the
-model between hours to the observation's own minute is the better answer and does not
-exist yet.
+the first eleven calibrated stations have no observation inside the window at all — their
+slots are :19 to :25 off the hour — and the run reports them rather than shrinking the
+sample quietly. The METAR runs never hit this because airports report at :53.
+Interpolating the model between hours to the observation's own minute is the better
+answer and does not exist yet.
 
 ## A weather history is four products, and one of them must never ship
 

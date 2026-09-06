@@ -1348,6 +1348,28 @@ node tools/score-wind.js --source fems --archive --hours 24 \
   --stations PCPC2,STOC2,KSHC2 --end 2019-07-14T18:00:00Z
 ```
 
+### Choosing the stations by the ground they stand on
+
+A station set picked by which ids were already to hand is the experiment, chosen badly.
+`tools/station-survey.js` reads 3DEP under a whole catalogue before anything is scored —
+no atmosphere, no observations, one terrain window per station — and `--spread N` takes N
+stations spaced evenly across the 500 m position index rather than the first N rows:
+
+```bash
+node tools/station-survey.js --source fems --state CO --limit 120 --spread 30
+```
+
+It prints the FEMS id and the WRCC id a calibration run needs beside the landform, so the
+set flows straight into `tools/fems-stations.js`.
+
+**Its first answer is about the catalogue, not the model.** Of 2,088 listed RAWS, 93 in
+Colorado read against 3DEP as 34 flat, 33 ridge, 19 slope and **3 valley** — RAWS are
+sited for fire-weather representativeness, which means exposed ground on purpose. The
+position index runs −31 m to +97 m, and **the +97 m is STOC2**, the single station that
+was carrying the terrain regression in measurement 10: not a lucky draw but the extreme
+point of the whole state. Three stations 3DEP cannot read and four whose published
+coordinate disagrees with the ground beneath it by 56–204 m are flagged, not scored.
+
 `tools/fems-agree.js` grades the two services against each other where they overlap: over
 eleven stations and five days, **1,318 shared hours, every direction identical, worst
 speed disagreement 0.0005 m/s** — which is Synoptic rounding the mph conversion to 0.447.
