@@ -1,0 +1,7 @@
+"StationName","DateTime","ObservationType","Temperature(F)","RelativeHumidity(%)","Precipitation(in)","WindSpeed(mph)","WindAzimuth(degrees)","GustSpeed(mph)","GustAzimuth(degrees)","SnowFlag","SolarRadiation(W/m2)","Tflag","RHflag","PCPflag","WSflag","WAflag","SRflag","GSflag","GAflag","StationId","VPD(Pa)"
+"PORCUPINE CR.","2026-08-28T09:00:00Z","O",45,65,0,1,17,3,33,0,0,,,,,,,,,50406,356
+"PORCUPINE CR.","2026-08-28T10:00:00Z","O",44,68,0,0,298,3,214,0,0,,,,,,,,,50406,313
+"PORCUPINE CR.","2026-08-28T11:00:00Z",,,,,,,,,,,,,,,,,,,50406,
+"PORCUPINE CR.","2026-08-28T12:00:00Z","O",40,78,0,0,240,2,27,0,0,,,,,,,,,50406,185
+"PORCUPINE CR.","2026-08-28T13:00:00Z","O",42,76,0,0,243,2,231,0,9,,,,,,,,,50406,218
+"PORCUPINE CR.","2026-08-28T14:00:00Z","O",48,65,0,4,38,6,42,0,153,,,,,,,,,50406,399

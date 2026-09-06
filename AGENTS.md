@@ -64,16 +64,33 @@ npm run lint
 > - **The terrain downscaling is not yet known to help, and on ridges it measurably
 >   hurts.** `docs/downscaling.md` is the standing note: read it before changing anything
 >   in `downscale.js`, and add to it rather than starting a new one.
+> - **Three observation providers put three different timestamps on the same wind, and
+>   FEMS' is not off by a fixed amount.** For one RAWS report MADIS and Synoptic both say
+>   `12:54`; FEMS says `13:00`, because it labels the *nearest* whole hour and throws the
+>   minute away. The measured transmit slots run from :08 to :58, so at eight of eleven
+>   stations the label belongs to the hour before it and at the other three to the label's
+>   own hour — a station-dependent hour of error inside a report that still balances, and
+>   `tools/score-wind.js` pairs on 10-30 minutes, which is smaller than any of it.
+>   `fems.js` reconstructs the time from the transmit minute in
+>   `data/fems-stations.json` and refuses a station that has no entry; never add a station
+>   to a FEMS run without calibrating it first. `docs/observations.md` has the
+>   measurement.
 
 ## The downscaling is under investigation, and nothing about it is settled
 
 `docs/downscaling.md` holds every measurement taken against real anemometers so far, the
-hypotheses each one supports, and the runs that would settle them. The two facts most
-likely to make a well-meant change wrong:
+hypotheses each one supports, and the runs that would settle them. The facts most likely
+to make a well-meant change wrong:
 
-- **HRRR runs about 70% fast over the RAWS sample**, so any multiplicative term is graded
-  on the sign of its gain rather than on its physics until that bias is dealt with. A
-  candidate that wins the raw table may only be the one that slows the wind down.
+- **HRRR runs 44-70% fast over the RAWS sample**, on every day scored, so any
+  multiplicative term is graded on the sign of its gain rather than on its physics until
+  that bias is dealt with. A candidate that wins the raw table may only be the one that
+  slows the wind down.
+- **It is not one bias.** Per station the scale actually needed runs from x0.21 to x1.68,
+  and it correlates with aerodynamic roughness at r = -0.02 — so a per-station roughness,
+  including HRRR's own `SFCR`, buys nothing a single constant does not buy. Do not spend
+  another run on z0. `roughness.js` exists for scoring that question and is deliberately
+  not imported by the runtime path.
 - **The model has its own mountains.** `tools/model-terrain.js` measures HRRR's surface
   orography against the 3DEP ground under a station: about 70 m above the floor of a
   valley station, 41 m below the top of a ridge one. A correction computed against the
@@ -83,6 +100,23 @@ likely to make a well-meant change wrong:
 **Do not change a default, a coefficient or the formula on one state and one day of
 observations.** Add a candidate to `tools/score-wind.js --ablate` instead, so the change
 is scored beside the others on the same pairs before it is anywhere near a default.
+
+**The measured wind is the scarce half, and it no longer has to be.** `archive.js`
+reaches 2014 on the model side; the Synoptic token refuses observation history older than
+about a week, which is what actually blocks seasons, other states and a station set
+chosen by topographic position. `docs/observations.md` surveys the alternatives, all
+tested: **USDA FEMS** serves 2,088 RAWS back to 2005 as bulk CSV with no account — eleven
+of the thirteen stations already scored, matched to 0.00 km, and thirteen stations for a
+full year is 113,892 hourly observations in one 7-second request — and **MADIS** publishes
+every network NOAA ingests with a per-observation QC verdict, also with no account. No
+paid tier is needed for any question currently open.
+
+`fems.js` reads the first of those, behind the same interface as `synoptic.js`, and
+`tools/score-wind.js --source fems` scores against it. **What it costs is calibration,
+not money**: only the eleven stations in `data/fems-stations.json` have a measured
+transmit minute, and a twelfth needs `tools/fems-stations.js` run against Synoptic inside
+its free window before FEMS can date its observations. Widening the station set is
+therefore a two-step job, and the second step is the one with a deadline on it.
 
 ## What this is
 

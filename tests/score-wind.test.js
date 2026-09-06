@@ -15,6 +15,7 @@
 "use strict";
 
 const fs = require("fs");
+const os = require("os");
 const path = require("path");
 
 const cog = require("../cog.js");
@@ -993,5 +994,74 @@ describe("the terrain the model already has", () => {
     const report = await scored({ anomaly: null, ground: null });
     expect(report.domain.anomaly).toBeNull();
     expect(report.candidates.map(function (c) { return c.key; })).not.toContain("anomaly");
+  });
+});
+
+describe("which observation service the run scores against", () => {
+  const MAP = {
+    PCPC2: { femsId: "50406", transmitMinute: 57 },
+    KSHC2: { femsId: "53005", transmitMinute: 54 }
+  };
+
+  let dir = null;
+
+  beforeEach(() => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), "fems-map-"));
+  });
+
+  afterEach(() => {
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  function mapAt(name, body) {
+    const where = path.join(dir, name);
+    fs.writeFileSync(where, typeof body === "string" ? body : JSON.stringify(body));
+    return where;
+  }
+
+  test("the default is the NWS reader, and its quantisation floor is empty", () => {
+    const chosen = scoreWind.sourceFor(undefined, ["KBDU"], {});
+    expect(chosen.label).toMatch(/api\.weather\.gov/);
+    expect(chosen.floor).toEqual({});
+  });
+
+  test("a service nobody implemented is named in the refusal", () => {
+    expect(() => scoreWind.sourceFor("madis", [], {})).toThrow(/nws, synoptic or fems/);
+  });
+
+  test("FEMS is scored at 1 mph, which is 0.447 m/s and not a rounding detail", () => {
+    // A 1 mph quantisation is a fifth of the RMSE differences the ablation
+    // table is being read for, so the floor has to reach the scoring rather
+    // than being noted in the header.
+    const chosen = scoreWind.sourceFor("fems", ["PCPC2"], { "fems-map": mapAt("m.json", MAP) });
+    expect(chosen.floor.speedStepMps).toBeCloseTo(0.44704, 6);
+    expect(chosen.floor.dirStepDeg).toBe(1);
+    expect(chosen.label).toMatch(/FEMS/);
+  });
+
+  test("without the map the run stops before fetching, and says how to build it", () => {
+    // Every FEMS row would be refused for having no recoverable time, which is
+    // the designed behaviour and a hundred station-hours of it. The reason
+    // belongs at the top of the run.
+    expect(() => scoreWind.sourceFor("fems", ["PCPC2"], { "fems-map": path.join(dir, "nope.json") }))
+      .toThrow(/fems-stations\.js --stations PCPC2/);
+  });
+
+  test("a station missing from the map stops the run rather than being scored on the label", () => {
+    const where = mapAt("m.json", MAP);
+    expect(() => scoreWind.sourceFor("fems", ["PCPC2", "STOC2"], { "fems-map": where }))
+      .toThrow(/no entry for STOC2/);
+  });
+
+  test("a map that is not the map is refused by name, not as a stack trace", () => {
+    expect(() => scoreWind.sourceFor("fems", ["PCPC2"], { "fems-map": mapAt("m.json", "{oops") }))
+      .toThrow(/is not readable as the JSON/);
+    expect(() => scoreWind.sourceFor("fems", ["PCPC2"], { "fems-map": mapAt("a.json", [MAP]) }))
+      .toThrow(/keyed by station id/);
+  });
+
+  test("the map path is a flag the parser knows about", () => {
+    expect(scoreWind.parse(["--source", "fems", "--fems-map", "x.json"]))
+      .toEqual({ source: "fems", "fems-map": "x.json" });
   });
 });

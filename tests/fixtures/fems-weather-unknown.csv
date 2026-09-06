@@ -1,0 +1,2 @@
+"StationName","DateTime","ObservationType","Temperature(F)","RelativeHumidity(%)","Precipitation(in)","WindSpeed(mph)","WindAzimuth(degrees)","GustSpeed(mph)","GustAzimuth(degrees)","SnowFlag","SolarRadiation(W/m2)","Tflag","RHflag","PCPflag","WSflag","WAflag","SRflag","GSflag","GAflag","StationId","VPD(Pa)"
+,,,,,,,,,,,,,,,,,,,,"999999",
