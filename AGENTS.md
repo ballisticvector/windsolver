@@ -83,7 +83,8 @@ npm run lint
 hypotheses each one supports, and the runs that would settle them. The facts most likely
 to make a well-meant change wrong:
 
-- **HRRR runs 43-70% fast over the RAWS sample**, on every day scored, so any
+- **HRRR runs 43-70% fast over the RAWS sample**, on every day scored in either state
+  (measurement 12 adds 30 New Mexico stations on four more dates), so any
   multiplicative term is graded on the sign of its gain rather than on its physics until
   that bias is dealt with. A candidate that wins the raw table may only be the one that
   slows the wind down.
@@ -92,11 +93,13 @@ to make a well-meant change wrong:
   same 1.4-1.7x, twice the offset. Anything fitted as m/s on one regime will be wrong on
   the next.
 - **It is not one bias.** Per station the scale actually needed runs from x0.21 to x1.68,
-  and it correlates with aerodynamic roughness at r = -0.02 — so a per-station roughness,
-  including HRRR's own `SFCR`, buys nothing a single constant does not buy. Do not spend
-  another run on z0. `roughness.js` exists for scoring that question and is deliberately
-  not imported by the runtime path. Fitted by least squares over the pairs rather than as
-  a ratio of means, the same per-station scale runs x0.17 to x2.05 over four days and
+  and it correlates with aerodynamic roughness at r = -0.02 in Colorado — so a
+  per-station roughness, including HRRR's own `SFCR`, buys nothing a single constant does
+  not buy. New Mexico is friendlier to the idea (r = -0.41) and still worth only 0.02 m/s
+  of debiased score, against 0.17 for an empirical elevation line over the same stations.
+  Do not spend another run on z0. `roughness.js` exists for that question and is
+  deliberately not imported by the runtime path. Fitted by least squares over the pairs
+  rather than as a ratio of means, the same per-station scale runs x0.17 to x2.05 and
   transfers between them; that is measurement 10 and it is the one correction in this
   note with a measured out-of-sample effect.
 - **The model has its own mountains.** `tools/model-terrain.js` measures HRRR's surface
@@ -121,10 +124,12 @@ paid tier is needed for any question currently open.
 
 `fems.js` reads the first of those, behind the same interface as `synoptic.js`, and
 `tools/score-wind.js --source fems` scores against it. **What it costs is calibration,
-not money**: only the 38 stations in `data/fems-stations.json` have a measured
-transmit minute, and a thirty-ninth needs `tools/fems-stations.js` run against Synoptic
+not money**: only the 68 stations in `data/fems-stations.json` have a measured
+transmit minute, and a sixty-ninth needs `tools/fems-stations.js` run against Synoptic
 inside its free window before FEMS can date its observations. Widening the station set is
-therefore a two-step job, and the second step is the one with a deadline on it.
+therefore a two-step job, and the second step is the one with a deadline on it. The
+Colorado slots re-measured bit-identical three months later, so a calibrated station
+stays calibrated.
 
 **Choose the set by the ground, not by the ids already to hand.**
 `tools/station-survey.js --source fems --state CO --spread 30` reads 3DEP under every
@@ -133,7 +138,12 @@ what measurement 10 asked for. The survey's own finding is the caveat on everyth
 fitted to it: over 93 readable Colorado RAWS the split is 34 flat, 33 ridge, 19 slope and
 **3 valley**, because RAWS are sited on exposed fire-weather ground on purpose. A terrain
 regression fitted here is far better constrained on crests than in hollows, and no amount
-of spreading fixes a catalogue that has no valleys in it.
+of spreading fixes a catalogue that has no valleys in it. **Changing state does not fix
+it either**: all 56 readable New Mexico RAWS are 33 flat, 15 ridge, 4 slope and 3 valley,
+over a position index with the same two ends to within a metre and a half (measurement
+12). The sheltered half of the axis has to come from a network that is not RAWS — MADIS
+carries the agricultural and hydrological ones, which are in bottoms because that is
+where the crops and the streams are.
 
 **Score FEMS with `--tolerance 30`.** Dating a RAWS correctly does not move it closer to
 the model's whole hour; it makes the distance visible. At the 10-minute default, five of
@@ -169,7 +179,10 @@ drift into another's job.
   8% of the distance between a pooled scale and the station's own, and removing STOC2
   still halves the correlation on every date. **Do not spend another Colorado run on it**
   — the state's RAWS are 3 valleys in 93, so the sheltered half of the axis is not in
-  this catalogue.
+  this catalogue. The one descriptor that has ever bridged the gap is **elevation in New
+  Mexico** (measurement 12): 12 of 12 held-out cells and 71% of the distance to the
+  station's own factor — and 0 of 12 in Colorado, with a New Mexico line actively
+  damaging Colorado. Read that measurement before treating it as more than a lead.
 - **Climatology — what the wind usually does here, in March, at 09:00: a mode of its own.**
   Honest because nobody mistakes it for a forecast, provided it is shaped like a
   distribution over a stated period with no `validTime`, rather than a `/v1/field`

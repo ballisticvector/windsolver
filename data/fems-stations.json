@@ -8,9 +8,9 @@
     "sensorHeightSource": "synoptic",
     "calibratedAgainst": {
       "source": "synoptic",
-      "start": "2026-09-03T20:00:00.000Z",
-      "end": "2026-09-06T20:00:00.000Z",
-      "hoursChecked": 71,
+      "start": "2026-09-03T22:00:00.000Z",
+      "end": "2026-09-06T22:00:00.000Z",
+      "hoursChecked": 72,
       "agreement": 1,
       "separationKm": 0
     }
@@ -24,8 +24,8 @@
     "sensorHeightSource": null,
     "calibratedAgainst": {
       "source": "synoptic",
-      "start": "2026-09-03T20:00:00.000Z",
-      "end": "2026-09-06T20:00:00.000Z",
+      "start": "2026-09-03T22:00:00.000Z",
+      "end": "2026-09-06T22:00:00.000Z",
       "hoursChecked": 72,
       "agreement": 1,
       "separationKm": 0
@@ -40,9 +40,9 @@
     "sensorHeightSource": "synoptic",
     "calibratedAgainst": {
       "source": "synoptic",
-      "start": "2026-09-03T20:00:00.000Z",
-      "end": "2026-09-06T20:00:00.000Z",
-      "hoursChecked": 71,
+      "start": "2026-09-03T22:00:00.000Z",
+      "end": "2026-09-06T22:00:00.000Z",
+      "hoursChecked": 72,
       "agreement": 1,
       "separationKm": 0
     }
@@ -56,8 +56,8 @@
     "sensorHeightSource": "synoptic",
     "calibratedAgainst": {
       "source": "synoptic",
-      "start": "2026-09-03T20:00:00.000Z",
-      "end": "2026-09-06T20:00:00.000Z",
+      "start": "2026-09-03T22:00:00.000Z",
+      "end": "2026-09-06T22:00:00.000Z",
       "hoursChecked": 72,
       "agreement": 1,
       "separationKm": 0.015
@@ -72,9 +72,9 @@
     "sensorHeightSource": "synoptic",
     "calibratedAgainst": {
       "source": "synoptic",
-      "start": "2026-09-03T20:00:00.000Z",
-      "end": "2026-09-06T20:00:00.000Z",
-      "hoursChecked": 71,
+      "start": "2026-09-03T22:00:00.000Z",
+      "end": "2026-09-06T22:00:00.000Z",
+      "hoursChecked": 72,
       "agreement": 1,
       "separationKm": 0
     }
@@ -88,8 +88,8 @@
     "sensorHeightSource": "synoptic",
     "calibratedAgainst": {
       "source": "synoptic",
-      "start": "2026-09-03T20:00:00.000Z",
-      "end": "2026-09-06T20:00:00.000Z",
+      "start": "2026-09-03T22:00:00.000Z",
+      "end": "2026-09-06T22:00:00.000Z",
       "hoursChecked": 72,
       "agreement": 1,
       "separationKm": 0.029
@@ -104,8 +104,8 @@
     "sensorHeightSource": "synoptic",
     "calibratedAgainst": {
       "source": "synoptic",
-      "start": "2026-09-03T20:00:00.000Z",
-      "end": "2026-09-06T20:00:00.000Z",
+      "start": "2026-09-03T22:00:00.000Z",
+      "end": "2026-09-06T22:00:00.000Z",
       "hoursChecked": 72,
       "agreement": 1,
       "separationKm": 0.021
@@ -120,8 +120,8 @@
     "sensorHeightSource": "synoptic",
     "calibratedAgainst": {
       "source": "synoptic",
-      "start": "2026-09-03T20:00:00.000Z",
-      "end": "2026-09-06T20:00:00.000Z",
+      "start": "2026-09-03T22:00:00.000Z",
+      "end": "2026-09-06T22:00:00.000Z",
       "hoursChecked": 72,
       "agreement": 1,
       "separationKm": 0
@@ -136,9 +136,9 @@
     "sensorHeightSource": "synoptic",
     "calibratedAgainst": {
       "source": "synoptic",
-      "start": "2026-09-03T20:00:00.000Z",
-      "end": "2026-09-06T20:00:00.000Z",
-      "hoursChecked": 71,
+      "start": "2026-09-03T22:00:00.000Z",
+      "end": "2026-09-06T22:00:00.000Z",
+      "hoursChecked": 72,
       "agreement": 1,
       "separationKm": 0
     }
@@ -152,9 +152,9 @@
     "sensorHeightSource": "synoptic",
     "calibratedAgainst": {
       "source": "synoptic",
-      "start": "2026-09-03T20:00:00.000Z",
-      "end": "2026-09-06T20:00:00.000Z",
-      "hoursChecked": 71,
+      "start": "2026-09-03T22:00:00.000Z",
+      "end": "2026-09-06T22:00:00.000Z",
+      "hoursChecked": 72,
       "agreement": 1,
       "separationKm": 0
     }
@@ -168,9 +168,9 @@
     "sensorHeightSource": "synoptic",
     "calibratedAgainst": {
       "source": "synoptic",
-      "start": "2026-09-03T20:00:00.000Z",
-      "end": "2026-09-06T20:00:00.000Z",
-      "hoursChecked": 71,
+      "start": "2026-09-03T22:00:00.000Z",
+      "end": "2026-09-06T22:00:00.000Z",
+      "hoursChecked": 72,
       "agreement": 1,
       "separationKm": 0
     }
@@ -184,8 +184,8 @@
     "sensorHeightSource": "synoptic",
     "calibratedAgainst": {
       "source": "synoptic",
-      "start": "2026-09-03T20:00:00.000Z",
-      "end": "2026-09-06T20:00:00.000Z",
+      "start": "2026-09-03T22:00:00.000Z",
+      "end": "2026-09-06T22:00:00.000Z",
       "hoursChecked": 72,
       "agreement": 1,
       "separationKm": 0
@@ -200,8 +200,8 @@
     "sensorHeightSource": null,
     "calibratedAgainst": {
       "source": "synoptic",
-      "start": "2026-09-03T20:00:00.000Z",
-      "end": "2026-09-06T20:00:00.000Z",
+      "start": "2026-09-03T22:00:00.000Z",
+      "end": "2026-09-06T22:00:00.000Z",
       "hoursChecked": 72,
       "agreement": 1,
       "separationKm": 0
@@ -216,8 +216,8 @@
     "sensorHeightSource": "synoptic",
     "calibratedAgainst": {
       "source": "synoptic",
-      "start": "2026-09-03T20:00:00.000Z",
-      "end": "2026-09-06T20:00:00.000Z",
+      "start": "2026-09-03T22:00:00.000Z",
+      "end": "2026-09-06T22:00:00.000Z",
       "hoursChecked": 72,
       "agreement": 1,
       "separationKm": 0
@@ -232,8 +232,8 @@
     "sensorHeightSource": null,
     "calibratedAgainst": {
       "source": "synoptic",
-      "start": "2026-09-03T20:00:00.000Z",
-      "end": "2026-09-06T20:00:00.000Z",
+      "start": "2026-09-03T22:00:00.000Z",
+      "end": "2026-09-06T22:00:00.000Z",
       "hoursChecked": 72,
       "agreement": 1,
       "separationKm": 0
@@ -248,8 +248,8 @@
     "sensorHeightSource": "synoptic",
     "calibratedAgainst": {
       "source": "synoptic",
-      "start": "2026-09-03T20:00:00.000Z",
-      "end": "2026-09-06T20:00:00.000Z",
+      "start": "2026-09-03T22:00:00.000Z",
+      "end": "2026-09-06T22:00:00.000Z",
       "hoursChecked": 72,
       "agreement": 1,
       "separationKm": 0
@@ -264,8 +264,8 @@
     "sensorHeightSource": "synoptic",
     "calibratedAgainst": {
       "source": "synoptic",
-      "start": "2026-09-03T20:00:00.000Z",
-      "end": "2026-09-06T20:00:00.000Z",
+      "start": "2026-09-03T22:00:00.000Z",
+      "end": "2026-09-06T22:00:00.000Z",
       "hoursChecked": 73,
       "agreement": 0.986,
       "separationKm": 0
@@ -280,9 +280,9 @@
     "sensorHeightSource": "synoptic",
     "calibratedAgainst": {
       "source": "synoptic",
-      "start": "2026-09-03T20:00:00.000Z",
-      "end": "2026-09-06T20:00:00.000Z",
-      "hoursChecked": 71,
+      "start": "2026-09-03T22:00:00.000Z",
+      "end": "2026-09-06T22:00:00.000Z",
+      "hoursChecked": 72,
       "agreement": 1,
       "separationKm": 0
     }
@@ -296,9 +296,9 @@
     "sensorHeightSource": "synoptic",
     "calibratedAgainst": {
       "source": "synoptic",
-      "start": "2026-09-03T20:00:00.000Z",
-      "end": "2026-09-06T20:00:00.000Z",
-      "hoursChecked": 71,
+      "start": "2026-09-03T22:00:00.000Z",
+      "end": "2026-09-06T22:00:00.000Z",
+      "hoursChecked": 72,
       "agreement": 1,
       "separationKm": 0
     }
@@ -312,8 +312,8 @@
     "sensorHeightSource": "synoptic",
     "calibratedAgainst": {
       "source": "synoptic",
-      "start": "2026-09-03T20:00:00.000Z",
-      "end": "2026-09-06T20:00:00.000Z",
+      "start": "2026-09-03T22:00:00.000Z",
+      "end": "2026-09-06T22:00:00.000Z",
       "hoursChecked": 72,
       "agreement": 1,
       "separationKm": 0
@@ -328,9 +328,9 @@
     "sensorHeightSource": "synoptic",
     "calibratedAgainst": {
       "source": "synoptic",
-      "start": "2026-09-03T20:00:00.000Z",
-      "end": "2026-09-06T20:00:00.000Z",
-      "hoursChecked": 71,
+      "start": "2026-09-03T22:00:00.000Z",
+      "end": "2026-09-06T22:00:00.000Z",
+      "hoursChecked": 72,
       "agreement": 1,
       "separationKm": 0
     }
@@ -344,9 +344,9 @@
     "sensorHeightSource": "synoptic",
     "calibratedAgainst": {
       "source": "synoptic",
-      "start": "2026-09-03T20:00:00.000Z",
-      "end": "2026-09-06T20:00:00.000Z",
-      "hoursChecked": 71,
+      "start": "2026-09-03T22:00:00.000Z",
+      "end": "2026-09-06T22:00:00.000Z",
+      "hoursChecked": 72,
       "agreement": 1,
       "separationKm": 0
     }
@@ -360,8 +360,8 @@
     "sensorHeightSource": "synoptic",
     "calibratedAgainst": {
       "source": "synoptic",
-      "start": "2026-09-03T20:00:00.000Z",
-      "end": "2026-09-06T20:00:00.000Z",
+      "start": "2026-09-03T22:00:00.000Z",
+      "end": "2026-09-06T22:00:00.000Z",
       "hoursChecked": 72,
       "agreement": 1,
       "separationKm": 0
@@ -376,8 +376,8 @@
     "sensorHeightSource": "synoptic",
     "calibratedAgainst": {
       "source": "synoptic",
-      "start": "2026-09-03T20:00:00.000Z",
-      "end": "2026-09-06T20:00:00.000Z",
+      "start": "2026-09-03T22:00:00.000Z",
+      "end": "2026-09-06T22:00:00.000Z",
       "hoursChecked": 72,
       "agreement": 1,
       "separationKm": 0
@@ -392,8 +392,8 @@
     "sensorHeightSource": "synoptic",
     "calibratedAgainst": {
       "source": "synoptic",
-      "start": "2026-09-03T20:00:00.000Z",
-      "end": "2026-09-06T20:00:00.000Z",
+      "start": "2026-09-03T22:00:00.000Z",
+      "end": "2026-09-06T22:00:00.000Z",
       "hoursChecked": 72,
       "agreement": 1,
       "separationKm": 0
@@ -408,8 +408,8 @@
     "sensorHeightSource": "synoptic",
     "calibratedAgainst": {
       "source": "synoptic",
-      "start": "2026-09-03T20:00:00.000Z",
-      "end": "2026-09-06T20:00:00.000Z",
+      "start": "2026-09-03T22:00:00.000Z",
+      "end": "2026-09-06T22:00:00.000Z",
       "hoursChecked": 72,
       "agreement": 1,
       "separationKm": 0
@@ -424,8 +424,8 @@
     "sensorHeightSource": "synoptic",
     "calibratedAgainst": {
       "source": "synoptic",
-      "start": "2026-09-03T20:00:00.000Z",
-      "end": "2026-09-06T20:00:00.000Z",
+      "start": "2026-09-03T22:00:00.000Z",
+      "end": "2026-09-06T22:00:00.000Z",
       "hoursChecked": 72,
       "agreement": 1,
       "separationKm": 0
@@ -440,8 +440,8 @@
     "sensorHeightSource": "synoptic",
     "calibratedAgainst": {
       "source": "synoptic",
-      "start": "2026-09-03T20:00:00.000Z",
-      "end": "2026-09-06T20:00:00.000Z",
+      "start": "2026-09-03T22:00:00.000Z",
+      "end": "2026-09-06T22:00:00.000Z",
       "hoursChecked": 72,
       "agreement": 1,
       "separationKm": 0.01
@@ -456,8 +456,8 @@
     "sensorHeightSource": "synoptic",
     "calibratedAgainst": {
       "source": "synoptic",
-      "start": "2026-09-03T20:00:00.000Z",
-      "end": "2026-09-06T20:00:00.000Z",
+      "start": "2026-09-03T22:00:00.000Z",
+      "end": "2026-09-06T22:00:00.000Z",
       "hoursChecked": 72,
       "agreement": 1,
       "separationKm": 0
@@ -472,8 +472,8 @@
     "sensorHeightSource": "synoptic",
     "calibratedAgainst": {
       "source": "synoptic",
-      "start": "2026-09-03T20:00:00.000Z",
-      "end": "2026-09-06T20:00:00.000Z",
+      "start": "2026-09-03T22:00:00.000Z",
+      "end": "2026-09-06T22:00:00.000Z",
       "hoursChecked": 72,
       "agreement": 1,
       "separationKm": 0
@@ -488,9 +488,9 @@
     "sensorHeightSource": "synoptic",
     "calibratedAgainst": {
       "source": "synoptic",
-      "start": "2026-09-03T20:00:00.000Z",
-      "end": "2026-09-06T20:00:00.000Z",
-      "hoursChecked": 71,
+      "start": "2026-09-03T22:00:00.000Z",
+      "end": "2026-09-06T22:00:00.000Z",
+      "hoursChecked": 72,
       "agreement": 1,
       "separationKm": 0
     }
@@ -504,8 +504,8 @@
     "sensorHeightSource": "synoptic",
     "calibratedAgainst": {
       "source": "synoptic",
-      "start": "2026-09-03T20:00:00.000Z",
-      "end": "2026-09-06T20:00:00.000Z",
+      "start": "2026-09-03T22:00:00.000Z",
+      "end": "2026-09-06T22:00:00.000Z",
       "hoursChecked": 72,
       "agreement": 1,
       "separationKm": 0.013
@@ -520,9 +520,9 @@
     "sensorHeightSource": "synoptic",
     "calibratedAgainst": {
       "source": "synoptic",
-      "start": "2026-09-03T20:00:00.000Z",
-      "end": "2026-09-06T20:00:00.000Z",
-      "hoursChecked": 71,
+      "start": "2026-09-03T22:00:00.000Z",
+      "end": "2026-09-06T22:00:00.000Z",
+      "hoursChecked": 72,
       "agreement": 1,
       "separationKm": 0
     }
@@ -536,9 +536,9 @@
     "sensorHeightSource": "synoptic",
     "calibratedAgainst": {
       "source": "synoptic",
-      "start": "2026-09-03T20:00:00.000Z",
-      "end": "2026-09-06T20:00:00.000Z",
-      "hoursChecked": 71,
+      "start": "2026-09-03T22:00:00.000Z",
+      "end": "2026-09-06T22:00:00.000Z",
+      "hoursChecked": 72,
       "agreement": 1,
       "separationKm": 0
     }
@@ -552,8 +552,8 @@
     "sensorHeightSource": null,
     "calibratedAgainst": {
       "source": "synoptic",
-      "start": "2026-09-03T20:00:00.000Z",
-      "end": "2026-09-06T20:00:00.000Z",
+      "start": "2026-09-03T22:00:00.000Z",
+      "end": "2026-09-06T22:00:00.000Z",
       "hoursChecked": 72,
       "agreement": 1,
       "separationKm": 0
@@ -568,8 +568,8 @@
     "sensorHeightSource": "synoptic",
     "calibratedAgainst": {
       "source": "synoptic",
-      "start": "2026-09-03T20:00:00.000Z",
-      "end": "2026-09-06T20:00:00.000Z",
+      "start": "2026-09-03T22:00:00.000Z",
+      "end": "2026-09-06T22:00:00.000Z",
       "hoursChecked": 72,
       "agreement": 1,
       "separationKm": 0
@@ -584,8 +584,8 @@
     "sensorHeightSource": "synoptic",
     "calibratedAgainst": {
       "source": "synoptic",
-      "start": "2026-09-03T20:00:00.000Z",
-      "end": "2026-09-06T20:00:00.000Z",
+      "start": "2026-09-03T22:00:00.000Z",
+      "end": "2026-09-06T22:00:00.000Z",
       "hoursChecked": 72,
       "agreement": 1,
       "separationKm": 0
@@ -600,9 +600,489 @@
     "sensorHeightSource": "synoptic",
     "calibratedAgainst": {
       "source": "synoptic",
-      "start": "2026-09-03T20:00:00.000Z",
-      "end": "2026-09-06T20:00:00.000Z",
+      "start": "2026-09-03T22:00:00.000Z",
+      "end": "2026-09-06T22:00:00.000Z",
+      "hoursChecked": 72,
+      "agreement": 1,
+      "separationKm": 0
+    }
+  },
+  "CWRN5": {
+    "femsId": "290102",
+    "wrccId": "XALB",
+    "name": "ALBINO CANYON",
+    "transmitMinute": 26,
+    "sensorHeightM": 6.1,
+    "sensorHeightSource": "synoptic",
+    "calibratedAgainst": {
+      "source": "synoptic",
+      "start": "2026-09-03T22:00:00.000Z",
+      "end": "2026-09-06T22:00:00.000Z",
+      "hoursChecked": 72,
+      "agreement": 1,
+      "separationKm": 0
+    }
+  },
+  "GSCN5": {
+    "femsId": "291002",
+    "wrccId": "XBAR",
+    "name": "BARTLEY",
+    "transmitMinute": 4,
+    "sensorHeightM": 6.1,
+    "sensorHeightSource": "synoptic",
+    "calibratedAgainst": {
+      "source": "synoptic",
+      "start": "2026-09-03T22:00:00.000Z",
+      "end": "2026-09-06T22:00:00.000Z",
       "hoursChecked": 71,
+      "agreement": 1,
+      "separationKm": 0
+    }
+  },
+  "BLWN5": {
+    "femsId": "293303",
+    "wrccId": "XBLR",
+    "name": "BLUEWATER RIDGE",
+    "transmitMinute": 5,
+    "sensorHeightM": 6.1,
+    "sensorHeightSource": "synoptic",
+    "calibratedAgainst": {
+      "source": "synoptic",
+      "start": "2026-09-03T22:00:00.000Z",
+      "end": "2026-09-06T22:00:00.000Z",
+      "hoursChecked": 72,
+      "agreement": 1,
+      "separationKm": 0
+    }
+  },
+  "CPPN5": {
+    "femsId": "293104",
+    "wrccId": "XCAP",
+    "name": "CAPROCK",
+    "transmitMinute": 40,
+    "sensorHeightM": 6.1,
+    "sensorHeightSource": "synoptic",
+    "calibratedAgainst": {
+      "source": "synoptic",
+      "start": "2026-09-03T22:00:00.000Z",
+      "end": "2026-09-06T22:00:00.000Z",
+      "hoursChecked": 72,
+      "agreement": 1,
+      "separationKm": 0
+    }
+  },
+  "CIMN5": {
+    "femsId": "290401",
+    "wrccId": "XCIM",
+    "name": "CIMARRON",
+    "transmitMinute": 9,
+    "sensorHeightM": 6.1,
+    "sensorHeightSource": "synoptic",
+    "calibratedAgainst": {
+      "source": "synoptic",
+      "start": "2026-09-03T22:00:00.000Z",
+      "end": "2026-09-06T22:00:00.000Z",
+      "hoursChecked": 72,
+      "agreement": 1,
+      "separationKm": 0
+    }
+  },
+  "CSMN5": {
+    "femsId": "293004",
+    "wrccId": "XCOS",
+    "name": "COSMIC",
+    "transmitMinute": 15,
+    "sensorHeightM": 6.1,
+    "sensorHeightSource": "synoptic",
+    "calibratedAgainst": {
+      "source": "synoptic",
+      "start": "2026-09-03T22:00:00.000Z",
+      "end": "2026-09-06T22:00:00.000Z",
+      "hoursChecked": 72,
+      "agreement": 1,
+      "separationKm": 0
+    }
+  },
+  "CBBN5": {
+    "femsId": "290705",
+    "wrccId": "XCUB",
+    "name": "CUBA",
+    "transmitMinute": 41,
+    "sensorHeightM": 6.1,
+    "sensorHeightSource": "synoptic",
+    "calibratedAgainst": {
+      "source": "synoptic",
+      "start": "2026-09-03T22:00:00.000Z",
+      "end": "2026-09-06T22:00:00.000Z",
+      "hoursChecked": 72,
+      "agreement": 1,
+      "separationKm": 0
+    }
+  },
+  "DTLN5": {
+    "femsId": "292012",
+    "wrccId": "XDAT",
+    "name": "DATIL",
+    "transmitMinute": 11,
+    "sensorHeightM": 6.1,
+    "sensorHeightSource": "synoptic",
+    "calibratedAgainst": {
+      "source": "synoptic",
+      "start": "2026-09-03T22:00:00.000Z",
+      "end": "2026-09-06T22:00:00.000Z",
+      "hoursChecked": 72,
+      "agreement": 1,
+      "separationKm": 0
+    }
+  },
+  "DLCN5": {
+    "femsId": "290205",
+    "wrccId": "XDUL",
+    "name": "DULCE #2",
+    "transmitMinute": 28,
+    "sensorHeightM": 6.1,
+    "sensorHeightSource": "synoptic",
+    "calibratedAgainst": {
+      "source": "synoptic",
+      "start": "2026-09-03T22:00:00.000Z",
+      "end": "2026-09-06T22:00:00.000Z",
+      "hoursChecked": 72,
+      "agreement": 1,
+      "separationKm": 0
+    }
+  },
+  "DUNN5": {
+    "femsId": "292302",
+    "wrccId": "XDUN",
+    "name": "DUNKEN",
+    "transmitMinute": 36,
+    "sensorHeightM": 6.1,
+    "sensorHeightSource": "synoptic",
+    "calibratedAgainst": {
+      "source": "synoptic",
+      "start": "2026-09-03T22:00:00.000Z",
+      "end": "2026-09-06T22:00:00.000Z",
+      "hoursChecked": 72,
+      "agreement": 1,
+      "separationKm": 0
+    }
+  },
+  "GNMN5": {
+    "femsId": "292011",
+    "wrccId": "XGIL",
+    "name": "GILA CENTER RAWS",
+    "transmitMinute": 13,
+    "sensorHeightM": 6.1,
+    "sensorHeightSource": "synoptic",
+    "calibratedAgainst": {
+      "source": "synoptic",
+      "start": "2026-09-03T22:00:00.000Z",
+      "end": "2026-09-06T22:00:00.000Z",
+      "hoursChecked": 72,
+      "agreement": 1,
+      "separationKm": 0
+    }
+  },
+  "GRSN5": {
+    "femsId": "291302",
+    "wrccId": "XGRA",
+    "name": "GRANTS",
+    "transmitMinute": 16,
+    "sensorHeightM": 6.1,
+    "sensorHeightSource": "synoptic",
+    "calibratedAgainst": {
+      "source": "synoptic",
+      "start": "2026-09-03T22:00:00.000Z",
+      "end": "2026-09-06T22:00:00.000Z",
+      "hoursChecked": 72,
+      "agreement": 1,
+      "separationKm": 0
+    }
+  },
+  "HHRN5": {
+    "femsId": "292702",
+    "wrccId": "XHAC",
+    "name": "HACHITA VALLEY",
+    "transmitMinute": 40,
+    "sensorHeightM": 6.1,
+    "sensorHeightSource": "synoptic",
+    "calibratedAgainst": {
+      "source": "synoptic",
+      "start": "2026-09-03T22:00:00.000Z",
+      "end": "2026-09-06T22:00:00.000Z",
+      "hoursChecked": 72,
+      "agreement": 1,
+      "separationKm": 0
+    }
+  },
+  "JARN5": {
+    "femsId": "290204",
+    "wrccId": "XJAR",
+    "name": "JARITA MESA",
+    "transmitMinute": 16,
+    "sensorHeightM": 6.1,
+    "sensorHeightSource": "synoptic",
+    "calibratedAgainst": {
+      "source": "synoptic",
+      "start": "2026-09-03T22:00:00.000Z",
+      "end": "2026-09-06T22:00:00.000Z",
+      "hoursChecked": 72,
+      "agreement": 1,
+      "separationKm": 0
+    }
+  },
+  "JESN5": {
+    "femsId": "290702",
+    "wrccId": "XJEM",
+    "name": "JEMEZ",
+    "transmitMinute": 8,
+    "sensorHeightM": 6.1,
+    "sensorHeightSource": "synoptic",
+    "calibratedAgainst": {
+      "source": "synoptic",
+      "start": "2026-09-03T22:00:00.000Z",
+      "end": "2026-09-06T22:00:00.000Z",
+      "hoursChecked": 72,
+      "agreement": 1,
+      "separationKm": 0
+    }
+  },
+  "LRAN5": {
+    "femsId": "293304",
+    "wrccId": "XLAG",
+    "name": "LAGUNA",
+    "transmitMinute": 33,
+    "sensorHeightM": 6.1,
+    "sensorHeightSource": "synoptic",
+    "calibratedAgainst": {
+      "source": "synoptic",
+      "start": "2026-09-03T22:00:00.000Z",
+      "end": "2026-09-06T22:00:00.000Z",
+      "hoursChecked": 72,
+      "agreement": 1,
+      "separationKm": 0
+    }
+  },
+  "MAYN5": {
+    "femsId": "293002",
+    "wrccId": "XMAY",
+    "name": "MAYHILL",
+    "transmitMinute": 1,
+    "sensorHeightM": 6.1,
+    "sensorHeightSource": "synoptic",
+    "calibratedAgainst": {
+      "source": "synoptic",
+      "start": "2026-09-03T22:00:00.000Z",
+      "end": "2026-09-06T22:00:00.000Z",
+      "hoursChecked": 71,
+      "agreement": 1,
+      "separationKm": 0
+    }
+  },
+  "MGNN5": {
+    "femsId": "292013",
+    "wrccId": "XMOG",
+    "name": "MOGOLLON",
+    "transmitMinute": 13,
+    "sensorHeightM": 6.1,
+    "sensorHeightSource": "synoptic",
+    "calibratedAgainst": {
+      "source": "synoptic",
+      "start": "2026-09-03T22:00:00.000Z",
+      "end": "2026-09-06T22:00:00.000Z",
+      "hoursChecked": 72,
+      "agreement": 1,
+      "separationKm": 0
+    }
+  },
+  "MPAN5": {
+    "femsId": "293202",
+    "wrccId": "XPAD",
+    "name": "PADUCA",
+    "transmitMinute": 39,
+    "sensorHeightM": 6.1,
+    "sensorHeightSource": "synoptic",
+    "calibratedAgainst": {
+      "source": "synoptic",
+      "start": "2026-09-03T22:00:00.000Z",
+      "end": "2026-09-06T22:00:00.000Z",
+      "hoursChecked": 72,
+      "agreement": 1,
+      "separationKm": 0
+    }
+  },
+  "LVPN5": {
+    "femsId": "291202",
+    "wrccId": "XPEC",
+    "name": "PECOS",
+    "transmitMinute": 14,
+    "sensorHeightM": 6.1,
+    "sensorHeightSource": "synoptic",
+    "calibratedAgainst": {
+      "source": "synoptic",
+      "start": "2026-09-03T22:00:00.000Z",
+      "end": "2026-09-06T22:00:00.000Z",
+      "hoursChecked": 72,
+      "agreement": 1,
+      "separationKm": 0
+    }
+  },
+  "DPRN5": {
+    "femsId": "292009",
+    "wrccId": "XPEL",
+    "name": "PELONA MOUNTAIN",
+    "transmitMinute": 38,
+    "sensorHeightM": 6.1,
+    "sensorHeightSource": "synoptic",
+    "calibratedAgainst": {
+      "source": "synoptic",
+      "start": "2026-09-03T22:00:00.000Z",
+      "end": "2026-09-06T22:00:00.000Z",
+      "hoursChecked": 72,
+      "agreement": 1,
+      "separationKm": 0
+    }
+  },
+  "QENN5": {
+    "femsId": "293105",
+    "wrccId": "XQUN",
+    "name": "QUEEN",
+    "transmitMinute": 13,
+    "sensorHeightM": 6.1,
+    "sensorHeightSource": "synoptic",
+    "calibratedAgainst": {
+      "source": "synoptic",
+      "start": "2026-09-03T22:00:00.000Z",
+      "end": "2026-09-06T22:00:00.000Z",
+      "hoursChecked": 72,
+      "agreement": 1,
+      "separationKm": 0
+    }
+  },
+  "SFWN5": {
+    "femsId": "290901",
+    "wrccId": "XSFW",
+    "name": "SANTA FE WATERSHED",
+    "transmitMinute": 53,
+    "sensorHeightM": 6.1,
+    "sensorHeightSource": "synoptic",
+    "calibratedAgainst": {
+      "source": "synoptic",
+      "start": "2026-09-03T22:00:00.000Z",
+      "end": "2026-09-06T22:00:00.000Z",
+      "hoursChecked": 72,
+      "agreement": 1,
+      "separationKm": 0
+    }
+  },
+  "SEVN5": {
+    "femsId": "292105",
+    "wrccId": "XSEV",
+    "name": "SEVILLETA",
+    "transmitMinute": 11,
+    "sensorHeightM": 6.1,
+    "sensorHeightSource": "synoptic",
+    "calibratedAgainst": {
+      "source": "synoptic",
+      "start": "2026-09-03T22:00:00.000Z",
+      "end": "2026-09-06T22:00:00.000Z",
+      "hoursChecked": 72,
+      "agreement": 1,
+      "separationKm": 0
+    }
+  },
+  "COPN5": {
+    "femsId": "292203",
+    "wrccId": "XSMO",
+    "name": "SMOKEY BEAR",
+    "transmitMinute": 0,
+    "sensorHeightM": 6.1,
+    "sensorHeightSource": "synoptic",
+    "calibratedAgainst": {
+      "source": "synoptic",
+      "start": "2026-09-03T22:00:00.000Z",
+      "end": "2026-09-06T22:00:00.000Z",
+      "hoursChecked": 72,
+      "agreement": 1,
+      "separationKm": 0
+    }
+  },
+  "TWRN5": {
+    "femsId": "290801",
+    "wrccId": "XTOW",
+    "name": "TOWER",
+    "transmitMinute": 8,
+    "sensorHeightM": 6.1,
+    "sensorHeightSource": "synoptic",
+    "calibratedAgainst": {
+      "source": "synoptic",
+      "start": "2026-09-03T22:00:00.000Z",
+      "end": "2026-09-06T22:00:00.000Z",
+      "hoursChecked": 72,
+      "agreement": 1,
+      "separationKm": 0
+    }
+  },
+  "TRUN5": {
+    "femsId": "290210",
+    "wrccId": "XTRU",
+    "name": "TRUCHAS",
+    "transmitMinute": 11,
+    "sensorHeightM": 6.1,
+    "sensorHeightSource": "synoptic",
+    "calibratedAgainst": {
+      "source": "synoptic",
+      "start": "2026-09-03T22:00:00.000Z",
+      "end": "2026-09-06T22:00:00.000Z",
+      "hoursChecked": 72,
+      "agreement": 1,
+      "separationKm": 0
+    }
+  },
+  "WPSN5": {
+    "femsId": "290101",
+    "wrccId": "XWAS",
+    "name": "WASHINGTON PASS",
+    "transmitMinute": 41,
+    "sensorHeightM": 6.1,
+    "sensorHeightSource": "synoptic",
+    "calibratedAgainst": {
+      "source": "synoptic",
+      "start": "2026-09-03T22:00:00.000Z",
+      "end": "2026-09-06T22:00:00.000Z",
+      "hoursChecked": 72,
+      "agreement": 1,
+      "separationKm": 0
+    }
+  },
+  "WDRN5": {
+    "femsId": "290307",
+    "wrccId": "XWDR",
+    "name": "WILD RIVERS",
+    "transmitMinute": 49,
+    "sensorHeightM": 6.1,
+    "sensorHeightSource": "synoptic",
+    "calibratedAgainst": {
+      "source": "synoptic",
+      "start": "2026-09-03T22:00:00.000Z",
+      "end": "2026-09-06T22:00:00.000Z",
+      "hoursChecked": 72,
+      "agreement": 1,
+      "separationKm": 0
+    }
+  },
+  "ZNRN5": {
+    "femsId": "290603",
+    "wrccId": "XZUB",
+    "name": "ZUNI BUTTES",
+    "transmitMinute": 42,
+    "sensorHeightM": 6.1,
+    "sensorHeightSource": "synoptic",
+    "calibratedAgainst": {
+      "source": "synoptic",
+      "start": "2026-09-03T22:00:00.000Z",
+      "end": "2026-09-06T22:00:00.000Z",
+      "hoursChecked": 72,
       "agreement": 1,
       "separationKm": 0
     }
