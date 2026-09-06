@@ -24,6 +24,7 @@ If you are picking this up cold: `downscale.js` is the module in question,
 - [Measurement 8: the first day Synoptic would not sell](#measurement-8-the-first-day-synoptic-would-not-sell)
 - [Measurement 9: how much of the error belongs to the station](#measurement-9-how-much-of-the-error-belongs-to-the-station)
 - [Measurement 10: a scale instead of an offset, and the station the fit never saw](#measurement-10-a-scale-instead-of-an-offset-and-the-station-the-fit-never-saw)
+- [Measurement 11: the same question on 37 stations chosen by the ground](#measurement-11-the-same-question-on-37-stations-chosen-by-the-ground)
 - [The hypotheses, and how much weight each one carries](#the-hypotheses-and-how-much-weight-each-one-carries)
 - [What would settle it](#what-would-settle-it)
 - [Things that would poison the answer](#things-that-would-poison-the-answer)
@@ -727,6 +728,111 @@ Artefacts: `node tools/score-wind.js --source fems --archive --forecast 0 --tole
 --hours 24 --pairs <run>.pairs.json …` for the four dates, then
 `node tools/site-factor.js --holdout <run>.pairs.json …`, kept outside the repo.
 
+## Measurement 11: the same question on 37 stations chosen by the ground
+
+Measurement 10 ended by asking for more stations rather than a better regression. This is
+that run, and **it answers the question the other way**: the terrain regression does not
+survive the sample it asked for.
+
+`tools/station-survey.js --source fems --state CO --spread 30` read 3DEP under the whole
+Colorado RAWS catalogue and picked 30 stations spaced across the 500 m position index;
+`tools/fems-stations.js` calibrated a transmit minute for each against Synoptic's free
+window, taking `data/fems-stations.json` from 11 stations to 38. `DMTC2` calibrates but
+its domain returns `outside-tile`, so **37 stations scored**, on the same four archive
+dates as measurement 10 — three September days and one March day — at f00 with
+`--tolerance 30`. About 885 observations a day instead of 262, over a position index
+running −26 m to +97 m: the same extremes as the eleven-station set, three times as
+densely filled between them.
+
+The model behaves exactly as the eleven-station sample said it does. HRRR is fast on all
+four days — speed bias +0.91, +1.02, +1.30 and +2.26 m/s, each one about a x0.70 debias —
+and the downscaling is 0.07 to 0.13 m/s worse than raw HRRR on every one of them before
+debiasing. Nothing in the wider sample rescues the terms.
+
+**The held-out terrain prediction is now a wash.** Twelve fit/eval combinations, five
+descriptors, leave-one-station-out, scored on a different day at the station left out:
+
+```
+scored on <- fitted on      raw  pooled  pos500     tpi   slope     own
+aug31 <- sep02            2.191   1.753   1.744   1.744   1.770   1.474
+aug31 <- sep04            2.191   1.750   1.695   1.743   1.772   1.462
+aug31 <- mar14            2.191   1.766   1.667   1.750   1.772   1.420
+sep02 <- aug31            2.034   1.525   1.605   1.521   1.549   1.349
+sep02 <- sep04            2.034   1.522   1.539   1.512   1.538   1.306
+sep02 <- mar14            2.034   1.529   1.569   1.509   1.530   1.402
+sep04 <- aug31            2.169   1.496   1.513   1.474   1.518   1.351
+sep04 <- sep02            2.169   1.497   1.497   1.469   1.513   1.308
+sep04 <- mar14            2.169   1.518   1.498   1.472   1.511   1.368
+mar14 <- aug31            4.036   3.125   3.012   3.154   3.221   2.253
+mar14 <- sep02            4.036   3.094   3.067   3.077   3.125   2.544
+mar14 <- sep04            4.036   3.120   2.979   3.116   3.190   2.447
+```
+
+Averaged over the twelve cells, against the pooled scale: the 500 m position index is
+**0.026 m/s better**, the 3×3 index 0.013 m/s better, slope 0.026 m/s *worse*, HRRR's
+orography offset and the elevation control 0.010 and 0.006 m/s worse. The station's own
+fitted scale is 0.33 m/s better than pooling over the same cells. **So terrain closes
+about 8% of the distance between a pooled scale and the station's own**, where on eleven
+stations it closed half of it.
+
+And it is still the same station holding up what is left. Drop STOC2 and the two
+topographic-position descriptors land on the pooled scale exactly as they did on ten
+sites — 500 m index 0.009 m/s *worse* on average, 3×3 index 0.004 m/s better, best cell
+0.019 m/s. The in-sample correlation tells the same story on every date:
+
+```
+                      r(scale, 500 m position index)
+                   37 stations   without STOC2
+aug31                    0.515           0.223
+sep02                    0.243           0.064
+sep04                    0.313           0.156
+mar14                    0.470           0.253
+```
+
+**Twenty-six more stations did not dilute the leverage point; they left it exactly as
+load-bearing as it was.** That is the strongest version of the result available: the
+sample it was supposed to be tested against now exists, and the correlation still halves
+when one of 37 stations is removed.
+
+Why one station can still do that is visible in the per-station table. STOC2's fitted
+scale on 31 August is **x2.05, against x1.34 for the next highest and a median of
+x0.52**; HRRR is slow there by −3.58 m/s where the next largest negative bias in the set
+is −1.37 and thirty of the 37 are on the fast side. Its observed mean is 6.54 m/s against
+a sample median near 1.9. It is not an extreme of the terrain axis carrying an ordinary
+error — it is the extreme of the terrain axis, the wind axis and the error axis at once,
+and a regression on 37 points with one of them there is closer to a two-point fit than
+the scatter plot suggests.
+
+**What survives is what survived before, and it is now measured on a real sample.** The
+per-station scale transfers between days and across the season boundary:
+
+```
+scored on   corrected by            pairs     raw   scale:pooled   scale:station
+aug31       sep04                     885   2.191          1.738           1.462
+sep02       sep04                     889   2.034          1.506           1.306
+sep04       aug31                     885   2.169          1.476           1.351
+mar14       sep04                     889   4.036          3.039           2.447
+```
+
+and it survives dropping STOC2 (sep04 ← aug31: 2.174 raw → 1.437 pooled → 1.258
+station). The site factor is real, repeatable and worth about a quarter of the pooled
+RMSE. **Reading it off the ground under a pin is not supported by this sample**, and this
+sample was designed to be the one that decided it.
+
+*Caveats. The catalogue cannot be spread evenly: 34 flat, 33 ridge, 19 slope and 3 valley,
+because RAWS are sited on exposed fire-weather ground on purpose, so the negative half of
+the position axis is thin no matter how the set is chosen — a regression that fails here
+has not been shown to fail on a balanced sample, only on the best one Colorado offers.
+Colorado only, four days, one season boundary, 24 consecutive hours per day. All four runs
+are f00 and therefore grade an analysis the stations were assimilated into. Choosing the
+best of five descriptors is still selection, not validation; the correction here is that
+the best of the five is now worth 0.026 m/s. `own` is a hindsight ceiling, not a
+prediction. No default moved.*
+
+Artefacts: `tools/score-wind.js --source fems --archive --forecast 0 --tolerance 30
+--hours 24 --pairs <run>.pairs.json` for the four dates over the 38-station list, then
+`tools/site-factor.js --holdout`, kept outside the repo.
+
 ## The hypotheses, and how much weight each one carries
 
 Roughly in the order the evidence supports them.
@@ -756,15 +862,16 @@ Roughly in the order the evidence supports them.
    r = -0.02. The bias is real, it repeats on three days, and it is **not** one bias: it
    is a per-station offset eight times wider than its own mean that nothing measured so
    far predicts.
-4. **The sheltering signal is real and the term carrying it is inert — tested once, and
-   it rests on one station.** The same per-station scales correlate with the 500 m
-   topographic position index at r = +0.70, which is the shape `Sx` claims and 1/50th of
-   the amplitude it applies. Measurement 10 took that from a correlation to an
-   out-of-sample score: predicting a held-out station's scale from that index alone beats
-   one pooled scale on every fit/eval pair, and lands on the pooled scale exactly once
-   STOC2 is removed. One station of eleven is carrying it. This is still where the next
-   stations should go and not where the next coefficient should — but the target is now
-   well posed, which it was not before.
+4. **The sheltering signal rests on one station, and 26 more did not change that —
+   tested twice, and not supported.** The per-station scales correlate with the 500 m
+   topographic position index at r = +0.70 on eleven stations, which is the shape `Sx`
+   claims and 1/50th of the amplitude it applies. Measurement 10 took that from a
+   correlation to an out-of-sample score and found it landing on the pooled scale once
+   STOC2 was removed; measurement 11 ran the wider set that was supposed to settle it and
+   found the same thing on 37 stations, where terrain closes 8% of the distance to a
+   station's own scale and the correlation still halves when STOC2 goes. **This is no
+   longer where the next Colorado station should go** — the state's RAWS are 3 valleys in
+   93, so the sheltered half of the axis has to come from somewhere else or not at all.
 5. **The slope term does nothing as scored.** `os = alongWind / (2 * maxSlope)` is
    normalised by the domain's own steepest slope, so a station on a 20° slope in a domain
    containing a 50° cliff reads as gentle ground. Fixed physical scales exist now
@@ -805,12 +912,14 @@ In cost order.
   correction is a constant in disguise and correlates with what the stations need at
   r = -0.02. A land-cover source would be a better roughness and there is no longer a
   reason to expect it to matter.
-- **Put stations where the sheltering hypothesis can be tested.** The one thing that did
-  correlate with the per-station scales is topographic position, at r = +0.70 with a
-  single leverage point holding it up. Ten more stations spread across the position index
-  would either promote that to a finding or kill it, and it is the only live lead. FEMS
-  publishes 2,088 RAWS with coordinates, so the station set can now be chosen by
-  topographic position rather than by which ids were already to hand.
+- ~~**Put stations where the sheltering hypothesis can be tested.**~~ Run: measurement 11.
+  `tools/station-survey.js` read 3DEP under all 2,088 FEMS RAWS and chose 30 Colorado
+  stations spread across the position index; 37 scored over the same four dates. It kills
+  the lead rather than promoting it — terrain closes about 8% of the distance to a
+  station's own scale instead of half of it, and removing STOC2 still halves the
+  correlation on every date. **The successor is not another Colorado station**: the
+  catalogue is 34 flat, 33 ridge, 19 slope and 3 valley, so the sheltered half of the axis
+  cannot be filled from this state at all.
 - **Separate the height correction from the terrain correction in the scoring** so a
   change in one cannot be credited to the other.
 - ~~**Regress the per-station scale on terrain, now that the scale is known to repeat.**~~
@@ -820,7 +929,8 @@ In cost order.
   pooled scale on eleven stations and is indistinguishable from one on ten. **The
   successor is more stations, not a better regression** — picking one of five descriptors
   on eleven sites is selection rather than validation, and the fix for both problems is
-  the same station set spread across the position index.
+  the same station set spread across the position index. Superseded by measurement 11,
+  which ran it: the scale form still holds, the terrain regression does not.
 
 ## Things that would poison the answer
 
