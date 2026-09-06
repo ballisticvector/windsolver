@@ -423,7 +423,17 @@ function createFieldService(opts) {
     }
   }, o));
 
-  async function get(spec) {
+  /**
+   * The ground alone: the same cache entry a wind solve uses, without the air.
+   *
+   * The two caches are separate so that the static half survives the hour, and
+   * this is the half of that split that pays off — a caller who wants the
+   * terrain (a hillshade, a slope map, a profile of the ridge) should not pay
+   * for a NOMADS fetch to get it, and should not warm a second copy of the
+   * derivatives beside the one the wind is already using. Asking for both over
+   * the same box costs one terrain read between them, whichever arrives first.
+   */
+  async function terrain(spec) {
     const s = spec || {};
     const domain = domainOf(s);
     const resolutionM = s.targetResolutionM === undefined
@@ -446,6 +456,13 @@ function createFieldService(opts) {
       variables: undefined,
       validTime: undefined
     }));
+    return Object.assign({ domain: domain, resolutionM: resolutionM }, land);
+  }
+
+  async function get(spec) {
+    const s = spec || {};
+    const land = await terrain(s);
+    const domain = land.domain;
     const air = Object.assign({}, s, {
       box: geo.expand(domain.box, (s.modelCellM === undefined ? MODEL_CELL_M : s.modelCellM) / geo.METERS_PER_MILE),
       levels: s.levels || hrrr.DEFAULT_LEVEL_KEYS,
@@ -470,6 +487,7 @@ function createFieldService(opts) {
 
   return {
     get: get,
+    terrain: terrain,
     ground: ground,
     atmosphere: atmosphere,
     summary: function () {

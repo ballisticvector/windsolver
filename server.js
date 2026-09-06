@@ -12,8 +12,9 @@
  * **The general answer is the endpoint, and the line is a view over it.**
  * `/v1/field` takes a coordinate and a box and returns east/north over the
  * ground, which is what a map, a fire crew or a sailor wants. `/v1/line` and
- * `/v1/windprofile` cut a line out of the same field. There is no bearing in
- * the general route and no rifle in any of them — the same rule the cache key
+ * `/v1/windprofile` cut a line out of the same field, and `/v1/hillshade`
+ * draws the ground it was solved over. There is no bearing in the general
+ * route and no rifle in any of them — the same rule the cache key
  * follows.
  *
  * **The engine's refusals survive the trip.** Every module below refuses
@@ -42,12 +43,14 @@ const nodePath = require("path");
 const auth = require("./auth.js");
 const geo = require("./geo.js");
 const downscale = require("./downscale.js");
+const hillshade = require("./hillshade.js");
+const png = require("./png.js");
 const slice = require("./slice.js");
 const profile = require("./profile.js");
 
 const API_VERSION = 1;
 
-const ROUTES = ["/healthz", "/v1/field", "/v1/line", "/v1/windprofile"];
+const ROUTES = ["/healthz", "/v1/field", "/v1/hillshade", "/v1/line", "/v1/windprofile"];
 
 const DEFAULT_PORT = 8787;
 
@@ -68,6 +71,13 @@ const DEFAULT_RETRY_AFTER_S = 5;
 // answer, not on the domain: a large box at a coarse output grid is cheap.
 const DEFAULT_MAX_CELLS = 40000;
 const DEFAULT_COLS = 48;
+
+// 512 px over a two-mile box is about 6 m a pixel, which is finer than the 30 m
+// terrain a large domain falls back to and coarse enough to send over a phone.
+// The ceiling is on the pixels rather than the side, for the same reason the
+// field's ceiling is on cells: a wide, short strip is cheap.
+const DEFAULT_HILLSHADE_WIDTH = 512;
+const DEFAULT_MAX_HILLSHADE_PIXELS = 2000000;
 
 const DEFAULT_RADIUS_MILES = 1;
 const MAX_RADIUS_MILES = 30;
@@ -106,6 +116,13 @@ const STATUS_BY_CODE = {
   "bad-level": 400,
   "bad-roughness": 400,
   "box-crosses-antimeridian": 400,
+  // The picture: an illumination, a raster size, or a PNG that cannot be made.
+  "bad-azimuth": 400,
+  "bad-altitude": 400,
+  "bad-width": 400,
+  "bad-filter": 400,
+  "bad-size": 400,
+  "bad-transparent": 400,
   "outside-domain": 400,
   "no-shelter": 400,
   "no-height": 400,
@@ -436,6 +453,9 @@ function createHandler(opts) {
   const fieldService = o.field || require("./field.js").createFieldService(o);
   const timeoutMs = o.timeoutMs === undefined ? DEFAULT_TIMEOUT_MS : o.timeoutMs;
   const maxCells = o.maxCells === undefined ? DEFAULT_MAX_CELLS : o.maxCells;
+  const maxHillshadePixels = o.maxHillshadePixels === undefined
+    ? DEFAULT_MAX_HILLSHADE_PIXELS
+    : o.maxHillshadePixels;
   const retryAfterS = o.retryAfterSeconds === undefined ? DEFAULT_RETRY_AFTER_S : o.retryAfterSeconds;
   const origins = o.origins || [];
   const log = typeof o.log === "function" ? o.log : null;
@@ -471,6 +491,26 @@ function createHandler(opts) {
     res.end(text);
   }
 
+  /**
+   * Bytes rather than JSON, for the one route whose answer is an image.
+   *
+   * The metadata rides in headers because the body cannot hold it: a caller
+   * needs the bounds to place the picture, and a picture placed on the box the
+   * caller asked for rather than the box the service snapped to is off by the
+   * padding. `access-control-expose-headers` is not optional — without it a
+   * cross-origin reader gets the image and none of the headers that say where
+   * it goes, which is a silent misplacement rather than an error.
+   */
+  function sendBytes(res, status, buffer, headers) {
+    const head = Object.assign({ "content-length": buffer.length }, headers || {});
+    const exposed = Object.keys(head).filter(function (k) { return k.startsWith("x-windsolver-"); });
+    if (head["access-control-allow-origin"] && exposed.length) {
+      head["access-control-expose-headers"] = exposed.join(", ");
+    }
+    res.writeHead(status, head);
+    res.end(buffer);
+  }
+
   function respondError(res, err, headers) {
     const code = err && err.code ? err.code : null;
     const status = (err && err.status) || STATUS_BY_CODE[code] || null;
@@ -483,7 +523,8 @@ function createHandler(opts) {
     }
 
     const body = { ok: false, code: code, error: err.message };
-    for (const key of ["parameter", "distanceM", "lat", "lon", "maxCells", "timeoutMs", "voidFraction"]) {
+    for (const key of ["parameter", "distanceM", "lat", "lon", "maxCells", "maxPixels", "pixels",
+      "timeoutMs", "voidFraction"]) {
       if (err[key] !== undefined) body[key] = err[key];
     }
     const extra = Object.assign({}, headers);
@@ -604,6 +645,74 @@ function createHandler(opts) {
         resolutionM: field.resolutionM
       }
     }, provenanceOf(field)), headers);
+  }
+
+  /**
+   * Shaded relief over the same ground `/v1/field` answers for, as a PNG.
+   *
+   * A separate route rather than a bigger field response, for three reasons
+   * that all point the same way. A raster belongs in an image, not in a JSON
+   * array of a million numbers. A hillshade needs no atmosphere, so this pays
+   * for no NOMADS fetch and answers while the wind is still solving. And the
+   * ground does not change, so this answer is cacheable for a day where the
+   * wind's is cacheable for an hour — putting them in one response would give
+   * the pair the shorter of the two lifetimes.
+   *
+   * The picture is greyscale on purpose. Colour belongs to the wind drawn over
+   * it; a hillshade that competes for the same hues makes the field harder to
+   * read, which is the opposite of why it is here.
+   */
+  async function handleHillshade(params, res, headers) {
+    const from = originParam(params);
+    const radiusMiles = numberParam(params, "radiusMiles",
+      { default: DEFAULT_RADIUS_MILES, above: 0, max: MAX_RADIUS_MILES });
+    const resolutionM = numberParam(params, "resolutionM", { default: undefined, above: 0, max: 1000 });
+    const width = Math.round(numberParam(params, "width",
+      { default: DEFAULT_HILLSHADE_WIDTH, min: 2, max: hillshade.MAX_RASTER_SIDE }));
+    const azimuthDeg = numberParam(params, "azimuthDeg",
+      { default: hillshade.DEFAULT_AZIMUTH_DEG, min: 0, max: 360 });
+    const altitudeDeg = numberParam(params, "altitudeDeg",
+      { default: hillshade.DEFAULT_ALTITUDE_DEG, above: 0, max: 90 });
+
+    const requested = geo.boundingBox(from.lat, from.lon, radiusMiles);
+    const pixels = width * rowsFor(requested, width);
+    if (pixels > maxHillshadePixels) {
+      throw serviceError("too-many-pixels", 413,
+        "a " + width + " px wide picture of this box is about " + pixels + " pixels; this " +
+        "service returns at most " + maxHillshadePixels + ". Ask for a narrower picture or a " +
+        "smaller radius.",
+        { maxPixels: maxHillshadePixels, pixels: pixels });
+    }
+
+    const spec = { lat: from.lat, lon: from.lon, radiusMiles: radiusMiles };
+    if (resolutionM !== undefined) spec.targetResolutionM = resolutionM;
+
+    const land = await solve(function () { return fieldService.terrain(spec); });
+    const box = land.domain.box;
+    // The cached derivatives, not a second pass over the terrain: the slope and
+    // aspect the wind is bent by are the slope and aspect the picture is lit
+    // by, so the two can never disagree about the ground.
+    const shade = hillshade.shade(land.derived, { azimuthDeg: azimuthDeg, altitudeDeg: altitudeDeg });
+    const raster = hillshade.toGeographic(shade, box, { width: width });
+    const image = png.greyscalePng(hillshade.toBytes(raster), raster.width, raster.height);
+
+    return sendBytes(res, 200, image, Object.assign({
+      "content-type": "image/png",
+      // A day: the ground under a box does not move, and the URL carries
+      // everything that changes the picture.
+      "cache-control": "public, max-age=86400",
+      "x-windsolver-bounds": [box.south, box.west, box.north, box.east].join(","),
+      "x-windsolver-size": raster.width + "," + raster.height,
+      "x-windsolver-resolution-m": String(Math.round(raster.resolutionM * 100) / 100),
+      "x-windsolver-terrain-resolution-m": String(land.grid.resolutionM),
+      "x-windsolver-terrain-dataset": String(land.dataset || "unknown"),
+      // What the picture cannot show: ground inside the box with no terrain
+      // under it is transparent, and a caller that draws it over a basemap
+      // would otherwise read a hole as flat ground.
+      "x-windsolver-covered": String(Math.round(raster.coveredFraction * 1000) / 1000),
+      "x-windsolver-sun": azimuthDeg + "," + altitudeDeg,
+      "x-windsolver-modelled": "shaded relief of 3DEP terrain; no wind in this image"
+    }, headers));
   }
 
   /** The line both `/v1/line` and `/v1/windprofile` are cut from. */
@@ -775,9 +884,10 @@ function createHandler(opts) {
     }
 
     const route = path === "/v1/field" ? handleField
-      : path === "/v1/line" ? handleLine
-        : path === "/v1/windprofile" ? handleWindProfile
-          : null;
+      : path === "/v1/hillshade" ? handleHillshade
+        : path === "/v1/line" ? handleLine
+          : path === "/v1/windprofile" ? handleWindProfile
+            : null;
 
     if (!route) {
       return send(res, 404, {
@@ -855,6 +965,8 @@ module.exports = {
   DEFAULT_MAX_QUEUE,
   DEFAULT_TIMEOUT_MS,
   DEFAULT_MAX_CELLS,
+  DEFAULT_HILLSHADE_WIDTH,
+  DEFAULT_MAX_HILLSHADE_PIXELS,
   NOTICE,
   STATUS_BY_CODE,
   createGate,

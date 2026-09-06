@@ -428,6 +428,32 @@ describe("createFieldService", () => {
     expect(second.east.length).toBe(first.east.length);
   });
 
+  test("hands over the ground alone without fetching any air", async () => {
+    const { service, calls } = fakes();
+    const spec = { lat: CENTRE.lat, lon: CENTRE.lon, radiusMiles: 0.1, curvatureLengthM: 200 };
+    const land = await service.terrain(spec);
+    expect(calls.terrain).toBe(1);
+    // The reason this method exists: a caller that wants the ground — a
+    // hillshade, a slope map — should not wait on NOMADS or spend a fetch.
+    expect(calls.air).toBe(0);
+    expect(land.dataset).toBe("test-10m");
+    expect(land.derived.fields.slopeDeg.length).toBe(land.grid.width * land.grid.height);
+    expect(land.domain.readBox.north).toBeGreaterThan(land.domain.box.north);
+  });
+
+  test("the ground a picture is drawn from is the ground the wind is bent by", async () => {
+    // One cache entry between the two, so a hillshade and a field over the
+    // same box can never disagree about the slope under them, and asking for
+    // both costs one terrain read.
+    const { service, calls } = fakes();
+    const spec = { lat: CENTRE.lat, lon: CENTRE.lon, radiusMiles: 0.1, curvatureLengthM: 200 };
+    const wind = await service.get(spec);
+    const land = await service.terrain(spec);
+    expect(calls.terrain).toBe(1);
+    expect(land.derived.fields.slopeDeg).toBe(wind.derived.fields.slopeDeg);
+    expect(land.domain.box).toEqual(wind.domain);
+  });
+
   test("reads terrain over the padded box, not the box that was asked for", async () => {
     const { service, calls } = fakes();
     const spec = { lat: CENTRE.lat, lon: CENTRE.lon, radiusMiles: 0.1, curvatureLengthM: 200 };

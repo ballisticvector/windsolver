@@ -28,10 +28,12 @@ const net = require("net");
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
+const zlib = require("zlib");
 
 const proj = require("../proj.js");
 const derive = require("../derive.js");
 const downscale = require("../downscale.js");
+const png = require("../png.js");
 const profile = require("../profile.js");
 const server = require("../server.js");
 
@@ -43,8 +45,8 @@ const CENTRE = { lat: 40.0150, lon: -105.2705 };
 const VALID_TIME = new Date("2026-09-03T21:00:00.000Z");
 const VALID_TIME_ISO = "2026-09-03T21:00:00.000Z";
 
-/** A field over flat ground at Boulder, shaped exactly as `field.js` returns one. */
-function fakeField(opts) {
+/** The ground alone, shaped exactly as `fieldService.terrain` returns it. */
+function fakeGround(opts) {
   const o = opts || {};
   const spacing = o.spacing || 20;
   const width = o.width || 201;
@@ -71,20 +73,35 @@ function fakeField(opts) {
     }
   };
   const derived = derive.derive(grid, { shelter: false });
-  const weights = downscale.terrainWeights(derived, { curvatureLengthM: 200 });
-  const wind = o.wind || { east: -3.0, north: 0.2 };
-  const field = downscale.downscale(weights, wind, { heightAglM: 10, shelter: false });
-
   const halfLatDeg = (height * spacing) / 2 / 111320;
   const halfLonDeg = (width * spacing) / 2 / (111320 * Math.cos(CENTRE.lat * Math.PI / 180));
-  return Object.assign(field, {
-    weights: weights,
-    domain: {
+  return {
+    grid: grid,
+    derived: derived,
+    weights: downscale.terrainWeights(derived, { curvatureLengthM: 200 }),
+    dataset: "1m",
+    resolutionM: 1,
+    box: {
       south: CENTRE.lat - halfLatDeg,
       north: CENTRE.lat + halfLatDeg,
       west: CENTRE.lon - halfLonDeg,
       east: CENTRE.lon + halfLonDeg
-    },
+    }
+  };
+}
+
+/** A field over flat ground at Boulder, shaped exactly as `field.js` returns one. */
+function fakeField(opts) {
+  const o = opts || {};
+  const spacing = o.spacing || 20;
+  const land = fakeGround(o);
+  const weights = land.weights;
+  const wind = o.wind || { east: -3.0, north: 0.2 };
+  const field = downscale.downscale(weights, wind, { heightAglM: 10, shelter: false });
+
+  return Object.assign(field, {
+    weights: weights,
+    domain: land.box,
     validTime: VALID_TIME,
     reference: {
       east: wind.east,
@@ -123,16 +140,30 @@ function sharedField() {
   return defaultField;
 }
 
+let defaultGround = null;
+function sharedGround() {
+  if (!defaultGround) defaultGround = fakeGround();
+  return defaultGround;
+}
+
 /** A field service that answers with a canned field, or throws a canned error. */
 function stubService(opts) {
   const o = opts || {};
   return {
     calls: [],
+    terrainCalls: [],
     get: async function (spec) {
       this.calls.push(spec);
       if (o.delayMs) await new Promise((r) => setTimeout(r, o.delayMs));
       if (o.error) throw o.error;
       return o.field || sharedField();
+    },
+    terrain: async function (spec) {
+      this.terrainCalls.push(spec);
+      if (o.delayMs) await new Promise((r) => setTimeout(r, o.delayMs));
+      if (o.terrainError || o.error) throw o.terrainError || o.error;
+      const land = o.ground || sharedGround();
+      return Object.assign({ domain: { box: land.box, readBox: land.box, paddingM: 0 } }, land);
     }
   };
 }
@@ -402,6 +433,187 @@ describe("GET /v1/windprofile", () => {
       expect(res.body.code).toBe("bad-parameter");
       expect(res.body.parameter).toBe("azimuthDeg");
       expect(svc.calls.length).toBe(0);
+    } finally {
+      await app.close();
+    }
+  });
+});
+
+/**
+ * The greys back out of a PNG.
+ *
+ * Short, because `png.js` is already graded against GDAL reading its output;
+ * what this suite needs is the pixels, so that "flat ground is lit" and "a hole
+ * is transparent" are assertions about the picture rather than about its
+ * length.
+ */
+function decodeGrey(buffer) {
+  const chunks = png.chunksOf(buffer);
+  const ihdr = chunks.find(function (c) { return c.type === "IHDR"; });
+  const width = ihdr.data.readUInt32BE(0);
+  const height = ihdr.data.readUInt32BE(4);
+  const idat = Buffer.concat(chunks.filter(function (c) { return c.type === "IDAT"; })
+    .map(function (c) { return c.data; }));
+  const raw = zlib.inflateSync(idat);
+  const out = Buffer.alloc(width * height);
+  for (let y = 0; y < height; y++) {
+    const filter = raw[y * (width + 1)];
+    for (let x = 0; x < width; x++) {
+      const value = raw[y * (width + 1) + 1 + x];
+      const a = x > 0 ? out[y * width + x - 1] : 0;
+      const b = y > 0 ? out[(y - 1) * width + x] : 0;
+      const c = x > 0 && y > 0 ? out[(y - 1) * width + x - 1] : 0;
+      const base = filter === 0 ? 0
+        : filter === 1 ? a
+          : filter === 2 ? b
+            : filter === 3 ? Math.floor((a + b) / 2)
+              : png.paeth(a, b, c);
+      out[y * width + x] = (value + base) & 0xff;
+    }
+  }
+  return { width: width, height: height, values: out };
+}
+
+async function getBytes(base, path, headers) {
+  const res = await fetch(base + path, headers ? { headers: headers } : undefined);
+  return {
+    status: res.status,
+    headers: res.headers,
+    body: Buffer.from(await res.arrayBuffer())
+  };
+}
+
+describe("GET /v1/hillshade", () => {
+  test("answers with a PNG placed on the ground the field is solved over", async () => {
+    const svc = stubService();
+    const app = await listen({ field: svc });
+    try {
+      const res = await getBytes(app.url, "/v1/hillshade?lat=40.0150&lon=-105.2705&width=64");
+      expect(res.status).toBe(200);
+      expect(res.headers.get("content-type")).toBe("image/png");
+      expect(res.body.subarray(0, 8)).toEqual(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]));
+
+      const image = decodeGrey(res.body);
+      expect(image.width).toBe(64);
+      expect(res.headers.get("x-windsolver-size")).toBe(image.width + "," + image.height);
+
+      // The bounds the caller places the picture on are the service's domain,
+      // not the box in the query: a picture placed on the requested box is off
+      // by however much the domain was snapped or padded, and nothing about it
+      // looks wrong.
+      const bounds = res.headers.get("x-windsolver-bounds").split(",").map(Number);
+      const domain = sharedGround().box;
+      expect(bounds[0]).toBeCloseTo(domain.south, 6);
+      expect(bounds[1]).toBeCloseTo(domain.west, 6);
+      expect(bounds[2]).toBeCloseTo(domain.north, 6);
+      expect(bounds[3]).toBeCloseTo(domain.east, 6);
+      expect(res.headers.get("x-windsolver-sun")).toBe("315,45");
+      expect(res.headers.get("x-windsolver-terrain-dataset")).toBe("1m");
+    } finally {
+      await app.close();
+    }
+  });
+
+  test("costs no atmosphere, so a picture of the ground does not wait on NOMADS", async () => {
+    const svc = stubService();
+    const app = await listen({ field: svc });
+    try {
+      const res = await getBytes(app.url, "/v1/hillshade?lat=40.0150&lon=-105.2705&width=32");
+      expect(res.status).toBe(200);
+      expect(svc.terrainCalls.length).toBe(1);
+      // The whole point of the separate route and the separate cache: the
+      // ground is answerable while the wind over it is still being fetched.
+      expect(svc.calls.length).toBe(0);
+    } finally {
+      await app.close();
+    }
+  });
+
+  test("lights flat ground evenly, at the sine of the sun's altitude", async () => {
+    const svc = stubService();
+    const app = await listen({ field: svc });
+    try {
+      const res = await getBytes(app.url,
+        "/v1/hillshade?lat=40.0150&lon=-105.2705&width=32&altitudeDeg=30");
+      const image = decodeGrey(res.body);
+      const expected = Math.round(1 + 254 * Math.sin(30 * Math.PI / 180));
+      for (const v of image.values) expect(Math.abs(v - expected)).toBeLessThanOrEqual(1);
+      expect(res.headers.get("x-windsolver-covered")).toBe("1");
+    } finally {
+      await app.close();
+    }
+  });
+
+  test("shades a slope differently from the flat ground beside it", async () => {
+    const svc = stubService({
+      ground: fakeGround({ z: function (col) { return 1600 + (col > 100 ? (col - 100) * 4 : 0); } })
+    });
+    const app = await listen({ field: svc });
+    try {
+      const res = await getBytes(app.url, "/v1/hillshade?lat=40.0150&lon=-105.2705&width=64");
+      const image = decodeGrey(res.body);
+      const row = Math.floor(image.height / 2);
+      const flat = image.values[row * image.width + 8];
+      const facing = image.values[row * image.width + image.width - 8];
+      // West-facing ground under a sun in the north-west is brighter than
+      // level ground; the sign of that difference is the whole point of the
+      // picture, and getting it backwards is the classic hillshade bug.
+      expect(facing).toBeGreaterThan(flat);
+
+      // And the sun moves: put it in the south-east and the same slope faces
+      // away. Without this the assertion above passes on a picture that
+      // ignores the azimuth entirely.
+      const other = decodeGrey((await getBytes(app.url,
+        "/v1/hillshade?lat=40.0150&lon=-105.2705&width=64&azimuthDeg=135")).body);
+      expect(other.values[row * other.width + other.width - 8])
+        .toBeLessThan(other.values[row * other.width + 8]);
+    } finally {
+      await app.close();
+    }
+  });
+
+  test("keeps a hole in the terrain transparent, and says how much it covered", async () => {
+    const svc = stubService({
+      ground: fakeGround({ z: function (col, row) { return row < 60 ? NaN : 1600; } })
+    });
+    const app = await listen({ field: svc });
+    try {
+      const res = await getBytes(app.url, "/v1/hillshade?lat=40.0150&lon=-105.2705&width=64");
+      const image = decodeGrey(res.body);
+      expect(image.values[2]).toBe(0);
+      expect(image.values[image.values.length - 3]).toBeGreaterThan(0);
+      // Nothing here invents ground: a void reads as transparent and the
+      // header says how much of the box the picture actually covers, so a
+      // caller drawing this over a basemap does not read a hole as flat.
+      expect(Number(res.headers.get("x-windsolver-covered"))).toBeLessThan(1);
+      expect(Number(res.headers.get("x-windsolver-covered"))).toBeGreaterThan(0);
+    } finally {
+      await app.close();
+    }
+  });
+
+  test("refuses more pixels than it will draw, before it reads any terrain", async () => {
+    const svc = stubService();
+    const app = await listen({ field: svc, maxHillshadePixels: 1000 });
+    try {
+      const res = await get(app.url, "/v1/hillshade?lat=40.0150&lon=-105.2705&width=512");
+      expect(res.status).toBe(413);
+      expect(res.body.code).toBe("too-many-pixels");
+      expect(res.body.maxPixels).toBe(1000);
+      expect(svc.terrainCalls.length).toBe(0);
+    } finally {
+      await app.close();
+    }
+  });
+
+  test("refuses in JSON, not in a broken image", async () => {
+    const svc = stubService();
+    const app = await listen({ field: svc });
+    try {
+      const res = await get(app.url, "/v1/hillshade?lat=40.0150&lon=-105.2705&altitudeDeg=0");
+      expect(res.status).toBe(400);
+      expect(res.headers.get("content-type")).toMatch(/application\/json/);
+      expect(res.body.parameter).toBe("altitudeDeg");
     } finally {
       await app.close();
     }
