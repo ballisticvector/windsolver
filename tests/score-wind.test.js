@@ -620,6 +620,92 @@ describe("the summary a person reads", () => {
   });
 });
 
+describe("the pairs the summary was made from", () => {
+  // A summary can be refitted with an offset and cannot be refitted with a
+  // scale, and the evidence says the bias is proportional. So the run has to be
+  // able to hand over what it actually saw — and the thing worth grading is
+  // that the artefact says the same as the summary beside it, because a pairs
+  // file that quietly disagrees is worse than no pairs file.
+  async function run(extra) {
+    let pairs = null;
+    const report = await scoreWind.buildReport(Object.assign({
+      source: stubSource(),
+      service: stubService(function () {
+        return stubField({ speedMps: 4, fromDeg: 270, referenceMps: 9 });
+      }),
+      stations: ["KBDU"], hours: 4, endMs: END,
+      writePairs: function (doc) { pairs = doc; }
+    }, extra || {}));
+    return { report: report, pairs: pairs };
+  }
+
+  test("nothing is written unless it is asked for", async () => {
+    const report = await scoreWind.buildReport({
+      source: stubSource(),
+      service: stubService(function () {
+        return stubField({ speedMps: 4, fromDeg: 270, referenceMps: 9 });
+      }),
+      stations: ["KBDU"], hours: 4, endMs: END
+    });
+    expect(report.pairs).toBeUndefined();
+    expect(JSON.stringify(report)).not.toContain("score-wind-pairs");
+  });
+
+  test("one row per scored pair, each carrying every candidate", async () => {
+    const { report, pairs } = await run();
+    expect(pairs.kind).toBe("score-wind-pairs");
+    expect(pairs.pairs.length).toBe(report.overall.model.n);
+    const keys = report.candidates.map((c) => c.key);
+    for (const p of pairs.pairs) {
+      expect(Object.keys(p.modelled).sort()).toEqual(keys.slice().sort());
+      expect(p.station).toBe("KBDU");
+    }
+  });
+
+  test("the observation is stored as the station published it, unrounded", async () => {
+    const { pairs } = await run();
+    const measured = new Set(read.records.map((o) => o.speedMps));
+    for (const p of pairs.pairs) expect(measured.has(p.observed.speedMps)).toBe(true);
+  });
+
+  test("re-scoring the pairs gives the summary's own numbers back", async () => {
+    const { report, pairs } = await run();
+    for (const key of report.candidates.map((c) => c.key)) {
+      const speeds = pairs.pairs.map((p) => p.modelled[key].speedMps - p.observed.speedMps);
+      const bias = speeds.reduce((a, c) => a + c, 0) / speeds.length;
+      const rmse = Math.sqrt(speeds.reduce((a, c) => a + c * c, 0) / speeds.length);
+      // Four decimals is what the artefact rounds to; three is what the report
+      // rounds to, so agreeing to three is agreeing exactly.
+      expect(bias).toBeCloseTo(report.overall[key].speed.biasMps, 3);
+      expect(rmse).toBeCloseTo(report.overall[key].speed.rmseMps, 3);
+    }
+  });
+
+  test("the station's terrain and height factor travel with it, once", async () => {
+    const { report, pairs } = await run();
+    expect(pairs.stations).toHaveLength(1);
+    expect(pairs.stations[0].terrain.class).toBe(report.stations[0].terrain.class);
+    expect(pairs.stations[0].heightFactor).toBe(report.stations[0].height.factor);
+    expect(pairs.window).toEqual(report.window);
+    expect(pairs.source).toEqual(report.source);
+  });
+
+  test("how far each observation sat from the model hour it was paired to", async () => {
+    // The whole artefact is worthless if a pair 25 minutes off the hour cannot
+    // be told from one on it, because that difference is a diurnal cycle.
+    const { pairs } = await run({ toleranceMs: 30 * 60 * 1000 });
+    for (const p of pairs.pairs) {
+      expect(Math.abs(p.offsetMinutes)).toBeLessThanOrEqual(30);
+      expect(Number.isFinite(p.sampleTimeMs)).toBe(true);
+    }
+    expect(new Set(pairs.pairs.map((p) => p.offsetMinutes)).size).toBeGreaterThan(1);
+  });
+
+  test("--pairs is a flag the parser knows about", () => {
+    expect(scoreWind.parse(["--pairs", "p.json"])).toEqual({ pairs: "p.json" });
+  });
+});
+
 describe("scoring the downscaling's terms one at a time", () => {
   // "The downscaling is worse than the model it started from" is four claims
   // wearing one number: the slope speed-up, the curvature speed-up, the

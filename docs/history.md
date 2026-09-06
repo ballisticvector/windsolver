@@ -243,6 +243,23 @@ or stability, because the summary is already averaged over them. Both are the an
 method's core moves. **The pairs are the smallest thing that does not have to be
 re-derived from the network every time a question changes.**
 
+**The first rows of that table now exist, as run artefacts rather than as a database.**
+`tools/score-wind.js --pairs` writes one document per run: `kind: "score-wind-pairs"`, the
+window, the domain, the observation/model/terrain sources, one entry per station with its
+terrain and sensor-height factor, and one row per pair carrying the observed speed,
+direction and calm flag exactly as the station published them, the matched model sample's
+own valid time, the pairing offset in minutes, and every scored candidate's speed and
+direction. A candidate that has no reading writes `null`; a missing observation is not a
+calm one. `tools/site-factor.js` reads those documents, and measurement 10 in
+`docs/downscaling.md` is what came out of four of them — including the multiplicative
+score the summaries could not carry.
+
+A run artefact is not the database. It is written once, alongside a report, and it is not
+accumulated, indexed, deduplicated or given a provenance version; the ingestion tool in
+step 2 below is still the thing that would make this a table rather than a pile. What it
+settles is that the row shape below is sufficient for the questions asked so far, having
+been used for them.
+
 ## What a row has to carry
 
 Each field is here because leaving it out has a specific failure mode.
@@ -287,7 +304,10 @@ Deliberately smallest-first, and each step is useful even if the next one never 
 3. **A year, several states.** This is the input everything else is blocked on, and it is
    free.
 4. **Regress the site factor on terrain**, which is the question measurement 9 makes
-   well-posed and the only route from a station table to a map.
+   well-posed and the only route from a station table to a map. First pass done in
+   measurement 10 and **it is blocked on step 3, not on the regression**: holding out one
+   station at a time over eleven Colorado sites beats a pooled scale, and stops beating it
+   when the single highest-position station is removed.
 5. **Analog correction**, graded out of sample against held-out stations *and* held-out
    dates, on the debiased table, beside the existing candidates in `--ablate`.
 6. **Climatology**, which is an aggregate over the same rows and should not be started

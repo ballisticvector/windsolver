@@ -204,4 +204,255 @@ describe("the report", () => {
     expect(text).toContain("VALLEY");
     expect(text).toContain("hindsight, not a result");
   });
+
+  test("says that a summary cannot carry the scale columns, rather than omitting them silently", () => {
+    const summary = siteFactor.report([siteFactor.readRun(RUN), siteFactor.readRun(RUN)], ["a", "b"]);
+    expect(summary).toContain("a summary has no sum of squared model speeds");
+    expect(summary).not.toContain("scale:pooled");
+
+    const pairsRun = siteFactor.readRun(pairsDoc(PAIRS));
+    const withPairs = siteFactor.report([pairsRun, pairsRun], ["a", "b"]);
+    expect(withPairs).toContain("scale:pooled");
+    expect(withPairs).toContain("The scale each station needs");
+  });
+});
+
+describe("the station the fit never saw", () => {
+  /**
+   * Six stations whose scale really is a log-linear function of their terrain
+   * position, observed over a model wind that differs station to station so
+   * that a scale and an offset cannot be confused.
+   */
+  function sited(scaleOf, ids) {
+    const pairs = {};
+    const terrain = {};
+    ids.forEach((id, i) => {
+      const x = -60 + i * 24;
+      terrain[id] = { positionIndexM: x, tpi: x / 100 };
+      pairs[id] = [3, 5, 8, 11, 4, 9].map((model, h) => ({
+        model: model + h * 0.5,
+        observed: scaleOf(x) * (model + h * 0.5)
+      }));
+    });
+    return { doc: pairsDoc(pairs, "model", terrain), terrain: terrain };
+  }
+
+  const IDS = ["A", "B", "C", "D", "E", "F"];
+  const LOGLINEAR = (x) => Math.exp(-0.6 + 0.008 * x);
+
+  test("terrain that really does set the scale predicts a station left out of the fit", () => {
+    const run = siteFactor.readRun(sited(LOGLINEAR, IDS).doc);
+    const h = siteFactor.holdout(run, run, "positionIndexM");
+    expect(h.stations).toBe(6);
+    expect(h.predicted.rmseMps).toBeLessThan(h.pooled.rmseMps);
+    expect(h.predicted.rmseMps).toBeCloseTo(h.own.rmseMps, 6);
+  });
+
+  test("a held-out station's own wind is not in its own prediction", () => {
+    const clean = sited(LOGLINEAR, IDS).doc;
+    const spoiled = JSON.parse(JSON.stringify(clean));
+    for (const row of spoiled.pairs) {
+      if (row.station === "C") row.observed.speedMps *= 9;
+    }
+    const evalRun = siteFactor.readRun(clean);
+    const before = siteFactor.holdout(siteFactor.readRun(clean), evalRun, "tpi");
+    const after = siteFactor.holdout(siteFactor.readRun(spoiled), evalRun, "tpi");
+    expect(after.predictedScale.C).toBeCloseTo(before.predictedScale.C, 12);
+    // The other five were trained on C among others, so they must have moved:
+    // otherwise the assertion above would hold for a fit that reads nothing.
+    expect(after.predictedScale.D).not.toBeCloseTo(before.predictedScale.D, 6);
+  });
+
+  test("terrain that says nothing does no better than one scale for everyone", () => {
+    const { doc } = sited(() => 0.5, IDS);
+    // A constant scale is exactly what a pooled correction already gets right,
+    // so a predictor may not beat it, and a flat predictor cannot be fitted.
+    const run = siteFactor.readRun(doc);
+    const flat = siteFactor.readRun(pairsDoc(
+      Object.fromEntries(IDS.map((id) => [
+        id,
+        [4, 6, 5, 7, 3, 8].map((model) => ({ model: model, observed: model / 2 }))
+      ])),
+      "model",
+      Object.fromEntries(IDS.map((id) => [id, { positionIndexM: 12 }]))
+    ));
+    expect(siteFactor.holdout(flat, flat, "positionIndexM").stations).toBe(0);
+    const h = siteFactor.holdout(run, run, "positionIndexM");
+    expect(h.pooled.rmseMps).toBeCloseTo(0, 9);
+  });
+
+  test("every column of a row covers the same pairs", () => {
+    const run = siteFactor.readRun(sited(LOGLINEAR, IDS).doc);
+    const h = siteFactor.holdout(run, run, "tpi");
+    expect(h.raw.n).toBe(h.pooled.n);
+    expect(h.raw.n).toBe(h.predicted.n);
+    expect(h.raw.n).toBe(h.own.n);
+    expect(h.raw.stations).toBe(6);
+  });
+
+  test("a station with no terrain to read is left out rather than guessed at", () => {
+    const doc = sited(LOGLINEAR, IDS).doc;
+    doc.stations.find((s) => s.id === "D").terrain = { class: "ridge" };
+    const run = siteFactor.readRun(doc);
+    const h = siteFactor.holdout(run, run, "positionIndexM");
+    expect(h.stations).toBe(5);
+    expect(h.predictedScale.D).toBeUndefined();
+    expect(h.raw.n).toBe(30);
+  });
+
+  test("the holdout table is printed only when it is asked for", () => {
+    const run = siteFactor.readRun(sited(LOGLINEAR, IDS).doc);
+    const names = ["a", "b"];
+    expect(siteFactor.report([run, run], names)).not.toContain("Leave one station out");
+    const asked = siteFactor.report([run, run], names, { holdout: true });
+    expect(asked).toContain("Leave one station out");
+    expect(asked).toContain("the ceiling, not a prediction");
+    for (const predictor of siteFactor.HOLDOUT_PREDICTORS.slice(0, 2)) {
+      expect(asked).toContain(predictor);
+    }
+  });
+
+  test("a summary has no terrain regression in it, and none is printed", () => {
+    const summary = siteFactor.readRun(RUN);
+    expect(siteFactor.report([summary, summary], ["a", "b"], { holdout: true }))
+      .not.toContain("Leave one station out");
+  });
+
+  test("--holdout is a flag the parser knows about", () => {
+    expect(siteFactor.parseArgs(["a.json", "b.json"]).holdout).toBe(false);
+    expect(siteFactor.parseArgs(["--holdout", "a.json", "b.json"]).holdout).toBe(true);
+  });
+
+  test("a line through two points is refused, because it is not a fit", () => {
+    expect(siteFactor.fitLine([[0, 1], [1, 2]])).toBeNull();
+    expect(siteFactor.fitLine([[0, 1], [1, 2], [2, 3]]).slope).toBeCloseTo(1, 12);
+  });
+});
+
+/** A `score-wind.js --pairs` document over the same model/observed pairs. */
+function pairsDoc(pairsById, candidate, terrainById) {
+  const key = candidate || "model";
+  const terrain = terrainById || {};
+  const rows = [];
+  for (const id of Object.keys(pairsById)) {
+    pairsById[id].forEach((p, i) => {
+      rows.push({
+        station: id,
+        time: "2026-09-04T0" + i + ":00:00Z",
+        observed: { speedMps: p.observed, fromDeg: 270, calm: false },
+        modelled: { [key]: { speedMps: p.model, fromDeg: 275 } }
+      });
+    });
+  }
+  return {
+    schemaVersion: 1,
+    kind: "score-wind-pairs",
+    candidates: [{ key: key }],
+    stations: Object.keys(pairsById).map((id) => ({
+      id: id,
+      terrain: Object.assign({ class: "ridge" }, terrain[id] || {})
+    })),
+    pairs: rows
+  };
+}
+
+/** The long way, for a scale: multiply the model and score what is left. */
+function bruteForceScale(pairsById, scales) {
+  let n = 0;
+  let sum = 0;
+  for (const id of Object.keys(pairsById)) {
+    if (!(id in scales)) continue;
+    for (const p of pairsById[id]) {
+      const residual = scales[id] * p.model - p.observed;
+      sum += residual * residual;
+      n += 1;
+    }
+  }
+  return Math.sqrt(sum / n);
+}
+
+describe("reading the pairs themselves", () => {
+  test("reproduces every number the summary of the same pairs carries", () => {
+    const fromPairs = siteFactor.readRun(pairsDoc(PAIRS));
+    const fromSummary = siteFactor.readRun(RUN);
+    expect(fromPairs.pairs).toBe(true);
+    for (const id of ["RIDGE", "VALLEY"]) {
+      const a = fromPairs.stations.find((s) => s.id === id);
+      const b = fromSummary.stations.find((s) => s.id === id);
+      expect(a.n).toBe(b.n);
+      expect(a.biasMps).toBeCloseTo(b.biasMps, 12);
+      expect(a.rmseMps).toBeCloseTo(b.rmseMps, 12);
+      expect(a.observedMeanMps).toBeCloseTo(b.observedMeanMps, 12);
+      expect(a.modelledMeanMps).toBeCloseTo(b.modelledMeanMps, 12);
+    }
+  });
+
+  test("a pair the candidate never modelled is skipped, not scored as a calm", () => {
+    const doc = pairsDoc(PAIRS);
+    doc.pairs[0].modelled.model = null;
+    const run = siteFactor.readRun(doc, { minSamples: 5 });
+    expect(run.stations.find((s) => s.id === "RIDGE").n).toBe(PAIRS.RIDGE.length - 1);
+  });
+
+  test("refuses a candidate the run did not score, and a document that is neither kind", () => {
+    expect(() => siteFactor.readRun(pairsDoc(PAIRS), { candidate: "downscaled" }))
+      .toThrow(/no candidate downscaled/);
+    expect(() => siteFactor.readRun({ kind: "score-wind-pairs" })).toThrow(/not a score-wind --pairs/);
+  });
+});
+
+describe("scoring a per-station scale", () => {
+  test("matches the pairs it was fitted over, for any scale", () => {
+    const run = siteFactor.readRun(pairsDoc(PAIRS));
+    for (const scales of [
+      { RIDGE: 1, VALLEY: 1 },
+      { RIDGE: 0.5, VALLEY: 1.4 },
+      { RIDGE: 2.25, VALLEY: 0.08 }
+    ]) {
+      const scored = siteFactor.scaledRmse(run, (id) => scales[id]);
+      expect(scored.rmseMps).toBeCloseTo(bruteForceScale(PAIRS, scales), 12);
+      expect(scored.n).toBe(12);
+    }
+  });
+
+  test("the fitted scale is the one that minimises the score", () => {
+    const run = siteFactor.readRun(pairsDoc(PAIRS));
+    const station = run.stations.find((s) => s.id === "RIDGE");
+    const best = siteFactor.fitScale(station.stats);
+    const at = (k) => siteFactor.scaledRmse(run, (id) => (id === "RIDGE" ? k : null)).rmseMps;
+    for (const delta of [-0.2, -0.05, 0.05, 0.2]) {
+      expect(at(best + delta)).toBeGreaterThan(at(best));
+    }
+  });
+
+  test("a scale carried from an identical run is the hindsight one, and beats no correction", () => {
+    const run = siteFactor.readRun(pairsDoc(PAIRS));
+    const t = siteFactor.transferScale(run, run);
+    expect(t.transferred.rmseMps).toBeCloseTo(t.hindsight.rmseMps, 12);
+    expect(t.hindsight.rmseMps).toBeLessThanOrEqual(t.pooled.rmseMps);
+    expect(t.pooled.rmseMps).toBeLessThanOrEqual(t.raw.rmseMps);
+  });
+
+  test("a proportional error transfers as a scale where it does not as an offset", () => {
+    // Same sites, same 1.6x model bias, twice the wind. An offset fitted on the
+    // calm day is the wrong size on the windy one; the scale is the same number.
+    const calm = pairsDoc(PAIRS);
+    const windy = pairsDoc({
+      RIDGE: PAIRS.RIDGE.map((p) => ({ model: p.model * 2, observed: p.observed * 2 })),
+      VALLEY: PAIRS.VALLEY.map((p) => ({ model: p.model * 2, observed: p.observed * 2 }))
+    });
+    const fit = siteFactor.readRun(calm);
+    const evaluated = siteFactor.readRun(windy);
+
+    const asScale = siteFactor.transferScale(fit, evaluated);
+    expect(asScale.transferred.rmseMps).toBeCloseTo(asScale.hindsight.rmseMps, 12);
+
+    const asOffset = siteFactor.transfer(fit, evaluated);
+    expect(asOffset.transferred.rmseMps).toBeGreaterThan(asScale.transferred.rmseMps);
+  });
+
+  test("a scale cannot be scored from a summary at all, and says so", () => {
+    const run = siteFactor.readRun(RUN);
+    expect(() => siteFactor.scaledRmse(run, () => 1)).toThrow(/only be scored from a --pairs/);
+  });
 });
