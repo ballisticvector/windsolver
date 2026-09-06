@@ -1,0 +1,222 @@
+# Where the measured wind comes from
+
+A survey, not a migration. `synoptic.js` is the only observation source with an account
+behind it, and its free tier refuses history older than about a week — which is the wall
+every remaining question in `docs/downscaling.md` runs into, now that `archive.js`
+reaches 2014 on the model side. This note records what else exists, what was actually
+tested rather than read off a marketing page, and what an adapter would have to refuse.
+
+**The short version: the two sources Synoptic itself redistributes are public, need no
+account, and go back further than the tier that was about to be bought.** Thirteen
+Colorado RAWS for a full year — 113,892 hourly observations — came back in 7 seconds
+from one anonymous GET.
+
+## Contents
+
+- [What the source has to do](#what-the-source-has-to-do)
+- [The candidates, measured](#the-candidates-measured)
+- [FEMS: the RAWS system of record](#fems-the-raws-system-of-record)
+- [MADIS: everything NOAA ingests, with QC attached](#madis-everything-noaa-ingests-with-qc-attached)
+- [The three providers disagree about when the wind was measured](#the-three-providers-disagree-about-when-the-wind-was-measured)
+- [What an adapter has to refuse](#what-an-adapter-has-to-refuse)
+- [Recommendation](#recommendation)
+- [What is not known](#what-is-not-known)
+
+## What the source has to do
+
+The observations exist for one job: grade a modelled wind against a measured one, at
+stations the model was not fitted to, on ground the downscaling is about. That job sets
+the requirements, and they are not the requirements a weather app has.
+
+1. **History, in years.** `archive.js` reaches 2014. Seasons, other states and
+   leave-one-out over a larger station set are all blocked on the observation side, not
+   the model side.
+2. **Stations chosen for terrain, not for aviation.** An ASOS sits on a deliberately
+   unobstructed airfield — the ground a 3 km model already gets right.
+3. **Coordinates and elevation per station**, because the pairing is geometric.
+4. **The measurement time, not the hour it belongs to.** See
+   [below](#the-three-providers-disagree-about-when-the-wind-was-measured); this turned
+   out to be the sharpest difference between the candidates.
+5. **A refusal that is distinguishable from calm, and from no station.**
+6. **No sales call**, and no per-request pricing that makes a 100,000-pair run a
+   budgeting decision.
+
+A commercial "historical weather API" typically fails 2 and 4, and several of them fail
+something worse: they return a *model reanalysis* interpolated to a coordinate, which as
+a yardstick for a model is circular. Nothing in this note recommends grading HRRR
+against anything that is not an anemometer.
+
+## The candidates, measured
+
+Everything in this table was exercised from this box on 2026-09-06 unless the row says
+otherwise.
+
+| Source | Stations | History | Cadence | Account | What it is good for |
+| --- | --- | --- | --- | --- | --- |
+| **USDA FEMS** | 2,088 RAWS, all 50 states, 96 in Colorado | 2005 → now, ~1 h behind live | hourly | none | **The RAWS system of record.** Bulk CSV, 13 stations x 1 year in one 7-second request |
+| **MADIS** (`madisPublic1`) | 173,053 records in one hour's file, 2,493 of them RAWS, plus MesoWest, HADS, CoAgMet, NJWxNet, NC-ECONet … | 2001 → now | hourly files | none | **Per-observation QC**, real observation times, every network in one place |
+| **NCEI ISD** (`global-hourly`) | global, mostly airports | 1901 → now | sub-hourly | none | A large independent sample on flat ground; the wrong ground for this question |
+| **IEM** | ASOS archive, some mesonets; no RAWS network in its 600-network list | decades | 1 min – 1 h | none | ASOS convenience; returned `server over capacity` on the one call tried |
+| **Synoptic free** (current) | RAWS + everything else | **~6 days** | as reported | token | Live and recent-past convenience, which is what it is still good at |
+| **Synoptic paid** | as above | longer | as reported | single-user tier, or "contact us" | Not needed for any question currently open |
+
+The bottom row is the point of the exercise. **Synoptic is a redistributor.** The RAWS
+records it serves originate with the land-management agencies and reach NOAA through
+MADIS; both of those are public, and both hold more history than the tier that was about
+to be bought.
+
+## FEMS: the RAWS system of record
+
+The Fire and Environmental Monitoring System, `fems.fs2c.usda.gov`. The web UI runs on
+an Apollo GraphQL endpoint at `/api/climatology/graphql`; introspection is off, but the
+queries are in the public front-end bundle. There is also a plain CSV route, which is
+the one worth using.
+
+Station metadata — `stationMetaData(returnAll: true)` — returns 2,088 stations with
+`station_id`, `wrcc_id`, `latitude`, `longitude`, `elevation`, `agency`, `network_name`
+and, usefully, `period_record_start` / `period_record_stop`. Every one is `RAWS`.
+
+Observations:
+
+```
+GET https://fems.fs2c.usda.gov/api/climatology/download-weather
+      ?stationIds=50406,51508,53005
+      &startDate=2026-09-04T00:00:00Z&endDate=2026-09-04T23:59:00Z
+      &dataFormat=csv&dataset=observation
+```
+
+CSV with `WindSpeed(mph)`, `WindAzimuth(degrees)`, `GustSpeed(mph)`, `GustAzimuth`,
+temperature, RH, precipitation, solar, and a `WSflag`/`WAflag`/… family. Measured:
+
+- **13 stations x 365 days = 113,892 rows, 10 MB, 7.0 s.** 20 stations x 30 days took
+  10 s. Ninety-six station ids in one query returns `400 Large requests must be sent as
+  a POST HTTP Protocol` — the service refuses rather than truncating, which is the right
+  failure.
+- **2006, 2015, 2023, 2025 and yesterday all return data** for the same station.
+- Latest observation was 1 hour old at the time of writing, so this is not archive-only.
+- **Eleven of the thirteen stations in `docs/downscaling.md` are present, to 0.00 km.**
+  `PCPC2 → 50406 CPOR`, `STOC2 → 51508 CSKU`, `KSHC2 → 53005 CKEN`, and so on. The two
+  that are missing are `TS578` and `TS723`, which are portable incident stations rather
+  than RAWS — `TS723` is the station that only ever contributed 48 pairs.
+
+So the existing scored sample can be re-run over 20 years without changing which
+stations it is.
+
+Two properties to design around. Speeds are **integer mph**, so the series is quantised
+at 0.447 m/s and a "0" is a calm below about a fifth of a metre per second, not a zero.
+And the QC flag columns are **empty for the most recent days and populated for older
+ones** — QC is a later pass, so a near-real-time FEMS observation is unchecked.
+
+## MADIS: everything NOAA ingests, with QC attached
+
+`madis-data.ncep.noaa.gov/madisPublic1`, hourly gzipped netCDF, no login for the public
+subset. One `LDAD/mesonet` file is 35 MB gzipped, 383 MB open, and contains 173,053
+observations from every network NOAA takes — RAWS among them, and MesoWest, which is
+Synoptic's own upstream.
+
+What it has that neither of the others does:
+
+- **A real observation time per record.** `observationTime` is the transmission, to the
+  minute: `KSHC2 2026-09-04T12:54`, `PCPC2 12:57`, `STOC2 12:58`.
+- **Per-observation QC verdicts.** `windSpeedDD` is `V` passed / `S` failed the spatial
+  check / `Q` failed / `Z` not checked; in the hour sampled, 74 of 2,481 RAWS wind
+  observations were not `V`. A spatial-consistency check is something no other candidate
+  here offers.
+- Every station in one file, so a station set chosen by topographic position rather than
+  by which ids were already known costs no extra requests.
+
+The cost is the shape: 383 MB per hour scored, and the archive tree runs a few days
+behind the live directory (`archive/2026/09/04/` held only `0000` while
+`data/LDAD/mesonet/netCDF/` held the recent hours). For 24 hours of one day that is
+about 840 MB of download to extract a few thousand rows. Fine occasionally, wrong as the
+default puller.
+
+## The three providers disagree about when the wind was measured
+
+This is the finding that matters most, and it was nearly missed.
+
+Same station, same day, the same three numbers, asked of all three sources:
+
+```
+KSHC2                       wind        direction   timestamp
+MADIS      observationTime  0.0 m/s     200°        2026-09-04T12:54
+Synoptic   date_time        0.0 m/s     200°        2026-09-04T12:54
+FEMS       DateTime         0.0 m/s     200°        2026-09-04T13:00
+```
+
+MADIS and Synoptic agree to the minute. **FEMS rounds the observation up to the
+following hour and discards the minute.** PCPC2 transmits at :57 and STOC2 at :58, so
+for those the FEMS label is 3 and 2 minutes late; a station transmitting at :05 would be
+labelled 55 minutes late, and nothing in the FEMS response says which.
+
+`tools/score-wind.js` pairs on a 10-30 minute tolerance. **That tolerance is smaller than
+the disagreement between providers about when the measurement happened**, so a FEMS-fed
+run would silently pair some stations against the wrong model hour — a diurnal-cycle
+error dressed as a model error, on exactly the quantity being measured.
+
+It is fixable and cheaply: the transmit minute is a fixed GOES slot per station, so one
+MADIS hour, or one Synoptic call inside the free window, recovers a per-station offset
+that can be subtracted from every FEMS timestamp for the following twenty years. An
+adapter that does not do this should say in its own header that its times are hour bins.
+
+## What an adapter has to refuse
+
+FEMS answers an unknown station with **HTTP 200 and a blank row**:
+
+```
+"StationName","DateTime","ObservationType","Temperature(F)",…,"StationId","VPD(Pa)"
+,,,,,,,,,,,,,,,,,,,,"999999",
+```
+
+It emits the same blank row for an hour inside the requested range that has no
+observation, and for hours in the future. So "this station does not exist", "this
+station was down" and "you asked about tomorrow" are the same response, and all three
+look like a quiet, well-formed answer — the same shape as NOMADS' HTML-with-200 and
+Synoptic's `RESPONSE_CODE`, and the reason both of those are checked explicitly. Any
+adapter here must treat a blank row as absence of data and a fully blank station as a
+refusal, and must not let either arrive at the scorer as an observation.
+
+The rest of the checklist is the one `synoptic.js` already meets: normalise to the
+records `observations.js` produces, keep the provider on the record, keep the station
+metadata and the sensor-height assumption visible, decide units from the response rather
+than from the request, and commit a real captured fixture so the suite is offline.
+
+**Nobody publishes anemometer height.** Neither FEMS's metadata, nor Synoptic's, nor the
+MADIS mesonet file carries it for RAWS; the 6.1 m (20 ft) standard is an assumption in
+`tools/score-wind.js` and stays one whichever source is used.
+
+## Recommendation
+
+**Do not buy anything yet.** Nothing currently open needs a paid tier:
+
+1. **FEMS as the history source** for archive-backed scoring — same stations, 20 years,
+   bulk CSV, no account. It unblocks seasons, regions and a station set chosen by
+   topographic position, which is the run that would settle whether the `Sx` sheltering
+   lead in `docs/downscaling.md` is real or is one leverage point.
+2. **MADIS as the arbiter** — for the per-station transmit minute, for a QC verdict on a
+   suspicious series, and for reaching networks FEMS does not carry.
+3. **Keep the free Synoptic token** for live and recent-past work, which is what it is
+   good at and where its account limit does not bite.
+
+If a commercial source is wanted later, the question to ask a vendor is not coverage or
+price but **"is this an anemometer or a reanalysis, and what timestamp convention is on
+it"** — the second one is what nearly poisoned this comparison, and it is not on anyone's
+pricing page.
+
+## What is not known
+
+- **The FEMS QC flag semantics.** The columns exist and carry `0` and `2`; nothing in
+  the public bundle says what they mean. Until that is pinned down, a FEMS-fed run cannot
+  filter on QC and should say so.
+- **FEMS rate limits and terms of use.** No documented limit was found and none was
+  provoked; the request pattern used here was a handful of calls. It is a US federal
+  system, so the data is public domain, but "no published limit" is not "no limit", and
+  a 20-year 96-station pull should be batched and cached rather than repeated.
+- **Whether FEMS and Synoptic ever disagree on a value.** In the overlap sampled they
+  agreed exactly, but that was three stations and one day, which is not a reconciliation.
+- **How far behind the MADIS archive tree actually runs**, and whether the live directory
+  is a fixed rolling window.
+- **IEM's mesonet holdings.** Its network list has no RAWS entry, but 600 networks were
+  not enumerated one by one, and the single data call made returned a capacity error.
+- Nothing here has been integrated. `observations.js` and `synoptic.js` are unchanged,
+  and no run in `docs/downscaling.md` has been re-scored against a new source.

@@ -479,8 +479,11 @@ In cost order.
 - ~~**Repeat on other days.**~~ Run: measurement 7. `archive.js` reads
   `noaa-hrrr-bdp-pds` through the `.idx` byte ranges, so the model side is unblocked back
   to 2014; three dates x two lead times agree on the bias and on the roughness result.
-  **What is still blocked is the observation side** — the Synoptic token refuses history
-  older than about six days, so "another season" needs an account that can reach one.
+  **What was still blocked is the observation side** — the Synoptic token refuses history
+  older than about six days. It does not need an account: `docs/observations.md` measures
+  USDA FEMS serving eleven of these thirteen stations back to 2005, free, 113,892 hourly
+  rows for thirteen stations x one year in a single 7-second request. Read that note's
+  timestamp section before pairing anything from it.
 - **Repeat on other terrain.** Colorado RAWS are a convenience sample of fire-prone
   ground with road access, in one climate. The Cascades, the Appalachians and the Great
   Basin are all different problems.
@@ -492,7 +495,9 @@ In cost order.
 - **Put stations where the sheltering hypothesis can be tested.** The one thing that did
   correlate with the per-station scales is topographic position, at r = +0.70 with a
   single leverage point holding it up. Ten more stations spread across the position index
-  would either promote that to a finding or kill it, and it is the only live lead.
+  would either promote that to a finding or kill it, and it is the only live lead. FEMS
+  publishes 2,088 RAWS with coordinates, so the station set can now be chosen by
+  topographic position rather than by which ids were already to hand.
 - **Separate the height correction from the terrain correction in the scoring** so a
   change in one cannot be credited to the other.
 
@@ -500,6 +505,12 @@ In cost order.
 
 Written down because each one has already nearly happened here.
 
+- **An observation timestamp is not the time of the observation.** For one RAWS report
+  MADIS and Synoptic both say `12:54`; FEMS says `13:00`, having rounded up to the
+  following hour and dropped the minute. The pairing tolerance here is 10-30 minutes,
+  smaller than that disagreement, so a source swap made without a per-station transmit
+  offset would put a diurnal-cycle error into the column being measured — and every
+  candidate would carry it equally, so the table would still look consistent.
 - **312 observations are not 312 independent samples.** They are 13 stations × 24
   consecutive hours; a station's error at 14:00 is most of its error at 15:00. Any
   significance claim has to account for that, and none in this document does.

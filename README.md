@@ -1168,6 +1168,26 @@ node tools/model-terrain.js --stations PCPC2,KSHC2,TT532 --at 2026-09-04T18:00:0
 **No default or formula has been changed on the strength of any of it**, and none should
 be on one state and one day.
 
+### The measured wind is the thing that is scarce, not the model
+
+Every open question above needs more days, more seasons and more stations, and
+`archive.js` supplies the model side of that back to 2014. The observation side is what
+runs out: the Synoptic token refuses history older than about a week.
+
+`docs/observations.md` is the survey of what else there is, tested rather than read off
+a page. Two things from it are worth carrying around:
+
+- **The RAWS history is public.** USDA's FEMS serves 2,088 RAWS — eleven of the thirteen
+  stations already scored, to 0.00 km — back to 2005, as bulk CSV with no account.
+  Thirteen stations for a full year is 113,892 hourly observations in one 7-second
+  request. MADIS publishes every network NOAA ingests, hourly, with a per-observation QC
+  verdict, also with no account.
+- **The three providers disagree about when the wind was measured.** For the same
+  observation MADIS and Synoptic both say `12:54`; FEMS says `13:00`, because it rounds
+  up to the following hour and drops the minute. The pairing tolerance in
+  `tools/score-wind.js` is 10-30 minutes, which is *smaller* than that disagreement, so a
+  source swap done carelessly buys a diurnal-cycle error that reads as a model error.
+
 ## Resolution is a finding, not a setting
 
 1 m DEM comes from quality-level-2-or-better lidar and covers a subset of the country;
