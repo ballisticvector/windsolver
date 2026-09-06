@@ -12,10 +12,17 @@
  * **The general answer is the endpoint, and the line is a view over it.**
  * `/v1/field` takes a coordinate and a box and returns east/north over the
  * ground, which is what a map, a fire crew or a sailor wants. `/v1/line` and
- * `/v1/windprofile` cut a line out of the same field, and `/v1/hillshade`
- * draws the ground it was solved over. There is no bearing in the general
- * route and no rifle in any of them — the same rule the cache key
+ * `/v1/windprofile` cut a line out of the same field, `/v1/hillshade`
+ * draws the ground it was solved over, and `/v1/stations` says what the
+ * anemometers in the same box actually measured. There is no bearing in the
+ * general route and no rifle in any of them — the same rule the cache key
  * follows.
+ *
+ * **One route answers `modelled: false`, and it is the only one.**
+ * `/v1/stations` returns measurements rather than a solve, so it does not
+ * carry the field's provenance block and must never be merged into one: the
+ * whole value of putting the two on a map together is that the reader can see
+ * which is which.
  *
  * **The engine's refusals survive the trip.** Every module below refuses
  * carefully and names the reason; mapping all of that onto "500 internal error"
@@ -47,10 +54,12 @@ const hillshade = require("./hillshade.js");
 const png = require("./png.js");
 const slice = require("./slice.js");
 const profile = require("./profile.js");
+const stationsLib = require("./stations.js");
 
 const API_VERSION = 1;
 
-const ROUTES = ["/healthz", "/v1/field", "/v1/hillshade", "/v1/line", "/v1/windprofile"];
+const ROUTES = ["/healthz", "/v1/field", "/v1/hillshade", "/v1/line", "/v1/stations",
+  "/v1/windprofile"];
 
 const DEFAULT_PORT = 8787;
 
@@ -81,6 +90,14 @@ const DEFAULT_MAX_HILLSHADE_PIXELS = 2000000;
 
 const DEFAULT_RADIUS_MILES = 1;
 const MAX_RADIUS_MILES = 30;
+
+// Stations are sparse where the model is interesting: 2,088 RAWS over the
+// whole country is about one per 1,500 square miles, and a one-mile box —
+// the default everywhere else here — contains none almost everywhere. A
+// station search is also cheap, since it is a filter over a cached list rather
+// than a solve, so its own radius is larger and allowed to go much further.
+const DEFAULT_STATION_RADIUS_MILES = 25;
+const MAX_STATION_RADIUS_MILES = 250;
 const MAX_LENGTH_M = 100000;
 const MAX_STATIONS = 2000;
 const MAX_HEIGHTS = 40;
@@ -88,6 +105,12 @@ const MAX_HEIGHTS = 40;
 // HRRR's grid spacing, reported so a consumer can display what the field was
 // downscaled from rather than inferring it.
 const MODEL_RESOLUTION_M = 3000;
+
+// The opposite sentence, and the only route that gets to say it.
+const MEASURED_NOTICE =
+  "Measured, not modelled: these are station observations, reported as the " +
+  "network published them. Nothing here has been corrected, interpolated or " +
+  "compared with the modelled field.";
 
 const NOTICE =
   "Modelled, not measured: HRRR downscaled onto 3DEP terrain. No comparison " +
@@ -157,7 +180,19 @@ const STATUS_BY_CODE = {
 
   // Upstream has nothing for this hour yet.
   "no-cycle": 503,
-  "aborted": 504
+  "aborted": 504,
+
+  // The station network, which is a different upstream from the model and the
+  // ground and fails on its own schedule.
+  "no-stations": 502,
+  "stations-unavailable": 502,
+  "observations-unavailable": 502,
+  "unknown-station": 404,
+  "no-observations": 502,
+  "bad-csv": 502,
+  "bad-station": 502,
+  "bad-response": 502,
+  "fems-refused": 502
 };
 
 // Served from `staticDir` when one is configured. Anything not named here is
@@ -242,6 +277,21 @@ function numberParam(params, name, opts) {
     throw badParameter(name, name + " must be greater than " + o.above + ", not " + value);
   }
   return value;
+}
+
+/**
+ * A flag, refused rather than coerced.
+ *
+ * `observed=0` and `observed=false` both mean no; anything else that is not
+ * empty is a caller who thinks they have turned something off and has not.
+ */
+function boolParam(params, name, fallback) {
+  const raw = params.get(name);
+  if (raw === null || raw === "") return fallback;
+  const text = String(raw).toLowerCase();
+  if (text === "true" || text === "1" || text === "yes") return true;
+  if (text === "false" || text === "0" || text === "no") return false;
+  throw badParameter(name, name + " must be true or false, not " + JSON.stringify(raw));
 }
 
 /** An ascending, strictly increasing list of heights above ground, in metres. */
@@ -451,6 +501,10 @@ function createGate(maxConcurrent, maxQueue) {
 function createHandler(opts) {
   const o = opts || {};
   const fieldService = o.field || require("./field.js").createFieldService(o);
+  // Separate from the field service because it is a different upstream with a
+  // different failure mode: FEMS being down must not stop a wind solve, and a
+  // NOMADS outage must not empty the map of stations.
+  const stationService = o.stations || stationsLib.createStationService(o);
   const timeoutMs = o.timeoutMs === undefined ? DEFAULT_TIMEOUT_MS : o.timeoutMs;
   const maxCells = o.maxCells === undefined ? DEFAULT_MAX_CELLS : o.maxCells;
   const maxHillshadePixels = o.maxHillshadePixels === undefined
@@ -715,6 +769,69 @@ function createHandler(opts) {
     }, headers));
   }
 
+  /**
+   * The anemometers in a box, and what they last measured.
+   *
+   * Not a solve, so it does not go through `solve()`: there is no terrain to
+   * read and no CPU to contend for, and holding a station lookup behind the
+   * gate would make the markers wait on whatever cold field is in front of
+   * them — the opposite of the point, which is that the page can draw the
+   * measurements while the model is still coming.
+   *
+   * `observed=false` returns the markers alone, off a cached list, with no
+   * network at all in the usual case.
+   */
+  async function handleStations(params, res, headers) {
+    const from = originParam(params);
+    const radiusMiles = numberParam(params, "radiusMiles",
+      { default: DEFAULT_STATION_RADIUS_MILES, above: 0, max: MAX_STATION_RADIUS_MILES });
+    const limit = Math.round(numberParam(params, "limit",
+      { default: stationsLib.DEFAULT_LIMIT, min: 1, max: stationsLib.MAX_STATIONS }));
+    const observed = boolParam(params, "observed", true);
+
+    const box = geo.boundingBox(from.lat, from.lon, radiusMiles);
+    const found = await stationService.inBox(box, { observed: observed, limit: limit });
+
+    return send(res, 200, {
+      ok: true,
+      schemaVersion: API_VERSION,
+      from: from,
+      radiusMiles: radiusMiles,
+      box: box,
+      // The inverse of every other route's provenance, and deliberately not the
+      // same block: a station is the measurement the modelled field is graded
+      // against, and a reader has to be able to tell them apart at a glance.
+      modelled: false,
+      notice: MEASURED_NOTICE,
+      units: { speed: "m/s", direction: "degrees the wind blows from", elevation: "m" },
+      matched: found.matched,
+      returned: found.returned,
+      truncated: found.truncated,
+      observed: found.observed,
+      window: found.window,
+      directory: found.directory,
+      errors: found.errors,
+      stations: found.stations.map(function (s) {
+        return {
+          id: s.id,
+          name: s.name,
+          network: s.network,
+          provider: s.provider,
+          lat: s.lat,
+          lon: s.lon,
+          elevationM: s.elevationM,
+          sensorHeightM: s.sensorHeightM,
+          state: s.state,
+          agency: s.agency,
+          distanceM: Math.round(s.distanceM),
+          observation: s.observation,
+          observationNote: s.observationNote === undefined ? null : s.observationNote,
+          observationCode: s.observationCode === undefined ? null : s.observationCode
+        };
+      })
+    }, headers);
+  }
+
   /** The line both `/v1/line` and `/v1/windprofile` are cut from. */
   async function cutLine(params, opts2) {
     const from = originParam(params);
@@ -886,8 +1003,9 @@ function createHandler(opts) {
     const route = path === "/v1/field" ? handleField
       : path === "/v1/hillshade" ? handleHillshade
         : path === "/v1/line" ? handleLine
-          : path === "/v1/windprofile" ? handleWindProfile
-            : null;
+          : path === "/v1/stations" ? handleStations
+            : path === "/v1/windprofile" ? handleWindProfile
+              : null;
 
     if (!route) {
       return send(res, 404, {
@@ -967,7 +1085,10 @@ module.exports = {
   DEFAULT_MAX_CELLS,
   DEFAULT_HILLSHADE_WIDTH,
   DEFAULT_MAX_HILLSHADE_PIXELS,
+  DEFAULT_STATION_RADIUS_MILES,
+  MAX_STATION_RADIUS_MILES,
   NOTICE,
+  MEASURED_NOTICE,
   STATUS_BY_CODE,
   createGate,
   createHandler,

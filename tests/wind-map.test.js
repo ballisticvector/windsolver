@@ -420,3 +420,276 @@ describe("the page's narrow layout", () => {
     expect(narrow[1]).toMatch(/#app \{[^}]*height:auto/);
   });
 });
+
+/**
+ * The stations.
+ *
+ * The field half of this module can be wrong by a number; the station half can
+ * be wrong by a claim, which is worse and quieter. Each test below is one
+ * sentence the page must not be able to say: that an anemometer which reported
+ * nothing was calm, that an hour-old reading is now, that an hour *label* is a
+ * measurement time, or that a 6.1 m mast and a 10 m model wind are the same
+ * quantity.
+ */
+function stationOf(overrides) {
+  return Object.assign({
+    id: "50604",
+    name: "SUGARLOAF",
+    network: "RAWS",
+    provider: "fems",
+    lat: 40.018,
+    lon: -105.361,
+    elevationM: 2052.2,
+    sensorHeightM: null,
+    state: "CO",
+    agency: "USFS",
+    distanceM: 8123,
+    observation: {
+      time: "2026-09-04T17:00:00.000Z",
+      timeIsHourBin: true,
+      transmitMinute: null,
+      hourLabel: "2026-09-04T17:00:00.000Z",
+      speedMps: 1.34112,
+      fromDeg: 110,
+      calm: false,
+      gustMps: 3.57632,
+      qcChecked: false,
+      qcFlags: null,
+      ageS: 600
+    },
+    observationNote: null,
+    observationCode: null
+  }, overrides || {});
+}
+
+describe("asking for the stations on screen", () => {
+  test("the query is the view, capped, with the corners inside it", () => {
+    const spec = lib.viewSpec({ north: 40.1, south: 39.9, east: -105.1, west: -105.4 });
+    expect(spec.lat).toBeCloseTo(40.0, 6);
+    expect(spec.lon).toBeCloseTo(-105.25, 6);
+    // Half the diagonal, not half the height: a station in the corner of the
+    // screen has to be inside the circle the box is cut from.
+    expect(spec.radiusMiles).toBeGreaterThan(6.9);
+    expect(spec.capped).toBe(false);
+    expect(lib.stationsQuery(spec)).toMatch(/^\/v1\/stations\?lat=40&lon=-105\.25&radiusMiles=/);
+  });
+
+  test("a continental view is capped and says so", () => {
+    const spec = lib.viewSpec({ north: 49, south: 25, east: -67, west: -125 });
+    expect(spec.radiusMiles).toBe(250);
+    expect(spec.capped).toBe(true);
+  });
+
+  test("observations are only opted out of, never silently skipped", () => {
+    expect(lib.stationsQuery({ lat: 40, lon: -105, radiusMiles: 25 }))
+      .not.toContain("observed=");
+    expect(lib.stationsQuery({ lat: 40, lon: -105, radiusMiles: 25, observed: false }))
+      .toContain("observed=false");
+  });
+});
+
+describe("what a station marker is allowed to say", () => {
+  test("a reporting station carries its speed, its direction and its age", () => {
+    const view = lib.stationView(stationOf());
+    expect(view.reporting).toBe(true);
+    expect(view.speedMph).toBeCloseTo(3.0, 1);
+    expect(view.towardDeg).toBe(290);
+    expect(view.ageS).toBe(600);
+    expect(view.stale).toBe(false);
+    expect(view.title).toMatch(/measured 3\.0 mph, from 110° ESE/);
+    expect(view.lines.join("\n")).toMatch(/gusting 8\.0/);
+  });
+
+  test("a station that reported nothing is not calm, and keeps its marker", () => {
+    // FEMS answers an unknown station, a dead station and a quiet hour with the
+    // same blank row. Drawing that as a zero is the one mistake on this map
+    // that a viewer cannot detect.
+    const view = lib.stationView(stationOf({
+      observation: null,
+      observationNote: "FEMS answered with a blank row"
+    }));
+    expect(view.reporting).toBe(false);
+    expect(view.calm).toBe(false);
+    expect(view.speedMph).toBeNull();
+    expect(view.color).toBeNull();
+    expect(view.lines.join("\n")).toContain("Not calm: nothing was measured.");
+    expect(view.lines.join("\n")).toContain("blank row");
+  });
+
+  test("a real calm keeps its zero and loses its arrow", () => {
+    const view = lib.stationView(stationOf({
+      observation: Object.assign(stationOf().observation,
+        { speedMps: 0, fromDeg: null, calm: true })
+    }));
+    expect(view.reporting).toBe(true);
+    expect(view.calm).toBe(true);
+    expect(view.towardDeg).toBeNull();
+    expect(view.title).toMatch(/0\.0 mph, calm/);
+  });
+
+  test("an hour label is labelled as one", () => {
+    const view = lib.stationView(stationOf());
+    expect(view.approximateTime).toBe(true);
+    expect(view.lines.join("\n")).toContain("hour label, ±30 min");
+
+    const calibrated = lib.stationView(stationOf({
+      observation: Object.assign(stationOf().observation,
+        { timeIsHourBin: false, transmitMinute: 23 })
+    }));
+    expect(calibrated.lines.join("\n")).not.toContain("hour label");
+  });
+
+  test("an old observation is marked stale rather than drawn as now", () => {
+    const view = lib.stationView(stationOf({
+      observation: Object.assign(stationOf().observation, { ageS: 3 * 3600 })
+    }));
+    expect(view.stale).toBe(true);
+    expect(view.lines.join("\n")).toContain("3 h ago");
+  });
+
+  test("an age missing from the payload is worked out, not assumed to be zero", () => {
+    const obs = Object.assign(stationOf().observation, { ageS: null });
+    const view = lib.stationView(stationOf({ observation: obs }),
+      { nowMs: Date.parse("2026-09-04T18:00:00.000Z") });
+    expect(view.ageS).toBe(3600);
+  });
+
+  test("a near-real-time row says nothing has checked it", () => {
+    // Empty QC columns and a `0` are both "no flag" to a reader that only looks
+    // for a value; "unchecked" and "checked and passed" are different claims.
+    expect(lib.stationView(stationOf()).lines.join("\n"))
+      .toContain("Not quality-controlled yet.");
+  });
+});
+
+describe("the measured wind beside the modelled one", () => {
+  const inBox = stationOf({
+    lat: 40.0105, lon: -105.27,
+    observation: Object.assign(stationOf().observation,
+      { speedMps: 2, fromDeg: 100, ageS: 0 })
+  });
+
+  test("says the ratio, the veer and that the heights do not match", () => {
+    const view = lib.stationView(inBox);
+    const body = answer({ validTime: new Date().toISOString() });
+    const cmp = lib.compareStationToField(view, body, { nowMs: Date.now() });
+    expect(cmp.comparable).toBe(true);
+    // The whole reason both layers are on one map: HRRR runs 43-70% fast over
+    // this network, and a ratio next to the arrow is that sentence without a
+    // table.
+    expect(cmp.ratio).toBeCloseTo(1.5, 6);
+    expect(cmp.directionDeltaDeg).toBe(-10);
+    expect(cmp.heightNote).toMatch(/10 m AGL, RAWS nominally 6\.1 m/);
+  });
+
+  test("refuses, by name, a station outside the solved box", () => {
+    const view = lib.stationView(stationOf());
+    const cmp = lib.compareStationToField(view, answer());
+    expect(cmp.comparable).toBe(false);
+    expect(cmp.reason).toMatch(/outside the solved box/);
+  });
+
+  test("refuses a cell with no terrain under it", () => {
+    const view = lib.stationView(stationOf({ lat: 40.01, lon: -105.26,
+      observation: Object.assign(stationOf().observation, { ageS: 0 }) }));
+    const cmp = lib.compareStationToField(view, answer());
+    expect(cmp.comparable).toBe(false);
+    expect(cmp.reason).toMatch(/no terrain/);
+  });
+
+  test("refuses when the observation and the model hour are far apart", () => {
+    const view = lib.stationView(Object.assign({}, inBox, {
+      observation: Object.assign({}, inBox.observation, { ageS: 6 * 3600 })
+    }));
+    const cmp = lib.compareStationToField(view, answer({
+      validTime: new Date().toISOString()
+    }), { nowMs: Date.now() });
+    expect(cmp.comparable).toBe(false);
+    expect(cmp.reason).toMatch(/apart/);
+  });
+
+  test("refuses a station that measured nothing, rather than comparing a blank", () => {
+    const view = lib.stationView(stationOf({ observation: null }));
+    const cmp = lib.compareStationToField(view, answer());
+    expect(cmp.comparable).toBe(false);
+    expect(cmp.reason).toMatch(/reported nothing/);
+  });
+
+  test("a bearing difference is signed and shortest-way-round", () => {
+    expect(lib.signedDegrees(7 - 350)).toBe(17);
+    expect(lib.signedDegrees(350 - 7)).toBe(-17);
+  });
+});
+
+describe("the caption under the stations toggle", () => {
+  const body = {
+    ok: true, matched: 24, returned: 10, observed: true, errors: [],
+    directory: { provider: "fems", network: "RAWS", stale: false, ageS: 12 }
+  };
+
+  test("says how many there were, not just how many are drawn", () => {
+    expect(lib.stationsCaption(body)).toBe("10 of 24 stations · RAWS via fems");
+  });
+
+  test("a retained station list is dated out loud", () => {
+    const caption = lib.stationsCaption(Object.assign({}, body, {
+      directory: { provider: "fems", network: "RAWS", stale: true, ageS: 3 * 86400 }
+    }));
+    expect(caption).toContain("station list is 3 days ago and could not be refreshed");
+  });
+
+  test("an observation outage is named rather than read as a quiet network", () => {
+    const caption = lib.stationsCaption(Object.assign({}, body, {
+      observed: false,
+      errors: [{ code: "observations-unavailable", error: "FEMS answered 502" }]
+    }));
+    expect(caption).toContain("locations only");
+    expect(caption).toContain("FEMS answered 502");
+  });
+
+  test("an empty view says so, without a clause about observations it has none of", () => {
+    const caption = lib.stationsCaption(Object.assign({}, body, {
+      matched: 0, returned: 0, observed: false
+    }));
+    expect(caption).toBe("No stations in this view · RAWS via fems");
+    expect(caption).not.toContain("locations only");
+  });
+});
+
+describe("the station layer on the page", () => {
+  const fs = require("fs");
+  const path = require("path");
+  const js = fs.readFileSync(path.join(__dirname, "..", "public", "map.js"), "utf8");
+  const html = fs.readFileSync(path.join(__dirname, "..", "public", "index.html"), "utf8");
+
+  test("the stations sit above the wind wash, not under it", () => {
+    // Leaflet's overlay pane is 400 and the relief is deliberately below it. A
+    // measurement hidden under a model output is the wrong way round here.
+    const pane = /createPane\("stations"\);([\s\S]*?)zIndex = (\d+);/.exec(js);
+    expect(pane).not.toBeNull();
+    expect(Number(pane[2])).toBeGreaterThan(400);
+  });
+
+  test("a station with no observation still gets a marker, without an arrow", () => {
+    const icon = /function stationIcon\(view\) \{([\s\S]*?)\n {2}\}/.exec(js);
+    expect(icon).not.toBeNull();
+    expect(icon[1]).toContain("view.reporting && !view.calm");
+  });
+
+  test("the popup is built when it opens, so a later solve is in it", () => {
+    expect(js).toContain("bindPopup(function () { return stationPopup(view); })");
+  });
+
+  test("a station outage does not read as a failed solve", () => {
+    const load = /async function loadStations\(\)([\s\S]*?)\n {2}\}/.exec(js);
+    expect(load).not.toBeNull();
+    expect(load[1]).toContain("No stations");
+    expect(load[1]).not.toContain("setStatus(");
+  });
+
+  test("the page says which marks were measured and which were computed", () => {
+    expect(html).toContain("Measured and modelled");
+    expect(html).toMatch(/Hollow: the station is there and reported nothing\. Not calm\./);
+    expect(html).toMatch(/modelled, not measured/);
+  });
+});

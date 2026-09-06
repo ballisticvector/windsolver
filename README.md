@@ -51,6 +51,7 @@ why a `forShot=` parameter is the way it dies.
 | `observations.js` | Station observations from `api.weather.gov`, parsed strictly: known units only, QC-validated only, station coordinates rather than the observation's rounded ones |
 | `synoptic.js` | The same records from Synoptic Data's mesonet API — RAWS and the rest — for stations that are not at airports. Needs a token, and its free tier stops at about six days |
 | `fems.js` | The same records again from USDA FEMS, the RAWS system of record: bulk CSV back to 2005 with no account, with each station's observation time reconstructed from the GOES transmit minute FEMS throws away |
+| `stations.js` | The stations inside a box and the last wind each of them reported, behind a provider-neutral boundary: the directory cached and served retained-and-dated if it cannot be refreshed, a missing observation kept as a station that measured nothing rather than as a calm |
 | `verify.js` | Pairs an observation with a model time and scores the difference — circular direction arithmetic, vector error, and the quantisation floor of the instrument. Pure arithmetic, no network |
 | `hillshade.js` | Shaded relief off the same derived slope and aspect the downscaling uses, lit GDAL's way, and resampled onto a geographic raster. Holes stay holes. Pure arithmetic, no network |
 | `png.js` | An 8-bit greyscale PNG writer with no dependency: IHDR, `tRNS`, adaptive filtering, CRC32. Graded by reading its output back with something that is not it |
@@ -704,6 +705,7 @@ other node process and started with `npm run serve`.
 | `GET /v1/line` | The derived view for a caller that has one: `bearingDeg` and `lengthM`, the wind resolved along and across a WGS84 geodesic, optionally stacked over `heightsM` |
 | `GET /v1/windprofile` | The same cut, serialised as a v1 `windProfile` and validated by `profile.js` before it is sent |
 | `GET /v1/hillshade` | The ground on its own, as a shaded-relief PNG over the same box. No atmosphere is fetched for it |
+| `GET /v1/stations` | **The measured one.** The weather stations inside the box and the last wind each of them reported. Nothing here is modelled, corrected or interpolated |
 
 **`/v1/field` is the endpoint the other two are views of, and the reason it comes first.**
 A sailor and a fire crew have no bearing to give, and an azimuth in the general route
@@ -738,6 +740,64 @@ timeout as a solve, and refuses an oversized raster with `413` before it reads a
 terrain. **It never fetches weather**: `field.terrain()` is the terrain half of
 `field.get()`, so the picture and the wind are drawn from one cached read of the same
 ground rather than from two.
+
+### `/v1/stations`, and the one word it exists to protect
+
+Every other route on this service answers with a model. This one answers with
+anemometers, and the whole of its design is keeping those two apart in the mind of a
+consumer who is reading both:
+
+```json
+{
+  "ok": true,
+  "modelled": false,
+  "notice": "Measured, not modelled: these are station observations, reported as the network published them. Nothing here has been corrected, interpolated or compared with the modelled field.",
+  "matched": 24, "returned": 10, "truncated": true, "observed": true,
+  "directory": { "provider": "fems", "network": "RAWS", "count": 2088, "retrievedAt": "2026-09-04T00:00:00.000Z", "ageS": 61200, "stale": false, "error": null },
+  "errors": [],
+  "stations": [ { "id": "50604", "name": "SUGARLOAF", "lat": 40.018, "lon": -105.361,
+    "elevationM": 2052.2, "sensorHeightM": null, "distanceM": 8123,
+    "observation": { "time": "2026-09-04T17:00:00.000Z", "timeIsHourBin": true,
+      "speedMps": 1.34112, "fromDeg": 110, "calm": false, "gustMps": 3.57632,
+      "qcChecked": false, "ageS": 600 },
+    "observationNote": null, "observationCode": null } ]
+}
+```
+
+It takes `lat`, `lon` and `radiusMiles` exactly as `/v1/field` does, plus `limit` and
+`observed` (`false` for locations only, which costs one metadata request instead of one
+per batch of twenty stations). `stations.js` is provider-neutral; **FEMS is the source
+today and it needs no account, so this route works on a bare deploy with no new
+configuration.**
+
+Four things in that payload are load-bearing, and each of them is a claim a tidier
+response would have destroyed:
+
+- **`observation: null` is not a calm.** FEMS answers an unknown station, a station that
+  is down and an hour that has not happened yet with the same blank row, and a calm is
+  `speedMps: 0, fromDeg: null, calm: true`. Rendering the first as the second invents an
+  observation, so the null carries an `observationNote` and an `observationCode` saying
+  which of the three it was.
+- **`timeIsHourBin` says the timestamp is a label, not a measurement time.** FEMS dates a
+  row to the *nearest* whole hour; the real transmit slot runs :08 to :58 and
+  `tools/fems-stations.js` measures it per station. Where it is unknown, the time can be
+  half an hour out and the flag is how a caller finds out without re-deriving it.
+- **`qcChecked: false` is "nothing has looked at this yet", which is not "checked and
+  passed".** The QC columns are empty in the last few days and populated in the archive,
+  and empty reads the same as `0` to anything that only looks for a value.
+- **`directory.stale` is the station list outliving its refresh.** Station locations are
+  quasi-static, so a provider outage serves the retained list rather than an empty map —
+  with `retrievedAt`, `ageS` and the error that stopped the refresh, never silently.
+
+An observation outage is answered `200` with the markers, `observed: false` and the
+reason in `errors`, because a map that empties out during an outage looks exactly like a
+calm night. A directory outage with nothing retained is a `502`. Neither can stop a wind
+solve: the station service is a separate upstream from the field service on purpose.
+
+**`sensorHeightM` is `null` when the provider does not publish one**, never the 10 m the
+model uses. RAWS masts are nominally 6.1 m, so a station reading and a model level are
+not the same quantity, and defaulting the height would hide that at the exact moment
+someone compares them.
 
 The field answers on a **regular lat/long grid**, because a consumer should not have to
 carry a UTM implementation to read a wind. The native projected grid is described

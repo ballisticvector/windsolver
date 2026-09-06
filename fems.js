@@ -52,7 +52,9 @@
  *
  * **The QC flags mean something undocumented.** `WSflag` and its family are 0,
  * 1 or 2 in the historical record and *empty* in the last few days, because QC
- * is a later pass — so a near-real-time FEMS observation is unchecked. Nothing
+ * is a later pass — so a near-real-time FEMS observation is unchecked, which
+ * every record says as `qcChecked` because an empty column and a `0` are both
+ * "no flag" to a reader that only looks for a value. Nothing
  * published says what 1 and 2 are, so this reader keeps flagged rows, puts the
  * flag on the record and counts them, and drops them only when a caller names
  * the values to drop. Guessing that 2 means "bad" and silently shortening the
@@ -449,6 +451,13 @@ function parseWeatherCsv(text, opts) {
       calm: calm,
       gustMps: gust,
       quality: flags.length ? flags.join(",") : null,
+      // Whether anything has looked at this row. QC is a later pass, so the
+      // flag columns are empty in the last few days and 0/1/2 in the archive —
+      // and an empty column and a `0` are both "no flag" to a reader that only
+      // looks for a value. A near-real-time observation is unchecked, which is
+      // a different claim from "checked and passed" and worth being able to
+      // make.
+      qcChecked: speedFlag !== "" || directionFlag !== "",
       // `raw` is the provider's own message, which is a METAR in
       // `observations.js` and does not exist here: a CSV row is this reader's
       // output re-encoded, and carrying a copy of it on 113,892 records a year
