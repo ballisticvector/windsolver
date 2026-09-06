@@ -64,12 +64,17 @@ npm run lint
 > - **The terrain downscaling is not yet known to help, and on ridges it measurably
 >   hurts.** `docs/downscaling.md` is the standing note: read it before changing anything
 >   in `downscale.js`, and add to it rather than starting a new one.
-> - **Three observation providers put three different timestamps on the same wind.** For
->   one RAWS report MADIS and Synoptic both say `12:54`; FEMS says `13:00`, because it
->   rounds up to the following hour and throws the minute away. `tools/score-wind.js`
->   pairs on 10-30 minutes, which is smaller than the disagreement, so changing source
->   without correcting for it buys a diurnal-cycle error that reads as a model error.
->   `docs/observations.md` has the measurement.
+> - **Three observation providers put three different timestamps on the same wind, and
+>   FEMS' is not off by a fixed amount.** For one RAWS report MADIS and Synoptic both say
+>   `12:54`; FEMS says `13:00`, because it labels the *nearest* whole hour and throws the
+>   minute away. The measured transmit slots run from :08 to :58, so at eight of eleven
+>   stations the label belongs to the hour before it and at the other three to the label's
+>   own hour — a station-dependent hour of error inside a report that still balances, and
+>   `tools/score-wind.js` pairs on 10-30 minutes, which is smaller than any of it.
+>   `fems.js` reconstructs the time from the transmit minute in
+>   `data/fems-stations.json` and refuses a station that has no entry; never add a station
+>   to a FEMS run without calibrating it first. `docs/observations.md` has the
+>   measurement.
 
 ## The downscaling is under investigation, and nothing about it is settled
 
@@ -77,10 +82,14 @@ npm run lint
 hypotheses each one supports, and the runs that would settle them. The facts most likely
 to make a well-meant change wrong:
 
-- **HRRR runs 44-70% fast over the RAWS sample**, on every day scored, so any
+- **HRRR runs 43-70% fast over the RAWS sample**, on every day scored, so any
   multiplicative term is graded on the sign of its gain rather than on its physics until
   that bias is dealt with. A candidate that wins the raw table may only be the one that
   slows the wind down.
+- **The bias is proportional, not a fixed offset.** A March day with an observed mean of
+  5.14 m/s carries +2.21 m/s where September's 2.14 m/s days carry +0.94 to +1.47 — the
+  same 1.4-1.7x, twice the offset. Anything fitted as m/s on one regime will be wrong on
+  the next.
 - **It is not one bias.** Per station the scale actually needed runs from x0.21 to x1.68,
   and it correlates with aerodynamic roughness at r = -0.02 — so a per-station roughness,
   including HRRR's own `SFCR`, buys nothing a single constant does not buy. Do not spend
@@ -103,8 +112,23 @@ chosen by topographic position. `docs/observations.md` surveys the alternatives,
 tested: **USDA FEMS** serves 2,088 RAWS back to 2005 as bulk CSV with no account — eleven
 of the thirteen stations already scored, matched to 0.00 km, and thirteen stations for a
 full year is 113,892 hourly observations in one 7-second request — and **MADIS** publishes
-every network NOAA ingests with a per-observation QC verdict, also with no account.
-Nothing is integrated yet, and no paid tier is needed for any question currently open.
+every network NOAA ingests with a per-observation QC verdict, also with no account. No
+paid tier is needed for any question currently open.
+
+`fems.js` reads the first of those, behind the same interface as `synoptic.js`, and
+`tools/score-wind.js --source fems` scores against it. **What it costs is calibration,
+not money**: only the eleven stations in `data/fems-stations.json` have a measured
+transmit minute, and a twelfth needs `tools/fems-stations.js` run against Synoptic inside
+its free window before FEMS can date its observations. Widening the station set is
+therefore a two-step job, and the second step is the one with a deadline on it.
+
+**Score FEMS with `--tolerance 30`.** Dating a RAWS correctly does not move it closer to
+the model's whole hour; it makes the distance visible. At the 10-minute default, five of
+the eleven calibrated stations have no observation inside the window at all — their slots
+are :19 to :25 off the hour — and the run reports them rather than shrinking the sample
+quietly. The METAR runs never hit this because airports report at :53. Interpolating the
+model between hours to the observation's own minute is the better answer and does not
+exist yet.
 
 ## What this is
 

@@ -1,0 +1,59 @@
+{
+    "data": {
+        "stationMetaData": {
+            "_metadata": {
+                "total_count": 3
+            },
+            "data": [
+                {
+                    "station_id": 53005,
+                    "wrcc_id": "CKEN",
+                    "station_name": "KENOSHA PASS",
+                    "latitude": 39.41083,
+                    "longitude": -105.74972,
+                    "elevation": 10200,
+                    "state": "CO",
+                    "agency": "USFS",
+                    "network_name": "RAWS",
+                    "nesdis_id": "3269D71C",
+                    "time_zone": "MST",
+                    "period_record_start": "2005-01-01T00:00:00.000Z",
+                    "period_record_stop": "2024-12-31T00:00:00.000Z",
+                    "has_historic_data": true
+                },
+                {
+                    "station_id": 50406,
+                    "wrcc_id": "CPOR",
+                    "station_name": "PORCUPINE CR.",
+                    "latitude": 40.09808,
+                    "longitude": -106.68061,
+                    "elevation": 8917,
+                    "state": "CO",
+                    "agency": "USFS",
+                    "network_name": "RAWS",
+                    "nesdis_id": "3235D2C2",
+                    "time_zone": "MST",
+                    "period_record_start": "2005-01-01T00:00:00.000Z",
+                    "period_record_stop": "2024-12-31T00:00:00.000Z",
+                    "has_historic_data": true
+                },
+                {
+                    "station_id": 51508,
+                    "wrcc_id": "CSKU",
+                    "station_name": "STORM KING MOUNTAIN",
+                    "latitude": 39.58694,
+                    "longitude": -107.40444,
+                    "elevation": 8793,
+                    "state": "CO",
+                    "agency": "USFS",
+                    "network_name": "RAWS",
+                    "nesdis_id": "324AA76C",
+                    "time_zone": "MST",
+                    "period_record_start": "2005-01-01T00:00:00.000Z",
+                    "period_record_stop": "2024-12-31T00:00:00.000Z",
+                    "has_historic_data": true
+                }
+            ]
+        }
+    }
+}

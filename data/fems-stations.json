@@ -1,0 +1,178 @@
+{
+  "PCPC2": {
+    "femsId": "50406",
+    "wrccId": "CPOR",
+    "name": "PORCUPINE CR.",
+    "transmitMinute": 57,
+    "sensorHeightM": 6.1,
+    "sensorHeightSource": "synoptic",
+    "calibratedAgainst": {
+      "source": "synoptic",
+      "start": "2026-09-03T14:00:00.000Z",
+      "end": "2026-09-06T14:00:00.000Z",
+      "hoursChecked": 72,
+      "agreement": 1,
+      "separationKm": 0
+    }
+  },
+  "TT532": {
+    "femsId": "55522356",
+    "wrccId": "CRNP",
+    "name": "ROAN PLATEAU",
+    "transmitMinute": 41,
+    "sensorHeightM": null,
+    "sensorHeightSource": null,
+    "calibratedAgainst": {
+      "source": "synoptic",
+      "start": "2026-09-03T14:00:00.000Z",
+      "end": "2026-09-06T14:00:00.000Z",
+      "hoursChecked": 72,
+      "agreement": 1,
+      "separationKm": 0
+    }
+  },
+  "STOC2": {
+    "femsId": "51508",
+    "wrccId": "CSKU",
+    "name": "STORM KING MOUNTAIN",
+    "transmitMinute": 58,
+    "sensorHeightM": 6.1,
+    "sensorHeightSource": "synoptic",
+    "calibratedAgainst": {
+      "source": "synoptic",
+      "start": "2026-09-03T14:00:00.000Z",
+      "end": "2026-09-06T14:00:00.000Z",
+      "hoursChecked": 72,
+      "agreement": 1,
+      "separationKm": 0
+    }
+  },
+  "KSHC2": {
+    "femsId": "53005",
+    "wrccId": "CKEN",
+    "name": "KENOSHA PASS",
+    "transmitMinute": 54,
+    "sensorHeightM": 6.1,
+    "sensorHeightSource": "synoptic",
+    "calibratedAgainst": {
+      "source": "synoptic",
+      "start": "2026-09-03T14:00:00.000Z",
+      "end": "2026-09-06T14:00:00.000Z",
+      "hoursChecked": 72,
+      "agreement": 1,
+      "separationKm": 0.015
+    }
+  },
+  "PKLC2": {
+    "femsId": "51901",
+    "wrccId": "CPCG",
+    "name": "PICKLE GULCH",
+    "transmitMinute": 24,
+    "sensorHeightM": 6.1,
+    "sensorHeightSource": "synoptic",
+    "calibratedAgainst": {
+      "source": "synoptic",
+      "start": "2026-09-03T14:00:00.000Z",
+      "end": "2026-09-06T14:00:00.000Z",
+      "hoursChecked": 71,
+      "agreement": 1,
+      "separationKm": 0
+    }
+  },
+  "RRAC2": {
+    "femsId": "53605",
+    "wrccId": "CRMR",
+    "name": "RAMPART RANGE",
+    "transmitMinute": 35,
+    "sensorHeightM": 6.1,
+    "sensorHeightSource": "synoptic",
+    "calibratedAgainst": {
+      "source": "synoptic",
+      "start": "2026-09-03T14:00:00.000Z",
+      "end": "2026-09-06T14:00:00.000Z",
+      "hoursChecked": 72,
+      "agreement": 1,
+      "separationKm": 0.029
+    }
+  },
+  "LSTC2": {
+    "femsId": "53006",
+    "wrccId": "CLPK",
+    "name": "LOST PARK",
+    "transmitMinute": 8,
+    "sensorHeightM": 6.1,
+    "sensorHeightSource": "synoptic",
+    "calibratedAgainst": {
+      "source": "synoptic",
+      "start": "2026-09-03T14:00:00.000Z",
+      "end": "2026-09-06T14:00:00.000Z",
+      "hoursChecked": 72,
+      "agreement": 1,
+      "separationKm": 0.021
+    }
+  },
+  "DYGC2": {
+    "femsId": "50407",
+    "wrccId": "CDRG",
+    "name": "DRY GULCH",
+    "transmitMinute": 38,
+    "sensorHeightM": 6.1,
+    "sensorHeightSource": "synoptic",
+    "calibratedAgainst": {
+      "source": "synoptic",
+      "start": "2026-09-03T14:00:00.000Z",
+      "end": "2026-09-06T14:00:00.000Z",
+      "hoursChecked": 72,
+      "agreement": 1,
+      "separationKm": 0
+    }
+  },
+  "SODC2": {
+    "femsId": "51703",
+    "wrccId": "CSOD",
+    "name": "SODA CREEK",
+    "transmitMinute": 56,
+    "sensorHeightM": 6.1,
+    "sensorHeightSource": "synoptic",
+    "calibratedAgainst": {
+      "source": "synoptic",
+      "start": "2026-09-03T14:00:00.000Z",
+      "end": "2026-09-06T14:00:00.000Z",
+      "hoursChecked": 72,
+      "agreement": 1,
+      "separationKm": 0
+    }
+  },
+  "BMOC2": {
+    "femsId": "55601",
+    "wrccId": "CBLK",
+    "name": "BLACK MOUNTAIN",
+    "transmitMinute": 56,
+    "sensorHeightM": 6.1,
+    "sensorHeightSource": "synoptic",
+    "calibratedAgainst": {
+      "source": "synoptic",
+      "start": "2026-09-03T14:00:00.000Z",
+      "end": "2026-09-06T14:00:00.000Z",
+      "hoursChecked": 72,
+      "agreement": 1,
+      "separationKm": 0
+    }
+  },
+  "ESPC2": {
+    "femsId": "50507",
+    "wrccId": "CEST",
+    "name": "ESTES PARK",
+    "transmitMinute": 24,
+    "sensorHeightM": 6.1,
+    "sensorHeightSource": "synoptic",
+    "calibratedAgainst": {
+      "source": "synoptic",
+      "start": "2026-09-03T14:00:00.000Z",
+      "end": "2026-09-06T14:00:00.000Z",
+      "hoursChecked": 71,
+      "agreement": 1,
+      "separationKm": 0
+    }
+  }
+}

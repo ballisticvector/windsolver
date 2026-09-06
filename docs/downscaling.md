@@ -21,6 +21,7 @@ If you are picking this up cold: `downscale.js` is the module in question,
 - [Measurement 5: subtracting that ground, and scoring it](#measurement-5-subtracting-that-ground-and-scoring-it)
 - [Measurement 6: the curvature term's two halves, through the debiased table](#measurement-6-the-curvature-terms-two-halves-through-the-debiased-table)
 - [Measurement 7: six runs off the archive, and what roughness does to the bias](#measurement-7-six-runs-off-the-archive-and-what-roughness-does-to-the-bias)
+- [Measurement 8: the first day Synoptic would not sell](#measurement-8-the-first-day-synoptic-would-not-sell)
 - [The hypotheses, and how much weight each one carries](#the-hypotheses-and-how-much-weight-each-one-carries)
 - [What would settle it](#what-would-settle-it)
 - [Things that would poison the answer](#things-that-would-poison-the-answer)
@@ -414,9 +415,80 @@ changes which observations are in the sample.*
 *The archive can reach 2014. The observation account cannot: Synoptic refused history
 older than about six days with `does not have access to the requested history`, which is
 why three recent dates were scored rather than three seasons. Archive-backed repeats over
-arbitrary history are unblocked in the code and blocked on that token.*
+arbitrary history are unblocked in the code and blocked on that token.* — *no longer:
+`fems.js` reads the same RAWS back to 2005 without an account, and
+[measurement 8](#measurement-8-the-first-day-synoptic-would-not-sell) is the first run
+through it.*
 
 Artefacts: `--archive --exposure --ablate`, six runs, JSON kept outside the repo.
+
+## Measurement 8: the first day Synoptic would not sell
+
+The last line of measurement 7 is that the archive reaches 2014 and the observation
+account reaches about six days. `fems.js` removes that half of the wall: USDA FEMS serves
+the same RAWS back to 2005 with no account. This is the first score in this note taken
+over a window Synoptic refuses.
+
+**2026-03-14 19:00Z to 2026-03-15 18:00Z, f00, archive HRRR, eleven calibrated Colorado
+RAWS, 264 pairs, `--tolerance 30`** — roughly six months before any run above, and a
+different season:
+
+```
+candidate      obs   spd bias  spd rmse  vec rmse        debiased: spd rmse  vec rmse
+HRRR alone     264       2.21      4.54      5.92                      3.72      4.90
+downscaled     264       2.50      4.35      5.81                      3.38      4.63
+
+valley hrrr     48       5.13      6.26      7.27                      3.98      5.04
+valley down     48       4.36      5.46      6.53                      3.32      4.43
+ridge hrrr      96       0.44      4.49      5.63                      4.84      5.62
+ridge down      96       1.49      4.42      5.73                      4.43      5.35
+```
+
+**The bias repeats in another season, and it is multiplicative rather than additive.**
+This is the most useful thing in the run, and it needed a windy day to see. The observed
+mean here is 5.14 m/s against 2.13-2.15 m/s on all six September runs — a genuinely
+different regime, not another sample of the same one — and the bias goes up with it:
+
+```
+                observed   bias   model / observed
+September runs      2.14   0.94-1.47      1.44-1.70x
+March run           5.14   2.21           1.43x
+```
+
+An additive offset fitted on September would have predicted about +1.2 m/s in March and
+under-read the error by a factor of two. A multiplicative one predicts 1.4-1.7x and lands.
+Seven runs over two seasons and a 2.4x range of observed wind speed now say **HRRR is
+proportionally fast, not fast by a fixed amount** — which is what makes the debiased table
+the right instrument rather than a convenience, and which no amount of scoring inside one
+week could have shown.
+
+**The ridge penalty is present raw and absent debiased, for the third time.** 4.49 → 5.73
+raw, 5.62 → 5.35 debiased. Measurement 6 concluded that on a different sample; it holds on
+a sample from a different season, which is the first thing in this note to survive that
+test.
+
+**And the valley gain is the largest yet** — 5.04 → 4.43 debiased, 0.61 m/s, against
+0.06 m/s spanning the entire ablation in measurement 6. Whatever the terrain terms do,
+they do it in hollows and on a windier day.
+
+One station is worth naming rather than averaging away. **DYGC2, Dry Gulch, ran 151° from
+the model for all 24 hours** — mean absolute direction error 118°, within 30° on one hour
+out of 24, observed 2.8 m/s against a modelled 6.6. That is what a drainage does to a
+gradient wind, and **the downscaling cannot represent it at all: it scales speed and never
+veers.** It is not a reader fault — FEMS and Synoptic agree on every direction this station
+reported in the five overlapping days — but it is a March day read through a September
+calibration, and a vane that had been knocked round would look identical. Directional
+skill in channelled terrain is untested and this is the first evidence about it.
+
+*Caveats: one day, one state, eleven stations, 24 consecutive hours. The 30-minute
+tolerance is not optional here — at the 10-minute default, five of the eleven stations
+have no observation inside the window at all, because their transmit slots are :19 to :25
+off the hour. The transmit minutes were measured this September and applied to March;
+nothing checks that a GOES slot never moved. f00 is not independent of the analysis, and
+these are RAWS, which the analysis assimilates. The debias scale is fitted on the pairs it
+is scored against.*
+
+Artefacts: `--source fems --archive --tolerance 30`, JSON kept outside the repo.
 
 ## The hypotheses, and how much weight each one carries
 

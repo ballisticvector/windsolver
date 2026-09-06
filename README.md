@@ -49,6 +49,8 @@ why a `forShot=` parameter is the way it dies.
 | `field.js` | The whole chain in one call: a coordinate in, terrain read, derived and cached, live HRRR fetched and cached, an east/north field over the domain out |
 | `slice.js` | The view a consumer cuts out of a field: a WGS84 geodesic from a point and a bearing, the wind resolved onto it, stacked over a set of heights, and serialised as a `windProfile`. Pure arithmetic, no network |
 | `observations.js` | Station observations from `api.weather.gov`, parsed strictly: known units only, QC-validated only, station coordinates rather than the observation's rounded ones |
+| `synoptic.js` | The same records from Synoptic Data's mesonet API — RAWS and the rest — for stations that are not at airports. Needs a token, and its free tier stops at about six days |
+| `fems.js` | The same records again from USDA FEMS, the RAWS system of record: bulk CSV back to 2005 with no account, with each station's observation time reconstructed from the GOES transmit minute FEMS throws away |
 | `verify.js` | Pairs an observation with a model time and scores the difference — circular direction arithmetic, vector error, and the quantisation floor of the instrument. Pure arithmetic, no network |
 | `profile.js` | The `windProfile` contract: what a field looks like leaving here, and every check it has to pass |
 | `server.js` | The HTTP boundary: the general field over a box, the line view for a caller that has a bearing, and the limits that keep a slow upstream from becoming a hung socket |
@@ -1175,18 +1177,41 @@ Every open question above needs more days, more seasons and more stations, and
 runs out: the Synoptic token refuses history older than about a week.
 
 `docs/observations.md` is the survey of what else there is, tested rather than read off
-a page. Two things from it are worth carrying around:
+a page, and `fems.js` is what came of it. Three things are worth carrying around:
 
 - **The RAWS history is public.** USDA's FEMS serves 2,088 RAWS — eleven of the thirteen
   stations already scored, to 0.00 km — back to 2005, as bulk CSV with no account.
   Thirteen stations for a full year is 113,892 hourly observations in one 7-second
   request. MADIS publishes every network NOAA ingests, hourly, with a per-observation QC
   verdict, also with no account.
-- **The three providers disagree about when the wind was measured.** For the same
-  observation MADIS and Synoptic both say `12:54`; FEMS says `13:00`, because it rounds
-  up to the following hour and drops the minute. The pairing tolerance in
-  `tools/score-wind.js` is 10-30 minutes, which is *smaller* than that disagreement, so a
-  source swap done carelessly buys a diurnal-cycle error that reads as a model error.
+- **The providers disagree about when the wind was measured, and FEMS is the one that is
+  vague.** For the same observation MADIS and Synoptic both say `12:54`; FEMS says
+  `13:00`, because it labels the *nearest* whole hour and drops the minute. The pairing
+  tolerance in `tools/score-wind.js` is 10-30 minutes, which is *smaller* than that
+  disagreement, so a careless source swap buys a diurnal-cycle error that reads as a
+  model error.
+- **The minute is recoverable, because it is a fixed GOES slot per station.**
+  `tools/fems-stations.js` measures it against Synoptic once, inside the free window, and
+  writes `data/fems-stations.json`; `fems.js` then reconstructs every historical
+  timestamp from it, and `--source fems` refuses a station that has no entry rather than
+  pairing on the hour label. The measured slots run from :08 to :58 — spread across the
+  hour, not clustered at the top of it — so the offset is per station and cannot be a
+  constant.
+
+```bash
+# calibrate once, with a token
+SYNOPTIC_API_TOKEN=… node tools/fems-stations.js --stations PCPC2,STOC2,KSHC2 \
+  --days 3 --out data/fems-stations.json
+# then score any window archive.js can reach, with no account
+node tools/score-wind.js --source fems --archive --hours 24 \
+  --stations PCPC2,STOC2,KSHC2 --end 2019-07-14T18:00:00Z
+```
+
+`tools/fems-agree.js` grades the two services against each other where they overlap: over
+eleven stations and five days, **1,318 shared hours, every direction identical, worst
+speed disagreement 0.0005 m/s** — which is Synoptic rounding the mph conversion to 0.447.
+That grades the reader, not the archive; the years FEMS is used for are the years
+Synoptic will not serve, so nothing checks those but MADIS.
 
 ## Resolution is a finding, not a setting
 

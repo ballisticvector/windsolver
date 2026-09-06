@@ -1,10 +1,10 @@
 # Where the measured wind comes from
 
-A survey, not a migration. `synoptic.js` is the only observation source with an account
-behind it, and its free tier refuses history older than about a week — which is the wall
-every remaining question in `docs/downscaling.md` runs into, now that `archive.js`
-reaches 2014 on the model side. This note records what else exists, what was actually
-tested rather than read off a marketing page, and what an adapter would have to refuse.
+A survey, and now the adapter it recommended. `synoptic.js`'s free tier refuses history
+older than about a week — which is the wall every remaining question in
+`docs/downscaling.md` runs into, now that `archive.js` reaches 2014 on the model side.
+This note records what else exists, what was actually tested rather than read off a
+marketing page, what an adapter has to refuse, and what `fems.js` does about it.
 
 **The short version: the two sources Synoptic itself redistributes are public, need no
 account, and go back further than the tier that was about to be bought.** Thirteen
@@ -19,6 +19,7 @@ from one anonymous GET.
 - [MADIS: everything NOAA ingests, with QC attached](#madis-everything-noaa-ingests-with-qc-attached)
 - [The three providers disagree about when the wind was measured](#the-three-providers-disagree-about-when-the-wind-was-measured)
 - [What an adapter has to refuse](#what-an-adapter-has-to-refuse)
+- [Using it: fems.js](#using-it-femsjs)
 - [Recommendation](#recommendation)
 - [What is not known](#what-is-not-known)
 
@@ -144,10 +145,11 @@ Synoptic   date_time        0.0 m/s     200°        2026-09-04T12:54
 FEMS       DateTime         0.0 m/s     200°        2026-09-04T13:00
 ```
 
-MADIS and Synoptic agree to the minute. **FEMS rounds the observation up to the
-following hour and discards the minute.** PCPC2 transmits at :57 and STOC2 at :58, so
-for those the FEMS label is 3 and 2 minutes late; a station transmitting at :05 would be
-labelled 55 minutes late, and nothing in the FEMS response says which.
+MADIS and Synoptic agree to the minute. **FEMS labels the observation with a whole hour
+and discards the minute.** PCPC2 transmits at :57 and STOC2 at :58, so for those the FEMS
+label is 3 and 2 minutes late — which made "it rounds up to the following hour" look like
+the rule until eleven stations were measured. It is not; see *Measuring it changed the
+rule* below. Either way nothing in the FEMS response says which minute it came from.
 
 `tools/score-wind.js` pairs on a 10-30 minute tolerance. **That tolerance is smaller than
 the disagreement between providers about when the measurement happened**, so a FEMS-fed
@@ -158,6 +160,52 @@ It is fixable and cheaply: the transmit minute is a fixed GOES slot per station,
 MADIS hour, or one Synoptic call inside the free window, recovers a per-station offset
 that can be subtracted from every FEMS timestamp for the following twenty years. An
 adapter that does not do this should say in its own header that its times are hour bins.
+
+**Measuring it changed the rule.** `tools/fems-stations.js` recovered the slot for eleven
+stations against 72 hours of Synoptic, and the slots are spread right across the hour
+rather than clustered near the top of it:
+
+```
+LSTC2 :08   PKLC2 :24   ESPC2 :24   RRAC2 :35   DYGC2 :38   TT532 :41
+KSHC2 :54   SODC2 :56   BMOC2 :56   PCPC2 :57   STOC2 :58
+```
+
+So FEMS does not round *up*; it labels the **nearest** whole hour. A :57 observation is
+labelled 13:00 and belongs to 12:57, but a :08 observation is labelled 13:00 and belongs
+to 13:08. Eight of the eleven fall on the first side and three — Lost Park, Pickle Gulch,
+Estes Park — on the second.
+
+The first two stations sampled were PCPC2 at :57 and STOC2 at :58, which is exactly the
+sample that makes "the label is the hour after the measurement" look like the rule. Taken
+as the rule it is a full hour wrong at those three stations and right at the other eight,
+which is the failure worth naming: not a wrong report, a report that is right in most
+columns.
+
+### Dating them correctly costs half the stations at the default tolerance
+
+Reconstructing the true minute does not make a FEMS station easier to pair — it makes the
+mismatch visible. `score-wind.js` defaults to a 10 minute window around the model's valid
+hour, and a slot at :24 or :35 is nowhere near it. A 24-hour run over the eleven
+calibrated stations scored six of them and reported the rest rather than quietly shrinking
+the sample:
+
+```
+5 station(s) reported, and none of it landed inside the 10 minute window:
+  TT532 ROAN PLATEAU   — nearest model hour 19 minutes away
+  PKLC2 PICKLE GULCH   — nearest model hour 24 minutes away
+  RRAC2 RAMPART RANGE  — nearest model hour 25 minutes away
+  DYGC2 DRY GULCH      — nearest model hour 22 minutes away
+  ESPC2 ESTES PARK     — nearest model hour 24 minutes away
+```
+
+`--tolerance 30` admits all eleven, and that is the right setting for a FEMS-fed run, but
+it is a real widening and not a formality: it pairs an observation up to half an hour old
+with a model hour. The alternative — interpolating the model between hours to the
+observation's own minute — is the better answer and has not been built.
+
+The uncomfortable version of this is that the METAR runs were never affected because
+airports report at :53, close enough to the hour that a 10 minute window works by
+accident. RAWS transmit whenever their GOES slot falls.
 
 ## What an adapter has to refuse
 
@@ -181,9 +229,51 @@ records `observations.js` produces, keep the provider on the record, keep the st
 metadata and the sensor-height assumption visible, decide units from the response rather
 than from the request, and commit a real captured fixture so the suite is offline.
 
-**Nobody publishes anemometer height.** Neither FEMS's metadata, nor Synoptic's, nor the
-MADIS mesonet file carries it for RAWS; the 6.1 m (20 ft) standard is an assumption in
-`tools/score-wind.js` and stays one whichever source is used.
+**Nobody publishes anemometer height.** Neither FEMS's metadata nor the MADIS mesonet
+file carries it for RAWS. Synoptic does, for these stations, and that is why the
+calibration map carries `sensorHeightM` with `sensorHeightSource: "synoptic"` beside it
+rather than `fems.js` inventing one: the height moves the model wind by about 8.5%, in
+the direction that makes HRRR look fast, so where the number came from has to survive the
+change of provider.
+
+## Using it: fems.js
+
+```bash
+# once per station, inside Synoptic's free window; no token is needed after this
+SYNOPTIC_API_TOKEN=… node tools/fems-stations.js \
+  --stations PCPC2,TT532,STOC2,KSHC2,PKLC2,RRAC2,LSTC2,DYGC2,SODC2,BMOC2,ESPC2 \
+  --days 3 --out data/fems-stations.json
+
+# then any window archive.js can reach, with no account at all
+node tools/score-wind.js --source fems --archive \
+  --stations PCPC2,STOC2,KSHC2 --end 2019-07-14T18:00:00Z --hours 24
+```
+
+`data/fems-stations.json` is committed. It is measured data with its provenance attached
+rather than a cache — each entry records the hours checked, the agreement, and how far
+apart the two services put the mast — and it cannot be regenerated by anyone without a
+Synoptic token.
+
+**Do the two services agree?** `tools/fems-agree.js` asks it of every hour rather than a
+sample. Over the eleven stations and the five days Synoptic will still serve
+(2026-09-01 → 09-06):
+
+```
+1318 hours in both services
+worst speed disagreement     0.0005 m/s
+worst direction disagreement 0°
+hours only FEMS has          0 inside the window
+hours only Synoptic has      2
+```
+
+Every direction identical, and the whole speed disagreement is Synoptic rounding the mph
+conversion to 0.447 where this reader uses 0.44704. Scoring the same six hours end to end
+through `tools/score-wind.js` gives the same report from either source, every row within
+0.02 m/s — which grades the timestamps as well as the values, since a mispaired hour
+would move the score and not the series.
+
+It grades **the reader, not the archive**: both services are downstream of the same WIMS
+feed, and Synoptic cannot reach the years FEMS is here for.
 
 ## Recommendation
 
@@ -205,18 +295,32 @@ pricing page.
 
 ## What is not known
 
-- **The FEMS QC flag semantics.** The columns exist and carry `0` and `2`; nothing in
-  the public bundle says what they mean. Until that is pinned down, a FEMS-fed run cannot
-  filter on QC and should say so.
+- **The FEMS QC flag semantics.** The columns exist and carry `0`, `1` and `2`; nothing
+  in the public bundle says what they mean. `fems.js` keeps flagged rows, labels them
+  (`quality: "WS=2"`) and counts them, and drops them only for a caller that has decided
+  what a flag means. **So a FEMS-fed run is unfiltered by QC**, where the Synoptic runs
+  it is compared against dropped flagged rows — a difference that did not show up above
+  only because those five days contain no flagged rows.
+- **Whether a transmit slot has always been that slot.** It is measured this week and
+  applied back to 2005. A station whose GOES assignment changed carries up to an hour of
+  error before the change and none after it, and neither service announces it. MADIS
+  keeps the minute back years and would settle it; that has not been done.
 - **FEMS rate limits and terms of use.** No documented limit was found and none was
   provoked; the request pattern used here was a handful of calls. It is a US federal
   system, so the data is public domain, but "no published limit" is not "no limit", and
   a 20-year 96-station pull should be batched and cached rather than repeated.
-- **Whether FEMS and Synoptic ever disagree on a value.** In the overlap sampled they
-  agreed exactly, but that was three stations and one day, which is not a reconciliation.
+- **Whether they disagree outside the overlap.** They cannot be compared where it
+  matters: the years FEMS is being used for are exactly the years Synoptic will not
+  serve. MADIS is the only way to check a historical FEMS value against anything.
+- **The FEMS elevation unit.** `elevation` is unitless in the metadata and is read as
+  feet, which agrees with Synoptic and with the published elevation at all eleven matched
+  stations. That is an inference from agreement, not from documentation.
+- **How far the calibration reaches.** Eleven Colorado stations. `--source fems` refuses
+  a station with no map entry rather than falling back to the hour label, so widening the
+  study means widening the map first.
 - **How far behind the MADIS archive tree actually runs**, and whether the live directory
   is a fixed rolling window.
 - **IEM's mesonet holdings.** Its network list has no RAWS entry, but 600 networks were
   not enumerated one by one, and the single data call made returned a capacity error.
-- Nothing here has been integrated. `observations.js` and `synoptic.js` are unchanged,
-  and no run in `docs/downscaling.md` has been re-scored against a new source.
+- No run in `docs/downscaling.md` has yet been re-scored over a window Synoptic could not
+  reach. The adapter is what makes those runs possible; it has not made them.

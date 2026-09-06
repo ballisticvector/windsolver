@@ -13,7 +13,11 @@
  *
  * Options:
  *   --stations   comma-separated station ids (required)
- *   --source     nws (default) or synoptic; synoptic needs $SYNOPTIC_API_TOKEN
+ *   --source     nws (default), synoptic or fems; synoptic needs $SYNOPTIC_API_TOKEN,
+ *                and fems needs --fems-map, the station map tools/fems-stations.js
+ *                writes. FEMS is the one that reaches back years; read the header
+ *                of fems.js before trusting a run older than Synoptic's window.
+ *   --fems-map   path to the FEMS station map (default data/fems-stations.json)
  *   --hours      how many whole hours back from --end (default 12)
  *   --end        the newest hour to score, ISO 8601 (default: three hours ago,
  *                which is comfortably behind the HRRR availability lag)
@@ -135,16 +139,20 @@ const archive = require("../archive.js");
 const observationsModule = require("../observations.js");
 const roughness = require("../roughness.js");
 const synoptic = require("../synoptic.js");
+const fems = require("../fems.js");
 const verify = require("../verify.js");
 
 const HOUR_MS = 3600 * 1000;
+
+/** Where tools/fems-stations.js writes by convention. */
+const DEFAULT_FEMS_MAP = "data/fems-stations.json";
 
 // Every flag this tool answers to. A misspelling is checked against it rather
 // than ignored: an unknown flag leaves the candidate it was meant to add out of
 // the report, and a report with a row missing reads exactly like a report where
 // that row had nothing to say.
 const FLAGS = [
-  "stations", "source", "end", "hours", "forecast", "radius", "resolution",
+  "stations", "source", "fems-map", "end", "hours", "forecast", "radius", "resolution",
   "tolerance", "position", "elevation", "roughness", "no-height", "ablate",
   "shelter", "scales", "anomaly", "anomaly-resolution", "exposure", "archive",
   "out", "json"
@@ -979,7 +987,7 @@ async function main() {
   const ids = String(args.stations).split(",")
     .map(function (s) { return s.trim().toUpperCase(); })
     .filter(Boolean);
-  const chosen = sourceFor(args.source, ids);
+  const chosen = sourceFor(args.source, ids, args);
 
   const report = await buildReport({
     source: chosen.source,
@@ -1021,7 +1029,7 @@ async function main() {
  * The token comes from the environment and never from an argument: an argument
  * is in the shell history, in `ps`, and in the transcript of whatever ran it.
  */
-function sourceFor(name, ids) {
+function sourceFor(name, ids, args) {
   const which = name === undefined || name === true ? "nws" : String(name).toLowerCase();
   if (which === "nws") {
     return {
@@ -1039,7 +1047,43 @@ function sourceFor(name, ids) {
       floor: synoptic.RAWS_QUANTISATION
     };
   }
-  throw new Error("--source is nws or synoptic, not " + JSON.stringify(name));
+  if (which === "fems") {
+    // The map is required rather than optional. Without it every FEMS row is
+    // refused for having no recoverable observation time — which is the
+    // designed failure, but it fails a hundred station-hours at a time and the
+    // reason belongs here, before the fetching starts.
+    const where = args && args["fems-map"] && args["fems-map"] !== true
+      ? String(args["fems-map"]) : DEFAULT_FEMS_MAP;
+    if (!fs.existsSync(where)) {
+      throw new Error("--source fems needs the station map " + where + "; build it with " +
+        "SYNOPTIC_API_TOKEN=… node tools/fems-stations.js --stations " + ids.join(",") +
+        " --out " + where + ". FEMS labels an observation with the nearest whole hour and " +
+        "the map carries the minute each station actually transmits at.");
+    }
+    let map = null;
+    try {
+      map = JSON.parse(fs.readFileSync(where, "utf8"));
+    } catch (err) {
+      throw new Error(where + " is not readable as the JSON fems-stations.js writes: " +
+        (err && err.message ? err.message : String(err)));
+    }
+    if (!map || typeof map !== "object" || Array.isArray(map)) {
+      throw new Error(where + " is not a station map: it should be an object keyed by station id");
+    }
+    const missing = ids.filter(function (id) { return !map[id]; });
+    if (missing.length) {
+      throw new Error(where + " has no entry for " + missing.join(",") +
+        "; calibrate them or leave them out of --stations rather than scoring them " +
+        "against an hour label");
+    }
+    return {
+      source: fems.createFemsSource({ stations: map, stationIds: ids }),
+      label: "USDA FEMS RAWS archive, 1 mph speeds and 1° directions, observation times " +
+        "recovered from " + where,
+      floor: fems.RAWS_QUANTISATION
+    };
+  }
+  throw new Error("--source is nws, synoptic or fems, not " + JSON.stringify(name));
 }
 
 function line(label, score) {
@@ -1301,7 +1345,7 @@ function summarise(report) {
   return out.join("\n");
 }
 
-module.exports = { parse, hoursIn, bearingFrom, buildReport, summarise };
+module.exports = { parse, hoursIn, bearingFrom, buildReport, summarise, sourceFor };
 
 if (require.main === module) {
   main().catch(function (err) {

@@ -1,0 +1,8 @@
+"StationName","DateTime","ObservationType","Temperature(F)","RelativeHumidity(%)","Precipitation(in)","WindSpeed(mph)","WindAzimuth(degrees)","GustSpeed(mph)","GustAzimuth(degrees)","SnowFlag","SolarRadiation(W/m2)","Tflag","RHflag","PCPflag","WSflag","WAflag","SRflag","GSflag","GAflag","StationId","VPD(Pa)"
+"KENOSHA PASS","2020-03-26T15:00:00Z","O",31,42,0,18,213,30,220,1,29,0,2,0,0,0,0,0,0,53005,340
+"KENOSHA PASS","2020-03-26T16:00:00Z","O",34,34,0,21,207,36,211,1,188,0,2,0,0,0,0,0,0,53005,437
+"KENOSHA PASS","2020-03-26T17:00:00Z","O",36,27,0,26,212,43,239,1,509,0,2,0,2,0,2,0,0,53005,523
+"KENOSHA PASS","2020-03-26T18:00:00Z","O",39,24,0,21,214,39,219,1,674,0,2,0,0,0,2,0,0,53005,613
+"KENOSHA PASS","2020-03-26T19:00:00Z","O",40,24,0,23,203,34,176,1,792,0,2,0,0,0,2,0,0,53005,638
+"KENOSHA PASS","2020-03-26T20:00:00Z","O",42,22,0,20,205,39,223,1,873,0,2,0,0,0,2,0,0,53005,707
+"KENOSHA PASS","2020-03-26T21:00:00Z","O",42,21,0,24,214,43,213,1,868,0,2,0,0,0,2,0,0,53005,716
