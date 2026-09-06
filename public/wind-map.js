@@ -209,6 +209,15 @@ function summarise(body) {
     lines.push(Math.round((1 - covered) * 100) + "% of this box has no terrain under it");
   }
 
+  // Degraded terrain, said in words. The wind here is current; the list of
+  // products the ground was chosen from is not, because The National Map
+  // refused to refresh it. A caption that left this out would present a
+  // month-old choice of DEM as today's.
+  if (terrain.listing && terrain.listing.retained) {
+    lines.push("Terrain product list last read " + ageText(terrain.listing.ageS) +
+      " — The National Map would not answer, so the ground was chosen from the kept copy");
+  }
+
   lines.push("Confidence: " +
     (body.confidence === undefined || body.confidence === null ? "unstated" : body.confidence));
 

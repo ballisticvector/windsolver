@@ -55,6 +55,7 @@ const png = require("./png.js");
 const slice = require("./slice.js");
 const profile = require("./profile.js");
 const stationsLib = require("./stations.js");
+const terrainLib = require("./terrain.js");
 
 const API_VERSION = 1;
 
@@ -749,8 +750,14 @@ function createHandler(opts) {
     const shade = hillshade.shade(land.derived, { azimuthDeg: azimuthDeg, altitudeDeg: altitudeDeg });
     const raster = hillshade.toGeographic(shade, box, { width: width });
     const image = png.greyscalePng(hillshade.toBytes(raster), raster.width, raster.height);
+    // Which tiles cover this box was answered out of the cache because The
+    // National Map would not answer it. The picture is still the ground; the
+    // choice of product behind it is as old as this header says.
+    const kept = terrainLib.agedListing(land.listing);
 
-    return sendBytes(res, 200, image, Object.assign({
+    return sendBytes(res, 200, image, Object.assign(kept ? {
+      "x-windsolver-terrain-listing": "retained," + kept.storedAt + "," + kept.ageS
+    } : {}, {
       "content-type": "image/png",
       // A day: the ground under a box does not move, and the URL carries
       // everything that changes the picture.

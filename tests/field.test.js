@@ -428,6 +428,41 @@ describe("createFieldService", () => {
     expect(second.east.length).toBe(first.east.length);
   });
 
+  test("a field solved on a retained listing says so, and re-ages it per answer", async () => {
+    // The ground is cached and the arithmetic over it is not, so an age
+    // measured when the listing was read would still say "one hour" a week
+    // later. `storedAt` is the fact that keeps; the age is derived from it.
+    const storedAt = new Date(Date.now() - 3600 * 1000).toISOString();
+    const service = field.createFieldService({
+      readTerrain: async function () {
+        return {
+          dataset: { id: "test-10m" },
+          listing: { retained: true, entries: 1, storedAt: storedAt, ageS: 0, stale: true, error: "503" },
+          grids: [hill(40, 40, 10)],
+          bytesRead: 1,
+          requests: 1
+        };
+      },
+      atmosphere: {
+        get: async function () { return volume; },
+        getLatest: async function () { return volume; },
+        summary: function () { return {}; }
+      },
+      curvatureLengthM: 200
+    });
+
+    const spec = { lat: CENTRE.lat, lon: CENTRE.lon, radiusMiles: 0.1, curvatureLengthM: 200 };
+    const out = await service.get(spec);
+    expect(out.terrain.listing).toMatchObject({ retained: true, stale: true, error: "503" });
+    expect(out.terrain.listing.ageS).toBeGreaterThanOrEqual(3600);
+  });
+
+  test("a field solved on a listing The National Map answered carries no note", async () => {
+    const { service } = fakes();
+    const spec = { lat: CENTRE.lat, lon: CENTRE.lon, radiusMiles: 0.1, curvatureLengthM: 200 };
+    expect((await service.get(spec)).terrain.listing).toBeNull();
+  });
+
   test("hands over the ground alone without fetching any air", async () => {
     const { service, calls } = fakes();
     const spec = { lat: CENTRE.lat, lon: CENTRE.lon, radiusMiles: 0.1, curvatureLengthM: 200 };

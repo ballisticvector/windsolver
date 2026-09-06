@@ -13,12 +13,19 @@
  * ask; this is what spares the first visitor after a deploy, and it is the only
  * cache here that survives a restart.
  *
- * Three decisions worth knowing before changing anything:
+ * The decisions worth knowing before changing anything:
  *
  * **A failure is never stored.** A 503 from The National Map is a fact about
  * this minute, and remembering it would turn a bad afternoon into a cached
  * "there is no terrain here" — the exact confident-wrong-answer this repo
  * refuses everywhere else. Only a body that parsed is written.
+ *
+ * **An expired entry is kept, and offered only when the network refuses.** The
+ * TTL is when a listing stops being trusted without asking, not when it stops
+ * being true; deleting it at expiry would throw the fallback away at exactly
+ * the moment TNM has just declined to replace it, which is the one moment it is
+ * worth anything. A retained listing is a fresh read's second choice and is
+ * always dated — see `getRetained`.
  *
  * **An unreadable entry is a miss, not an error.** A half-written file from a
  * killed process, a truncated disk, a file from a future format: all of them
@@ -64,6 +71,20 @@ const DEFAULT_TTL_MS = 14 * 24 * 60 * 60 * 1000;
  * droplet's disk and enough to hold every box a demo or a busy day touches.
  */
 const DEFAULT_MAX_ENTRIES = 2048;
+
+/**
+ * How long an expired listing is still worth offering when TNM will not answer,
+ * in milliseconds.
+ *
+ * Six months. A stale listing errs in one direction — it can only be missing a
+ * product published since, never wrong about a footprint it has, because a 3DEP
+ * tile that exists does not move — so serving it during an outage risks coarser
+ * terrain, while refusing it means no terrain at all. Past about two publishing
+ * seasons that stops being a good bet, and "we have nothing recent for this
+ * box" is the more honest answer than ground chosen from a listing nobody has
+ * been able to confirm since.
+ */
+const DEFAULT_RETAIN_MS = 180 * 24 * 60 * 60 * 1000;
 
 /** Written into every entry, so a format change cannot be read as old data. */
 const FORMAT = 1;
@@ -113,8 +134,11 @@ function createListingCache(options) {
   const dir = o.dir || defaultDir();
   const ttlMs = o.ttlMs === undefined ? DEFAULT_TTL_MS : o.ttlMs;
   const maxEntries = o.maxEntries === undefined ? DEFAULT_MAX_ENTRIES : o.maxEntries;
+  const retainMs = o.retainMs === undefined ? DEFAULT_RETAIN_MS : o.retainMs;
   const now = o.now || function () { return Date.now(); };
-  const stats = { hits: 0, misses: 0, stale: 0, writes: 0, unreadable: 0, evicted: 0, writeFails: 0 };
+  const stats = {
+    hits: 0, misses: 0, stale: 0, writes: 0, unreadable: 0, evicted: 0, writeFails: 0, retained: 0
+  };
   const warn = o.onWriteError === undefined ? writeWarning : o.onWriteError;
   // Reported once, because the failure is a property of the directory rather
   // than of the request: a read-only home would otherwise write the same line
@@ -125,7 +149,8 @@ function createListingCache(options) {
     return path.join(dir, fileNameFor(url));
   }
 
-  async function get(url) {
+  /** The entry on disk, whatever its age, or null if there is nothing usable. */
+  async function read(url) {
     let text;
     try {
       text = await fs.promises.readFile(pathFor(url), "utf8");
@@ -144,15 +169,42 @@ function createListingCache(options) {
       stats.unreadable++;
       return null;
     }
-    const age = now() - entry.storedAt;
+    return {
+      body: entry.body,
+      storedAt: entry.storedAt,
+      ageMs: now() - entry.storedAt,
+      url: entry.url || null
+    };
+  }
+
+  async function get(url) {
+    const entry = await read(url);
+    if (!entry) return null;
     // A negative age means the clock moved backwards, not that the entry is
     // fresh for a fortnight plus however far it moved. Treat it as expired.
-    if (age < 0 || age > ttlMs) {
+    if (entry.ageMs < 0 || entry.ageMs > ttlMs) {
       stats.stale++;
       return null;
     }
     stats.hits++;
-    return { body: entry.body, storedAt: entry.storedAt, ageMs: age, url: entry.url || null };
+    return entry;
+  }
+
+  /**
+   * The entry past its TTL, for a caller that has just been refused a fresh one.
+   *
+   * Separate from `get` rather than a flag on it, because the two answers mean
+   * different things and only one of them may be served without saying so:
+   * this one is dated, marked `stale`, and is the caller's job to carry through
+   * to whatever a person reads. A clock that moved backwards is still not an
+   * answer, and neither is an entry older than `retainMs`.
+   */
+  async function getRetained(url) {
+    const entry = await read(url);
+    if (!entry) return null;
+    if (entry.ageMs < 0 || entry.ageMs > retainMs) return null;
+    stats.retained++;
+    return Object.assign({ stale: entry.ageMs > ttlMs }, entry);
   }
 
   /**
@@ -219,8 +271,10 @@ function createListingCache(options) {
   return {
     dir: dir,
     ttlMs: ttlMs,
+    retainMs: retainMs,
     path: pathFor,
     get: get,
+    getRetained: getRetained,
     put: put,
     prune: prune,
     stats: function () { return Object.assign({}, stats); }
@@ -228,13 +282,21 @@ function createListingCache(options) {
 }
 
 /**
- * A `fetchJson(url)` that consults the cache first.
+ * A `fetchJson(url)` that consults the cache first, and last.
  *
  * Wrapping rather than teaching `dem.js` about disks keeps discovery a pure
  * function of its fetcher, which is what makes its whole suite offline. The
  * wrapper is also where in-flight collapsing lives: two concurrent solves over
  * the same ground ask The National Map once, which matters most exactly when it
  * is slow enough for a second request to arrive during the first.
+ *
+ * **Fresh entry, then the network, then an expired entry.** The third step is
+ * the degraded mode: TNM answering 503 — or answering HTTP 200 with an error
+ * object, which is what it did for hours during the hillshade testing — is a
+ * fact about this minute, and a fortnight-old list of which tiles cover Boulder
+ * is still very likely true. What it must not do is arrive unannounced, so a
+ * reader that fell back records it and `retained()` hands the dated list to the
+ * caller, which carries it out to whatever a person reads.
  */
 function cachingJsonReader(fetchJson, cache) {
   if (typeof fetchJson !== "function") {
@@ -242,8 +304,9 @@ function cachingJsonReader(fetchJson, cache) {
   }
   const store = cache || createListingCache();
   const inFlight = new Map();
+  const fellBack = [];
 
-  return async function (url) {
+  const reader = async function (url) {
     const hit = await store.get(url);
     if (hit) return hit.body;
 
@@ -251,7 +314,24 @@ function cachingJsonReader(fetchJson, cache) {
     if (pending) return pending;
 
     const work = (async function () {
-      const body = await fetchJson(url);
+      let body;
+      try {
+        body = await fetchJson(url);
+      } catch (err) {
+        const kept = await store.getRetained(url);
+        // Nothing kept means the refusal stands: an outage over ground nobody
+        // has visited is still "we cannot find out", and inventing terrain for
+        // it would be the confident wrong answer this whole module avoids.
+        if (!kept) throw err;
+        fellBack.push({
+          url: String(url),
+          storedAt: kept.storedAt,
+          ageMs: kept.ageMs,
+          stale: kept.stale,
+          error: String(err && err.message || err)
+        });
+        return kept.body;
+      }
       await store.put(url, body);
       return body;
     })();
@@ -262,11 +342,18 @@ function cachingJsonReader(fetchJson, cache) {
       inFlight.delete(url);
     }
   };
+
+  /** The retained listings this reader has served, oldest first, or null. */
+  reader.retained = function () {
+    return fellBack.length ? fellBack.slice() : null;
+  };
+  return reader;
 }
 
 module.exports = {
   DEFAULT_TTL_MS,
   DEFAULT_MAX_ENTRIES,
+  DEFAULT_RETAIN_MS,
   FORMAT,
   defaultDir,
   fileNameFor,

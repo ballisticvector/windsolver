@@ -94,14 +94,17 @@ upstream is down:
 | NOMADS / AWS HRRR | the current cycle | the previous cycle, which is an hour old and still a good wind |
 | the user's network | all of it | whatever is already on the device — see the next section |
 
-Two concrete gaps in what exists today, both small:
+One of the two concrete gaps named here has been closed; the other has not.
 
-- **`listing.js` throws away an expired entry even when the network has just refused.**
-  A listing older than fourteen days is counted `stale` and reported as a miss, and the
-  solve then fails — but 3DEP publishes new projects monthly-ish, so a fifteen-day-old
-  listing is almost certainly still true, and it is unambiguously better than "no
-  terrain here". Expiry should mean *prefer a refetch*, not *destroy the fallback*.
-- **`cache.js` drops a volume once it is stale rather than keeping it as a last
+- **Done: `listing.js` no longer throws away an expired entry when the network has just
+  refused.** Expiry now means *prefer a refetch*, not *destroy the fallback*: the entry
+  is kept 180 days, the network is still asked first once the fourteen days are up, and
+  the kept copy is read **only** after a refusal — carrying `storedAt`, an `ageS` derived
+  per answer, `stale` and the refusal that caused it, out through `/v1/field`,
+  `X-WindSolver-Terrain-Listing` on `/v1/hillshade`, and a caption on the map page.
+  Ground nobody has listed before is still `no-terrain`: the point is to keep a real
+  answer through an outage, not to invent one. `README.md` has the contract.
+- **Still open: `cache.js` drops a volume once it is stale rather than keeping it as a last
   resort.** That is right for the normal path — a stale field must never be served
   silently in place of a fresh one — and it means there is nothing to fall back to when
   the fetch fails. The fix is a separate, explicitly-aged last-good entry, not a longer
@@ -292,9 +295,9 @@ Deliberately smallest-first, and each step is useful even if the next one never 
 
 **Degraded mode and offline packs are not in that list on purpose.** They share nothing
 with the pair database but the word *history*, they are blocked on nothing, and the two
-gaps named above — `listing.js` destroying its own fallback on expiry, `cache.js` keeping
-no last-good volume — are small changes to modules that already exist. Do them whenever
-they are wanted, in either order, without waiting for a single pair to be written.
+gaps named above were small changes to modules that already exist. The listing one is
+done; `cache.js` keeping no last-good volume is still open, and needs no pair to be
+written first.
 
 ## Things that would poison it
 

@@ -414,6 +414,66 @@ describe("readTerrain", () => {
     expect(err.considered[0].error).not.toMatch(/https?:\/\//);
   });
 
+  test("a refusal over ground already listed reads the old list, and dates it", async () => {
+    // The outage this exists for: `tnmaccess` answered HTTP 200 with an error
+    // object for hours during the hillshade testing, and every warm coordinate
+    // would otherwise have read as "no terrain here".
+    const products = {
+      total: 1,
+      items: [{
+        title: "USGS 1/3 Arc Second test",
+        format: "GeoTIFF",
+        downloadURL: "https://example.test/a.tif",
+        publicationDate: "2022-01-01",
+        boundingBox: {
+          minX: lzw.bounds.west,
+          maxX: lzw.bounds.east,
+          minY: lzw.bounds.south,
+          maxY: lzw.bounds.north
+        }
+      }]
+    };
+    const tiles = server(lzw.buffer);
+    let refuse = false;
+    const fetchImpl = async function (url, init) {
+      if (url.startsWith(dem.TNM_PRODUCTS_URL)) {
+        if (refuse) return { ok: false, status: 503, text: async () => "busy" };
+        return { ok: true, status: 200, json: async () => products };
+      }
+      return tiles(url, init);
+    };
+
+    let now = 1000;
+    const opts = {
+      fetch: fetchImpl,
+      level: 0,
+      listingCacheOptions: { dir: cacheDir(), ttlMs: 100, now: () => now }
+    };
+
+    const warm = await terrain.readTerrain(box, opts);
+    expect(warm.listing).toBeNull();
+
+    now = 4000;
+    refuse = true;
+    const degraded = await terrain.readTerrain(box, opts);
+    expect(degraded.grids).toHaveLength(1);
+    expect(degraded.listing).toMatchObject({ retained: true, stale: true, ageS: 3 });
+    expect(degraded.listing.storedAt).toBe(new Date(1000).toISOString());
+    expect(degraded.listing.error).toMatch(/503/);
+  });
+
+  test("a refusal over ground nobody has listed is still no terrain", async () => {
+    const fetchImpl = async function () {
+      return { ok: false, status: 503, text: async () => "busy" };
+    };
+    const err = await terrain.readTerrain(box, {
+      fetch: fetchImpl,
+      listingCacheOptions: { dir: cacheDir() }
+    }).catch((e) => e);
+    expect(err.code).toBe("no-terrain");
+    expect(err.listing).toBeNull();
+  });
+
   test("refuses a box no product covers, and says what it considered", async () => {
     await expect(terrain.readTerrain(box, {
       selection: { dataset: null, tiles: [], considered: [{ datasetId: "1m", coverage: 0 }] }
