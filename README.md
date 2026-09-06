@@ -52,6 +52,8 @@ why a `forShot=` parameter is the way it dies.
 | `synoptic.js` | The same records from Synoptic Data's mesonet API — RAWS and the rest — for stations that are not at airports. Needs a token, and its free tier stops at about six days |
 | `fems.js` | The same records again from USDA FEMS, the RAWS system of record: bulk CSV back to 2005 with no account, with each station's observation time reconstructed from the GOES transmit minute FEMS throws away |
 | `verify.js` | Pairs an observation with a model time and scores the difference — circular direction arithmetic, vector error, and the quantisation floor of the instrument. Pure arithmetic, no network |
+| `hillshade.js` | Shaded relief off the same derived slope and aspect the downscaling uses, lit GDAL's way, and resampled onto a geographic raster. Holes stay holes. Pure arithmetic, no network |
+| `png.js` | An 8-bit greyscale PNG writer with no dependency: IHDR, `tRNS`, adaptive filtering, CRC32. Graded by reading its output back with something that is not it |
 | `profile.js` | The `windProfile` contract: what a field looks like leaving here, and every check it has to pass |
 | `server.js` | The HTTP boundary: the general field over a box, the line view for a caller that has a bearing, and the limits that keep a slow upstream from becoming a hung socket |
 
@@ -701,12 +703,41 @@ other node process and started with `npm run serve`.
 | `GET /v1/field` | **The general one.** `lat`, `lon`, `radiusMiles`, and an east/north wind over a lat/long grid of the box. No bearing anywhere in it |
 | `GET /v1/line` | The derived view for a caller that has one: `bearingDeg` and `lengthM`, the wind resolved along and across a WGS84 geodesic, optionally stacked over `heightsM` |
 | `GET /v1/windprofile` | The same cut, serialised as a v1 `windProfile` and validated by `profile.js` before it is sent |
+| `GET /v1/hillshade` | The ground on its own, as a shaded-relief PNG over the same box. No atmosphere is fetched for it |
 
 **`/v1/field` is the endpoint the other two are views of, and the reason it comes first.**
 A sailor and a fire crew have no bearing to give, and an azimuth in the general route
 would put one in the cache key — the mistake `cache.js` was designed to avoid. `/v1/line`
 and `/v1/windprofile` take a bearing, solve the same cached field, and cut it on the way
 out; a second bearing over the same ground is a millisecond, not a second solve.
+
+**`/v1/hillshade` is the same terrain, drawn instead of solved.** It takes `lat`, `lon`
+and `radiusMiles` exactly as `/v1/field` does, plus an optional `width` (pixels),
+`resolutionM`, and a GDAL-style `azimuthDeg` (default 315) and `altitudeDeg` (default 45).
+The body is an 8-bit greyscale PNG written by `png.js` with no dependency, and the
+placement is in the headers rather than the body so the response is an image a browser
+can use directly:
+
+| Header | What it says |
+| --- | --- |
+| `X-WindSolver-Bounds` | `south,west,north,east` of the raster, in degrees — the domain that was actually read, not the box that was asked for |
+| `X-WindSolver-Size` | `width x height` in pixels |
+| `X-WindSolver-Resolution-M` | Ground metres per pixel of the image |
+| `X-WindSolver-Terrain-Resolution-M` | Ground metres per cell of the terrain it was shaded from |
+| `X-WindSolver-Terrain-Dataset` | The 3DEP product underneath it |
+| `X-WindSolver-Covered` | The fraction of the raster that has terrain under it |
+| `X-WindSolver-Sun` | The azimuth and altitude the relief was lit from |
+
+**Byte 0 is reserved for a hole and written transparent**, so ground 3DEP does not cover
+reads as absent rather than as a dark plain; a lit pixel is 1–255. Flat ground is
+illuminated at `sin(altitude)` rather than treated as missing, and a hillshade is *not* a
+shadow model — nothing here says whether a ridge shelters the ground behind it.
+
+It goes through the same key, the same concurrency gate, the same queue and the same
+timeout as a solve, and refuses an oversized raster with `413` before it reads any
+terrain. **It never fetches weather**: `field.terrain()` is the terrain half of
+`field.get()`, so the picture and the wind are drawn from one cached read of the same
+ground rather than from two.
 
 The field answers on a **regular lat/long grid**, because a consumer should not have to
 carry a UTM implementation to read a wind. The native projected grid is described

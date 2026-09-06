@@ -240,6 +240,94 @@ describe("fieldQuery", () => {
   });
 });
 
+describe("hillshadeQuery", () => {
+  test("asks for the ground under the same box the wind is solved over", () => {
+    const spec = { lat: 40.0150, lon: -105.2705, radiusMiles: 2 };
+    const shade = lib.hillshadeQuery(Object.assign({ width: 768 }, spec));
+    const field = lib.fieldQuery(spec);
+    // The two pictures are drawn on top of each other. A hillshade over a
+    // different box is a mis-registration that looks like terrain.
+    for (const key of ["lat=40.015", "lon=-105.2705", "radiusMiles=2"]) {
+      expect(shade).toContain(key);
+      expect(field).toContain(key);
+    }
+    expect(shade.startsWith("/v1/hillshade?")).toBe(true);
+    expect(shade).toContain("width=768");
+  });
+
+  test("leaves the sun out when the caller has no opinion about it", () => {
+    const q = lib.hillshadeQuery({ lat: 40, lon: -105, radiusMiles: 1 });
+    expect(q).not.toContain("azimuthDeg");
+    expect(q).not.toContain("altitudeDeg");
+  });
+});
+
+describe("hillshadePlacement", () => {
+  function headers(map) {
+    return { get: function (k) { return Object.prototype.hasOwnProperty.call(map, k) ? map[k] : null; } };
+  }
+
+  test("places the picture on the domain the service reports", () => {
+    const p = lib.hillshadePlacement(headers({
+      "x-windsolver-bounds": "39.99,-105.29,40.04,-105.25",
+      "x-windsolver-covered": "0.82",
+      "x-windsolver-resolution-m": "4.31",
+      "x-windsolver-terrain-dataset": "1m"
+    }));
+    expect(p).toEqual({
+      south: 39.99,
+      west: -105.29,
+      north: 40.04,
+      east: -105.25,
+      coveredFraction: 0.82,
+      resolutionM: 4.31,
+      dataset: "1m"
+    });
+  });
+
+  test("refuses to place a picture the service did not locate", () => {
+    // The alternative is falling back on the requested box, which is the
+    // padded domain shifted by a few hundred metres — terrain that lines up
+    // with nothing and still looks like a map.
+    expect(lib.hillshadePlacement(headers({}))).toBeNull();
+    expect(lib.hillshadePlacement(headers({ "x-windsolver-bounds": "39.99,-105.29,40.04" }))).toBeNull();
+    expect(lib.hillshadePlacement(headers({ "x-windsolver-bounds": "a,b,c,d" }))).toBeNull();
+    // Inside out: north below south would draw the relief upside down.
+    expect(lib.hillshadePlacement(headers({
+      "x-windsolver-bounds": "40.04,-105.29,39.99,-105.25"
+    }))).toBeNull();
+    expect(lib.hillshadePlacement(null)).toBeNull();
+  });
+
+  test("a bounds without the rest of the headers is still placeable", () => {
+    const p = lib.hillshadePlacement(headers({ "x-windsolver-bounds": "39.99,-105.29,40.04,-105.25" }));
+    expect(p.coveredFraction).toBeNull();
+    expect(p.resolutionM).toBeNull();
+    expect(p.dataset).toBeNull();
+  });
+});
+
+describe("hillshadeCaption", () => {
+  test("says how much of the picture is ground nobody read", () => {
+    const caption = lib.hillshadeCaption({
+      coveredFraction: 0.6, resolutionM: 4.312, dataset: "1m"
+    });
+    expect(caption).toContain("3DEP 1m");
+    expect(caption).toContain("4.3 m/px");
+    // A transparent hole looks exactly like flat ground on a dark basemap.
+    expect(caption).toContain("40% no terrain");
+  });
+
+  test("says nothing about coverage when the whole box is covered", () => {
+    expect(lib.hillshadeCaption({ coveredFraction: 1, resolutionM: 4, dataset: "10m" }))
+      .not.toContain("no terrain");
+  });
+
+  test("a picture that could not be placed says so", () => {
+    expect(lib.hillshadeCaption(null)).toBe("Relief unavailable.");
+  });
+});
+
 describe("the parts of the page a unit test cannot run", () => {
   // map.js is Leaflet, a canvas and the DOM, so these are read off the source.
   // Both guard a failure that was measured in a browser and that looks entirely
@@ -248,16 +336,65 @@ describe("the parts of the page a unit test cannot run", () => {
   const path = require("path");
   const js = fs.readFileSync(path.join(__dirname, "..", "public", "map.js"), "utf8");
   const clearField = /function clearField\(\) \{([\s\S]*?)\n {2}\}/.exec(js);
+  const clearWind = /function clearWind\(\) \{([\s\S]*?)\n {2}\}/.exec(js);
 
   test("clearing the field abandons the answer still on its way", () => {
     // Otherwise a solve that lands after the pin has moved paints a field for
     // the old box under a heading that says "At the pin".
+    expect(clearWind).not.toBeNull();
+    expect(clearWind[1]).toContain("inFlight.abort()");
     expect(clearField).not.toBeNull();
-    expect(clearField[1]).toContain("inFlight.abort()");
+    expect(clearField[1]).toContain("clearWind()");
   });
 
   test("a Leaflet that never loaded is said out loud, not left blank", () => {
     expect(js).toMatch(/typeof L === "undefined"/);
+  });
+
+  test("the relief is drawn under the wind, not over it", () => {
+    // Leaflet's overlay pane is z-index 400 and holds the wind canvas. A relief
+    // above it hides the answer, and the page still looks like it is working.
+    const pane = /createPane\("relief"\)[\s\S]{0,200}?zIndex = (\d+)/.exec(js);
+    expect(pane).not.toBeNull();
+    expect(Number(pane[1])).toBeLessThan(400);
+    expect(Number(pane[1])).toBeGreaterThan(200);
+  });
+
+  test("the relief is placed on the headers, never on the requested box", () => {
+    const load = /async function loadRelief\(([\s\S]*?)\n {2}\}/.exec(js);
+    expect(load).not.toBeNull();
+    expect(load[1]).toContain("hillshadePlacement(response.headers)");
+    expect(load[1]).toContain("URL.createObjectURL");
+    // A relief that will not load must not read as a failed solve.
+    expect(load[1]).toContain("No relief here");
+    expect(load[1]).not.toContain("setStatus(");
+  });
+
+  test("an old relief is taken off the map, and its blob released", () => {
+    const clear = /function clearRelief\(\) \{([\s\S]*?)\n {2}\}/.exec(js);
+    expect(clear).not.toBeNull();
+    expect(clear[1]).toContain("removeLayer");
+    // Every solve makes a new object URL; without this a long session on one
+    // map leaks a PNG per pin.
+    expect(clear[1]).toContain("revokeObjectURL");
+    expect(clearField[1]).toContain("clearRelief()");
+    // And the src is dropped before the URL is: Leaflet re-renders the overlay
+    // when the map recentres, and an element still holding a revoked blob asks
+    // for it again. Measured by editing the latitude field, which recentres.
+    expect(clear[1].indexOf("removeAttribute(\"src\")"))
+      .toBeLessThan(clear[1].indexOf("revokeObjectURL"));
+  });
+
+  test("a refused wind does not silence the relief's own refusal", () => {
+    // Measured at Paris, where both routes 502 no-terrain: clearing the relief
+    // on a field refusal aborts the hillshade mid-flight, so its request ends
+    // in an AbortError and the note it would have written is never written.
+    // The wind saying "no terrain" in full while the relief line says nothing
+    // is the one failure here that is invisible.
+    const refusal = /const explained = lib\.explain\(body, response\.status\);([\s\S]*?)return setStatus\(explained/.exec(js);
+    expect(refusal).not.toBeNull();
+    expect(refusal[1]).toContain("clearWind()");
+    expect(refusal[1]).not.toContain("clearField()");
   });
 });
 
