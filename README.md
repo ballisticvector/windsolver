@@ -37,12 +37,14 @@ why a `forShot=` parameter is the way it dies.
 | `hrrr.js` | HRRR request building through the NOMADS GRIB2 filter |
 | `grib2.js` | Decodes what NOMADS returns: message parsing, simple packing, the Lambert grid, and the grid-to-earth wind rotation |
 | `nomads.js` | The only module that makes a request. Fetches a subset and refuses everything NOMADS returns that is not the field that was asked for |
+| `archive.js` | Historical HRRR from the AWS Open Data mirror: reads the `.idx` sidecar and pulls single messages by byte range, so a cycle older than NOMADS' two-day memory costs kilobytes rather than 147 MB |
 | `volume.js` | The general atmosphere in memory: a lat/long box × a set of levels at one valid time, earth-relative, with no bearing in it. Sampling and interpolation live here |
 | `cache.js` | Keys a volume on `(bbox, level set, valid time)`, keeps it while it is the newest field there is, and collapses simultaneous callers into one fetch. Keys terrain derivatives on the ground alone, with no time in the key at all |
 | `proj.js` | UTM ⇄ geographic for the datums 3DEP is published on, graded against PROJ |
 | `cog.js` | Reads a GeoTIFF: directories, tags, LZW and Deflate, the floating-point predictor, and which bytes a lat/long box needs. No network |
 | `terrain.js` | The only other module that makes a request. Turns a box into elevation grids over HTTP range reads |
 | `derive.js` | What the ground does to the wind: slope, aspect, curvature, roughness and directional sheltering over an elevation grid. Pure arithmetic, no network |
+| `roughness.js` | Davenport roughness classes and Wieringa's two-surface exposure correction, for scoring the wind at a station whose ground is not the national `z0 = 0.03 m`. Research only: nothing in the runtime path imports it |
 | `downscale.js` | Puts the two halves together: a 3 km model wind × the terrain, giving east/north over every pixel of the domain. Pure arithmetic, no network |
 | `field.js` | The whole chain in one call: a coordinate in, terrain read, derived and cached, live HRRR fetched and cached, an east/north field over the domain out |
 | `slice.js` | The view a consumer cuts out of a field: a WGS84 geodesic from a point and a bearing, the wind resolved onto it, stacked over a set of heights, and serialised as a `windProfile`. Pure arithmetic, no network |
@@ -268,6 +270,53 @@ const got = await fetchLatestHrrrBox({
 75-minute availability lag stops being an assumption: `lagMinutes` on the result is what
 it actually was for the cycle that answered. It does **not** walk past a 403 or a 500 —
 those are defects in the request, and an hour earlier they are just as wrong.
+
+### The archive client
+
+NOMADS keeps about two days. Anything older — a second date, a second season, the same
+stations under a different regime — has to come from the AWS Open Data mirror, and that
+mirror publishes whole files: `hrrr.t12z.wrfsfcf01.grib2` is ~147 MB for a field that is
+a few hundred kilobytes of it. Every object has an `.idx` sidecar giving each message's
+byte offset, so `archive.js` reads the sidecar, works out the range for the messages it
+wants, and asks for those bytes:
+
+```js
+const { fetchArchiveRecords } = require("@ballisticvector/windsolver/archive");
+
+const got = await fetchArchiveRecords({
+  cycle: { year: 2025, month: 9, day: 1, hour: 12 },
+  forecastHour: 1,
+  wanted: [
+    { parameter: "UGRD", level: "10 m above ground" },
+    { parameter: "VGRD", level: "10 m above ground" },
+    { parameter: "SFCR", level: "surface" }
+  ]
+});
+// got.records — grib2 records, still grid-relative; got.bytes — what it actually cost
+```
+
+The sidecar gives a start offset and no length, so a message's end is the *next* entry's
+start and the last message's range is open-ended. That is the whole trick, and it is also
+where it can go quietly wrong: a range request that is silently ignored returns a
+perfectly valid GRIB file, and so does a range that lands on the wrong message. Same
+family as NOMADS' 20 MB CONUS answer. So the client refuses:
+
+- anything other than a `206` — a `200` means S3 ignored the range and sent the object
+  (`range-ignored`);
+- a body shorter than the range asked for (`short-range`), or longer than the ceiling
+  (`too-large`);
+- bytes that do not start with the GRIB magic (`not-grib`);
+- a decoded message whose parameter or level is not the one the index promised
+  (`index-mismatch`);
+- a sidecar that is markup, is malformed, or lists two messages at one offset
+  (`bad-index`), and a request for a parameter the index does not have (`not-in-index`).
+
+Parameter and level are matched **verbatim against NCEP's spelling** — `"10 m above
+ground"`, not `"heightAboveGround:10"` — because a near-miss would select nothing, and
+selecting nothing is indistinguishable from a field that is absent from the cycle.
+
+This is a research and backfill path, not the live one: `nomads.js` remains what the
+service calls. Retries are the same narrow set — transport failures and 429/500/502/503/504.
 
 ### The volume and its cache
 

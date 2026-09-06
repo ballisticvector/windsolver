@@ -68,12 +68,18 @@ npm run lint
 ## The downscaling is under investigation, and nothing about it is settled
 
 `docs/downscaling.md` holds every measurement taken against real anemometers so far, the
-hypotheses each one supports, and the runs that would settle them. The two facts most
-likely to make a well-meant change wrong:
+hypotheses each one supports, and the runs that would settle them. The facts most likely
+to make a well-meant change wrong:
 
-- **HRRR runs about 70% fast over the RAWS sample**, so any multiplicative term is graded
-  on the sign of its gain rather than on its physics until that bias is dealt with. A
-  candidate that wins the raw table may only be the one that slows the wind down.
+- **HRRR runs 44-70% fast over the RAWS sample**, on every day scored, so any
+  multiplicative term is graded on the sign of its gain rather than on its physics until
+  that bias is dealt with. A candidate that wins the raw table may only be the one that
+  slows the wind down.
+- **It is not one bias.** Per station the scale actually needed runs from x0.21 to x1.68,
+  and it correlates with aerodynamic roughness at r = -0.02 — so a per-station roughness,
+  including HRRR's own `SFCR`, buys nothing a single constant does not buy. Do not spend
+  another run on z0. `roughness.js` exists for scoring that question and is deliberately
+  not imported by the runtime path.
 - **The model has its own mountains.** `tools/model-terrain.js` measures HRRR's surface
   orography against the 3DEP ground under a station: about 70 m above the floor of a
   valley station, 41 m below the top of a ridge one. A correction computed against the

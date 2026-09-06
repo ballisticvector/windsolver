@@ -1,12 +1,22 @@
 /**
- * GRIB2 reader for what NOMADS actually returns.
+ * GRIB2 reader for what NOMADS and the HRRR archive actually return.
  *
- * Deliberately narrow. It decodes the messages the HRRR 2D filter serves —
- * Lambert conformal grids (template 3.30) with simple packing (template 5.0) —
- * and **refuses everything else by name** rather than decoding it approximately.
- * A partial decode of an unexpected packing produces plausible numbers, and a
- * plausible wind field that is wrong is the one output this project cannot ship.
- * If NCEP changes the packing, the error says which template arrived.
+ * Deliberately narrow. It decodes the messages HRRR is served as — Lambert
+ * conformal grids (template 3.30) with simple packing (5.0), complex packing
+ * (5.2) or complex packing with spatial differencing (5.3) — and **refuses
+ * everything else by name** rather than decoding it approximately. A partial
+ * decode of an unexpected packing produces plausible numbers, and a plausible
+ * wind field that is wrong is the one output this project cannot ship. If NCEP
+ * changes the packing, the error says which template arrived.
+ *
+ * **The two sources are packed differently, and only one of them is simple.**
+ * NOMADS' filter re-encodes what it cuts out, and it writes simple packing;
+ * NCEP's own files, which is what the AWS archive mirrors byte for byte, are
+ * complex-packed with second-order spatial differencing. So a decoder built
+ * against NOMADS alone reads the archive as `unsupported-packing`, which is how
+ * this arrived: the same variable, the same cycle, the same grid, and a
+ * template number that had never been seen because a proxy had been rewriting
+ * it.
  *
  * No network, no files: it takes a Buffer. Fetching lives elsewhere so that
  * every bit of bit-twiddling, projection maths and time arithmetic is testable
@@ -58,11 +68,22 @@ const PARAMETERS = {
   "0/2/2": "UGRD",
   "0/2/3": "VGRD",
   "0/2/22": "GUST",
+  "0/2/30": "FRICV",
   "0/0/0": "TMP",
   "0/3/0": "PRES",
   "0/3/18": "HPBL",
   "0/1/1": "RH",
-  "0/3/5": "HGT"
+  "0/3/5": "HGT",
+  // Discipline 2 is land surface, and the discipline has to be in the key: the
+  // land/sea mask is 2/0/0 and temperature is 0/0/0, so a lookup that assumed
+  // discipline 0 would hand back a mask of ones and zeroes labelled TMP.
+  //
+  // SFCR is the model's own aerodynamic roughness length in metres — what HRRR
+  // thinks the ground under a station is like, which was an assumption in this
+  // codebase until it was read.
+  "2/0/1": "SFCR",
+  "2/0/0": "LAND",
+  "2/0/4": "VEG"
 };
 
 function fail(code, message) {
@@ -102,6 +123,47 @@ function bitReader(buf, offset) {
       bitPos++;
     }
     return out;
+  };
+}
+
+/**
+ * The same reader, but able to say where it is and to skip to the next octet.
+ *
+ * Complex packing is three arrays and then a bitstream, and each array starts
+ * on an octet boundary regardless of where the previous one ended. Reading
+ * straight through the padding shifts every group width by a few bits, which
+ * decodes into a field of the right shape, the right size and the wrong values.
+ */
+function bitCursor(buf, offset) {
+  let bitPos = 0;
+  return {
+    read(bits) {
+      let out = 0;
+      for (let k = 0; k < bits; k++) {
+        const at = offset + ((bitPos >> 3) | 0);
+        // A section that promises more than it carries has to be named. Left to
+        // Buffer this is a RangeError about an offset, which reads as a bug in
+        // the decoder rather than as a message that arrived incomplete.
+        if (at >= buf.length) {
+          throw fail("truncated", "section 7 ends before the packed values it declares");
+        }
+        const byte = buf.readUInt8(at);
+        out = out * 2 + ((byte >> (7 - (bitPos & 7))) & 1);
+        bitPos++;
+      }
+      return out;
+    },
+    readMany(bits, count, into) {
+      const out = into || new Array(count);
+      for (let k = 0; k < count; k++) out[k] = this.read(bits);
+      return out;
+    },
+    alignToOctet() {
+      bitPos = (bitPos + 7) & ~7;
+    },
+    bitPosition() {
+      return bitPos;
+    }
   };
 }
 
@@ -290,18 +352,63 @@ function readProduct(buf, sec) {
 function readRepresentation(buf, sec) {
   const o = sec.offset;
   const template = buf.readUInt16BE(o + 9);
-  if (template !== 0) {
+  if (template !== 0 && template !== 2 && template !== 3) {
     throw fail("unsupported-packing", "data representation template " + template +
-      " is not supported; only 0 (simple packing) is. JPEG2000 (40) and complex " +
-      "packing (2, 3) need a decoder this module deliberately does not guess at");
+      " is not supported; only 0 (simple), 2 (complex) and 3 (complex with spatial " +
+      "differencing) are. JPEG2000 (40) and PNG (41) need a decoder this module " +
+      "deliberately does not guess at");
   }
-  return {
+
+  const rep = {
+    template: template,
     count: readUInt(buf, o + 5, 4),
     referenceValue: buf.readFloatBE(o + 11),
     binaryScaleFactor: readSignedMagnitude(buf, o + 15, 2),
     decimalScaleFactor: readSignedMagnitude(buf, o + 17, 2),
     bitsPerValue: buf.readUInt8(o + 19)
   };
+  if (template === 0) return rep;
+
+  // Templates 5.2 and 5.3, octets 22 onward. Octet n of the section is at
+  // offset o + n - 1.
+  rep.groupSplittingMethod = buf.readUInt8(o + 21);
+  rep.missingValueManagement = buf.readUInt8(o + 22);
+  rep.groupCount = readUInt(buf, o + 31, 4);
+  rep.groupWidthReference = buf.readUInt8(o + 35);
+  rep.groupWidthBits = buf.readUInt8(o + 36);
+  rep.groupLengthReference = readUInt(buf, o + 37, 4);
+  rep.groupLengthIncrement = buf.readUInt8(o + 41);
+  rep.lastGroupLength = readUInt(buf, o + 42, 4);
+  rep.groupLengthBits = buf.readUInt8(o + 46);
+  rep.spatialDifferencingOrder = template === 3 ? buf.readUInt8(o + 47) : 0;
+  rep.extraDescriptorOctets = template === 3 ? buf.readUInt8(o + 48) : 0;
+
+  // Splitting method 1 is "the encoder chose the groups for you and did not say
+  // how", which is the only one NCEP writes. Method 0 is a row-per-group scheme
+  // whose descriptors live somewhere else entirely.
+  if (rep.groupSplittingMethod !== 1) {
+    throw fail("unsupported-packing", "groupSplittingMethod " + rep.groupSplittingMethod +
+      " is not supported; only 1 (general group splitting) has been verified");
+  }
+  // A substituted missing value is a real number standing in for a hole. Decoding
+  // one as data puts a plausible reading where there is none, which is the same
+  // failure as filling a terrain void with zero.
+  if (rep.missingValueManagement !== 0) {
+    throw fail("unsupported-packing", "missingValueManagement " + rep.missingValueManagement +
+      " is not supported; this decoder does not carry substituted missing values");
+  }
+  // NCEP writes second order and nothing else, and second order is the only one
+  // that can be graded here: ecCodes will re-encode a message as first order on
+  // request, but the message it writes declares the order with no extra
+  // descriptor octets and ecCodes then reads its own output back as a field
+  // diverging quadratically to -4.9e5. An ungraded branch in a decoder is the
+  // thing this module exists not to have, so first order is named and refused
+  // until a real message and a trustworthy reading of it turn up together.
+  if (template === 3 && rep.spatialDifferencingOrder !== 2) {
+    throw fail("unsupported-packing", "orderOfSpatialDifferencing " + rep.spatialDifferencingOrder +
+      " is not supported; only second order has been graded against ecCodes");
+  }
+  return rep;
 }
 
 /**
@@ -342,6 +449,100 @@ function unpack(buf, dataSec, rep, bitmap, pointCount) {
       throw fail("truncated", "section 7 ran out of values at point " + k);
     }
     values[k] = rep.bitsPerValue > 0 ? reference + next(rep.bitsPerValue) * scale : reference;
+    packedIndex++;
+  }
+  return values;
+}
+
+/**
+ * Complex packing, templates 5.2 and 5.3.
+ *
+ * The field is cut into groups; each group carries its own reference value and
+ * its own bit width, so a calm patch costs two bits a point while a jet costs
+ * twelve. Section 7 is then: the spatial-differencing seed values, the group
+ * references, the group widths, the group lengths, and finally the values —
+ * with the first four each starting on an octet boundary.
+ *
+ * Spatial differencing stores the field as differences of differences, which is
+ * why the first one or two values are carried outside the bitstream: they are
+ * the initial conditions of a recurrence, and the packed stream reserves
+ * positions for them that hold nothing.
+ *
+ * Graded value-for-value against ecCodes on a real NCEP message; see
+ * tests/grib2-complex.test.js.
+ */
+function unpackComplex(buf, dataSec, rep, bitmap, pointCount) {
+  const cursor = bitCursor(buf, dataSec.offset + 5);
+  const order = rep.spatialDifferencingOrder;
+
+  // The seeds and the minimum difference are whole octets each, signed as
+  // sign-and-magnitude like every other signed integer in GRIB.
+  const seeds = [];
+  let differenceMinimum = 0;
+  if (order > 0) {
+    const bytes = rep.extraDescriptorOctets;
+    if (!(bytes > 0)) {
+      throw fail("malformed-section", "spatial differencing of order " + order +
+        " with no extra descriptor octets: the seeds of the recurrence are not in the message");
+    }
+    for (let k = 0; k < order; k++) seeds.push(cursor.read(bytes * 8));
+    const raw = cursor.read(bytes * 8);
+    const signBit = Math.pow(2, bytes * 8 - 1);
+    differenceMinimum = raw >= signBit ? -(raw - signBit) : raw;
+  }
+
+  const groups = rep.groupCount;
+  const references = cursor.readMany(rep.bitsPerValue, groups);
+  cursor.alignToOctet();
+  const widths = cursor.readMany(rep.groupWidthBits, groups);
+  cursor.alignToOctet();
+  const lengths = cursor.readMany(rep.groupLengthBits, groups);
+  cursor.alignToOctet();
+
+  const packed = new Float64Array(rep.count);
+  let written = 0;
+  for (let g = 0; g < groups; g++) {
+    const width = rep.groupWidthReference + widths[g];
+    const length = g === groups - 1
+      ? rep.lastGroupLength
+      : rep.groupLengthReference + lengths[g] * rep.groupLengthIncrement;
+    if (written + length > rep.count) {
+      throw fail("truncated", "group " + g + " runs past the " + rep.count + " values the section declares");
+    }
+    // Width 0 is a group whose points are all its reference value — a flat patch
+    // costs nothing, which is most of why complex packing is worth the trouble.
+    if (width === 0) {
+      for (let k = 0; k < length; k++) packed[written + k] = references[g];
+    } else {
+      for (let k = 0; k < length; k++) packed[written + k] = references[g] + cursor.read(width);
+    }
+    written += length;
+  }
+  if (written !== rep.count) {
+    throw fail("truncated", "the groups describe " + written + " values but the section declares " + rep.count);
+  }
+
+  // The seeds overwrite the first two positions rather than being inserted: the
+  // bitstream carries entries for them, and those entries hold nothing.
+  if (order === 2) {
+    packed[0] = seeds[0];
+    packed[1] = seeds[1];
+    for (let k = 2; k < rep.count; k++) {
+      packed[k] += differenceMinimum + 2 * packed[k - 1] - packed[k - 2];
+    }
+  }
+
+  const scale = Math.pow(2, rep.binaryScaleFactor) / Math.pow(10, rep.decimalScaleFactor);
+  const reference = rep.referenceValue / Math.pow(10, rep.decimalScaleFactor);
+  const values = new Array(pointCount);
+  let packedIndex = 0;
+  for (let k = 0; k < pointCount; k++) {
+    if (bitmap && !bitmap[k]) {
+      values[k] = null;
+      continue;
+    }
+    if (packedIndex >= rep.count) throw fail("truncated", "section 7 ran out of values at point " + k);
+    values[k] = reference + packed[packedIndex] * scale;
     packedIndex++;
   }
   return values;
@@ -397,12 +598,94 @@ function toEarthRelativeWind(grid, lonDeg, uGrid, vGrid) {
 }
 
 /**
+ * The same field over a smaller rectangle of the same grid.
+ *
+ * The NOMADS filter subsets server-side; the archive does not, so a message
+ * pulled from S3 is the whole CONUS domain — 1,905,141 points for a question
+ * about one valley. Holding thirteen of those per cycle is what makes a
+ * multi-station archive run run out of memory rather than run slowly.
+ *
+ * This is a crop and not a resample: the values kept are the values decoded,
+ * and the projection is unchanged. Only the origin and the counts move, so
+ * `lat1Deg`/`lon1Deg` become the coordinate of the new first point and
+ * everything downstream — `gridIndexOf`, the wind rotation, the bilinear
+ * sample — is arithmetic on the same Lambert parameters. Anything that
+ * *changed* the projection here would put the wind in the wrong valley while
+ * still decoding cleanly.
+ *
+ * The corner is projected rather than read out of the record's coordinate
+ * arrays, so a record decoded with `{ coordinates: false }` can be cropped —
+ * which is the point, because building 1,905,141 coordinates costs nine times
+ * what unpacking the values does and all but 169 of them are thrown away.
+ */
+function cropToBox(record, box, opts) {
+  const o = opts || {};
+  const pad = o.paddingCells === undefined ? 1 : o.paddingCells;
+  const grid = record.grid;
+  if (!(pad >= 0)) throw fail("bad-crop", "paddingCells must be zero or more");
+  for (const side of ["west", "south", "east", "north"]) {
+    if (!Number.isFinite(box[side])) throw fail("bad-crop", "the box needs a finite " + side);
+  }
+
+  const k = lambertConstants(grid);
+  const origin = lambertForward(grid, k, grid.lat1Deg, grid.lon1Deg);
+  let iMin = Infinity, iMax = -Infinity, jMin = Infinity, jMax = -Infinity;
+  // The box's four corners bound it in projected space: a Lambert grid's rows
+  // are not parallels, so the northern edge of a box touches a different j at
+  // its two ends and taking only two corners clips the field at one of them.
+  for (const lat of [box.south, box.north]) {
+    for (const lon of [box.west, box.east]) {
+      const p = lambertForward(grid, k, lat, lon);
+      const i = (p.x - origin.x) / grid.dxMeters;
+      const j = (p.y - origin.y) / grid.dyMeters;
+      iMin = Math.min(iMin, i); iMax = Math.max(iMax, i);
+      jMin = Math.min(jMin, j); jMax = Math.max(jMax, j);
+    }
+  }
+
+  const i0 = Math.max(0, Math.floor(iMin) - pad);
+  const j0 = Math.max(0, Math.floor(jMin) - pad);
+  const i1 = Math.min(grid.ni - 1, Math.ceil(iMax) + pad);
+  const j1 = Math.min(grid.nj - 1, Math.ceil(jMax) + pad);
+  if (i1 < i0 || j1 < j0) {
+    throw fail("outside-grid", "the box " + box.west + "," + box.south + " to " + box.east + "," +
+      box.north + " does not meet this grid");
+  }
+
+  const ni = i1 - i0 + 1;
+  const nj = j1 - j0 + 1;
+  const corner = lambertInverse(grid, k, origin.x + i0 * grid.dxMeters, origin.y + j0 * grid.dyMeters);
+  const cropped = Object.assign({}, grid, {
+    ni: ni,
+    nj: nj,
+    lat1Deg: corner.lat,
+    lon1Deg: corner.lon
+  });
+
+  const values = new Array(ni * nj);
+  for (let j = 0; j < nj; j++) {
+    for (let i = 0; i < ni; i++) {
+      values[j * ni + i] = record.values[(j0 + j) * grid.ni + (i0 + i)];
+    }
+  }
+  const coords = gridCoordinates(cropped);
+
+  return Object.assign({}, record, {
+    grid: cropped,
+    latitudes: coords.latitudes,
+    longitudes: coords.longitudes,
+    values: values
+  });
+}
+
+/**
  * Decode every message in a buffer.
  *
  * Throws on the first message it cannot decode, rather than skipping it: a
  * missing u-component silently dropped from a field is a wind with no easting.
  */
-function decode(buffer) {
+function decode(buffer, opts) {
+  const withCoordinates = !opts || opts.coordinates !== false;
   if (!Buffer.isBuffer(buffer)) throw fail("not-grib", "expected a Buffer");
   if (buffer.length === 0) throw fail("not-grib", "buffer is empty");
   if (buffer.toString("ascii", 0, 4) !== "GRIB") {
@@ -431,9 +714,19 @@ function decode(buffer) {
     const rep = readRepresentation(buffer, sections[5]);
     const pointCount = grid.ni * grid.nj;
     const bitmap = readBitmap(buffer, sections[6], pointCount);
-    const values = unpack(buffer, sections[7], rep, bitmap, pointCount);
-    const coords = gridCoordinates(grid);
-    const key = "0/" + product.category + "/" + product.number;
+    const values = rep.template === 0
+      ? unpack(buffer, sections[7], rep, bitmap, pointCount)
+      : unpackComplex(buffer, sections[7], rep, bitmap, pointCount);
+    // Nine tenths of the cost of decoding a CONUS message is here, and a caller
+    // that is about to crop to a county throws away every one of them. It is
+    // opt-out rather than lazy so that a record either carries its coordinates
+    // or plainly does not, instead of carrying them sometimes.
+    const coords = withCoordinates ? gridCoordinates(grid) : { latitudes: null, longitudes: null };
+    // The discipline is in section 0, and it is part of the parameter's identity:
+    // 0/0/1 is virtual temperature and 2/0/1 is the surface roughness length.
+    // Assuming discipline 0 renames one as the other and nothing looks wrong.
+    const discipline = buffer.readUInt8(offset + 6);
+    const key = discipline + "/" + product.category + "/" + product.number;
 
     records.push({
       parameter: PARAMETERS[key] || key,
@@ -442,6 +735,9 @@ function decode(buffer) {
       validTime: new Date(ident.referenceTime.getTime() + product.forecastSeconds * 1000),
       forecastSeconds: product.forecastSeconds,
       centre: ident.centre,
+      discipline: discipline,
+      category: product.category,
+      number: product.number,
       grid: grid,
       latitudes: coords.latitudes,
       longitudes: coords.longitudes,
@@ -459,6 +755,7 @@ module.exports = {
   PARAMETERS,
   SPHERE_RADII_M,
   decode,
+  cropToBox,
   gridCoordinates,
   gridNorthBearingDeg,
   toEarthRelativeWind,
