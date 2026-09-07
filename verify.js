@@ -512,6 +512,79 @@ function stratify(pairs, labelOf, opts) {
   return out;
 }
 
+/**
+ * The same score with one group's pairs left out at a time.
+ *
+ * A single RMSE over a station set is one number standing on however many
+ * stations happened to be in it, and this project has twice had a result turn
+ * out to be one mast: STOC2 is the extreme of Colorado's terrain axis, of its
+ * wind axis and of its error axis at once, and removing it halves the terrain
+ * correlation on every date scored. That was found by hand, three measurements
+ * after the claim was made. Reporting the spread makes it a column instead.
+ *
+ * `debias` refits the scale on the surviving pairs rather than reusing the
+ * full-sample one. A scale fitted on a station that is no longer being scored
+ * is that station still voting, which is the thing being measured.
+ *
+ * The result deliberately carries `deltaMps` per group — the score *without*
+ * that group minus the score with everything — so a positive number is a group
+ * whose removal makes the candidate look worse, i.e. one that was carrying it.
+ */
+function jackknife(pairs, groupOf, opts) {
+  const o = opts || {};
+  const metric = o.metric || function (s) { return s.speed.rmseMps; };
+  const groups = new Map();
+  for (const p of pairs || []) {
+    const key = groupOf(p);
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(p);
+  }
+  const scoreOf = function (subset) {
+    const opt = o.debias
+      ? Object.assign({}, o, { scale: debiasScale(subset, o) })
+      : o;
+    return score(subset, opt);
+  };
+  const full = pairs && pairs.length ? metric(scoreOf(pairs)) : null;
+  const out = [];
+  for (const [key, group] of groups) {
+    // One group is not a sample of anything. With nothing left to score, the
+    // row says so rather than reporting a score over zero pairs.
+    const rest = (pairs || []).filter(function (p) { return groupOf(p) !== key; });
+    if (!rest.length) {
+      out.push({ group: key, n: group.length, nRemaining: 0, metric: null, deltaMps: null });
+      continue;
+    }
+    const without = metric(scoreOf(rest));
+    out.push({
+      group: key,
+      n: group.length,
+      nRemaining: rest.length,
+      metric: without,
+      deltaMps: full === null || without === null ? null : without - full
+    });
+  }
+  const deltas = out.map(function (r) { return r.deltaMps; })
+    .filter(function (v) { return typeof v === "number" && isFinite(v); })
+    .sort(function (a, b) { return a - b; });
+  const carrying = out.reduce(function (worst, r) {
+    if (r.deltaMps === null) return worst;
+    return worst === null || r.deltaMps > worst.deltaMps ? r : worst;
+  }, null);
+  return {
+    full: full,
+    groups: out,
+    n: deltas.length,
+    minDeltaMps: deltas.length ? deltas[0] : null,
+    medianDeltaMps: deltas.length ? deltas[(deltas.length - 1) >> 1] : null,
+    maxDeltaMps: deltas.length ? deltas[deltas.length - 1] : null,
+    // The one group whose removal costs the most. Named rather than counted,
+    // because "which station" is the question that gets asked next.
+    carrying: carrying ? carrying.group : null,
+    carryingDeltaMps: carrying ? carrying.deltaMps : null
+  };
+}
+
 module.exports = {
   debiasScale,
   DEFAULT_MIN_DIRECTION_MPS,
@@ -527,5 +600,6 @@ module.exports = {
   score,
   classifyTerrain,
   elevationCheck,
-  stratify
+  stratify,
+  jackknife
 };

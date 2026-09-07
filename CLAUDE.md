@@ -126,6 +126,17 @@ to make a well-meant change wrong:
 observations.** Add a candidate to `tools/score-wind.js --ablate` instead, so the change
 is scored beside the others on the same pairs before it is anywhere near a default.
 
+**Read `leverage.stable` before you read the ranking.** Every score in this tool is one
+number over whatever stations the run happened to include, and twice a result has turned
+out to be a single mast — STOC2 halving the terrain correlation, CIMARRON carrying the New
+Mexico elevation line — each found by hand, measurements after the claim. The report now
+carries a `leverage` block: each candidate rescored with each station's pairs removed and
+the debias refitted on the survivors, the spread of those changes, the station whose
+removal costs the most, and which candidate wins with each station held out. If the winner
+changes when one station leaves, the run has not produced a ranking and there is nothing
+to quote. Below three stations the block is `null`, because leaving one out of two is two
+numbers and their difference is about which two stations answered.
+
 **The measured wind is the scarce half, and it no longer has to be.** `archive.js`
 reaches 2014 on the model side; the Synoptic token refuses observation history older than
 about a week, which is what actually blocks seasons, other states and a station set
