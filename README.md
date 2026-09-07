@@ -1438,6 +1438,28 @@ scale on eleven stations and stops beating it on ten.
 That is measurements 9 and 10 in `docs/downscaling.md`, and it is a research result, not a
 correction that can ship: a per-station table has no row for the pin a user clicked on,
 and the terrain prediction that would bridge that gap currently rests on one station.
+
+### What the pairing window costs, measured
+
+An hourly model is paired with an observation taken at some other minute, and until now
+the size of that mistake was an argument rather than a number. `asos1min.js` reads NCEI's
+one-minute ASOS record (DSI-6405, page 1 — free, no account, back to 2000) and
+`tools/wind-decorrelation.js` measures how fast the wind stops resembling itself:
+
+```bash
+node tools/wind-decorrelation.js --stations KRTN,KCOS,KGJT --month 2024-09,2026-03 \
+  --cache ~/asos1min --offsets aug31.pairs.json --out report.json
+```
+
+`--offsets` is the part worth using: it reads the offsets a `score-wind.js --pairs` run
+*actually drew* and prices them against the measured curve, rather than pricing the
+tolerance it was allowed. Over 819,249 minutes at 14 stations the wind's own change
+reaches ASOS's ±2 kt after a median 7.5 minutes, and the FEMS runs' offsets cost about
+0.85 m/s of speed RMS, 1.36 m/s of vector and 23° of direction against a 10-minute mean —
+a noise floor under every score in `docs/downscaling.md`, and fourteen times the 0.06 m/s
+that separates the terrain candidates. That is measurement 13; the parsing decisions
+behind it are in `docs/observations.md`.
+
 **`docs/history.md` is the note that argues out what to build on top of it** — why a
 matched past day must never be served as the current conditions, why an analog correction
 is worth the work, why climatology is a mode of its own, and why the database is a table
