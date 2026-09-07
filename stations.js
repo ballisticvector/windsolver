@@ -46,6 +46,17 @@
  * information about the network and deleting it makes the map look healthier
  * than the data is.
  *
+ * **The model beside the measurement is opt-in, and is the raw model.** With
+ * `model: true` every station in the box also carries what HRRR says at its
+ * coordinate, so a map can colour the markers by the disagreement instead of
+ * making a reader open twenty popups. Two things about that number are load
+ * bearing and are carried out to the caller rather than assumed: it is HRRR as
+ * published — **not** the downscaled field the rest of this service returns,
+ * because downscaling 60 stations means 60 terrain reads — and it is at the
+ * model's own height, not the anemometer's. The comparison is worth showing
+ * anyway: `docs/downscaling.md` measures the downscaling as indistinguishable
+ * from raw HRRR once the bias is out, and the bias is the thing on display.
+ *
  * **The directory is kept when the network refuses, and says how old it is.**
  * A station list is quasi-static — 2,088 rows, 710 KB, and a new RAWS is a
  * quarterly event — so an expired copy is almost certainly still true, and
@@ -73,6 +84,16 @@ const DEFAULT_DIRECTORY_TTL_MS = 24 * 60 * 60 * 1000;
  * making that obvious.
  */
 const DEFAULT_WINDOW_MS = 6 * 60 * 60 * 1000;
+
+/**
+ * What the model number beside a measurement is, said on every answer that
+ * carries one. Two of the three sentences are about what it is not.
+ */
+const MODEL_NOTICE =
+  "The model wind is HRRR as published, sampled at the station: not " +
+  "downscaled onto the terrain, and not moved to the anemometer's height. A " +
+  "RAWS is nominally 6.1 m and this is the model's own level, so the two are " +
+  "not height-matched.";
 
 /** Past this the answer is a dataset, not a map layer. */
 const MAX_STATIONS = 200;
@@ -178,6 +199,22 @@ function latestOf(read) {
   };
 }
 
+/**
+ * Speed and the meteorological "from" bearing, out of east/north components.
+ *
+ * A zero vector has no direction, and `atan2(0, 0)` is 0, which would draw an
+ * arrow claiming a northerly. It gets `fromDeg: null` instead — the same shape
+ * a calm observation already has.
+ */
+function windOf(east, north) {
+  if (!Number.isFinite(east) || !Number.isFinite(north)) return null;
+  const speedMps = Math.hypot(east, north);
+  if (speedMps === 0) return { speedMps: 0, fromDeg: null };
+  let fromDeg = (Math.atan2(-east, -north) * 180) / Math.PI;
+  if (fromDeg < 0) fromDeg += 360;
+  return { speedMps: speedMps, fromDeg: fromDeg };
+}
+
 /** The FEMS adapter, behind the two calls this module makes of a network. */
 function createFemsStationSource(opts) {
   const o = opts || {};
@@ -264,6 +301,9 @@ function createFemsStationSource(opts) {
 function createStationService(opts) {
   const o = opts || {};
   const source = o.source || createFemsStationSource(o);
+  // No default: a station service with no model attached answers stations,
+  // which is what every caller before this one asked for.
+  const model = o.model || null;
   const ttlMs = o.directoryTtlMs === undefined ? DEFAULT_DIRECTORY_TTL_MS : o.directoryTtlMs;
   const windowMs = o.windowMs === undefined ? DEFAULT_WINDOW_MS : o.windowMs;
   const now = o.now || Date.now;
@@ -332,7 +372,9 @@ function createStationService(opts) {
       const result = {
         box: box,
         stations: found.stations.map(function (s) {
-          return Object.assign({}, s, { observation: null, observationNote: null });
+          return Object.assign({}, s, {
+            observation: null, observationNote: null, model: null, modelNote: null
+          });
         }),
         matched: found.matched,
         returned: found.stations.length,
@@ -348,10 +390,14 @@ function createStationService(opts) {
           stale: dir.stale,
           error: dir.error
         },
+        model: null,
         errors: []
       };
 
-      if (!q.observed || !result.stations.length) return result;
+      if (!result.stations.length) return result;
+      if (q.model) await addModel(result);
+
+      if (!q.observed) return result;
 
       const end = new Date(now());
       const start = new Date(end.getTime() - windowMs);
@@ -387,6 +433,65 @@ function createStationService(opts) {
       return result;
     }
   };
+
+  /**
+   * What the model says at each station, added in place.
+   *
+   * An outage here costs the comparison and nothing else, exactly as an
+   * observation outage costs the wind and not the markers: the reason is put
+   * where a reader will see it rather than leaving the map silently
+   * uncoloured.
+   */
+  async function addModel(result) {
+    if (!model) {
+      result.model = {
+        source: null, validTime: null, heightAglM: null, downscaled: false,
+        notice: null, code: "no-model",
+        error: "this service has no model wind attached, so there is nothing to " +
+          "compare the stations with"
+      };
+      result.errors.push({ code: result.model.code, error: result.model.error });
+      return;
+    }
+
+    let sampled;
+    try {
+      sampled = await model.windAt(result.box, result.stations.map(function (s) {
+        return { lat: s.lat, lon: s.lon };
+      }));
+    } catch (err) {
+      result.model = {
+        source: null, validTime: null, heightAglM: null, downscaled: false,
+        notice: null,
+        code: (err && err.code) || "model-unavailable",
+        error: (err && err.message) || "the model wind could not be read"
+      };
+      result.errors.push({ code: result.model.code, error: result.model.error });
+      return;
+    }
+
+    result.model = {
+      source: sampled.source || null,
+      validTime: sampled.validTime || null,
+      heightAglM: sampled.heightAglM === undefined ? null : sampled.heightAglM,
+      // Said out loud on every answer. A reader who takes this for the field
+      // `/v1/field` returns is comparing the station with a different number
+      // from the one on the map.
+      downscaled: false,
+      notice: MODEL_NOTICE,
+      code: null,
+      error: null
+    };
+    const winds = sampled.winds || [];
+    result.stations.forEach(function (station, i) {
+      const wind = winds[i];
+      station.model = wind ? windOf(wind.east, wind.north) : null;
+      station.modelNote = station.model
+        ? null
+        : ((sampled.notes && sampled.notes[i]) ||
+          "the model has no wind at this coordinate");
+    });
+  }
 }
 
 module.exports = {
@@ -394,7 +499,9 @@ module.exports = {
   DEFAULT_WINDOW_MS,
   DEFAULT_LIMIT,
   MAX_STATIONS,
+  MODEL_NOTICE,
   distanceM,
+  windOf,
   stationsInBox,
   latestOf,
   createFemsStationSource,

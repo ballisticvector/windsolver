@@ -28,6 +28,17 @@
  * wind without saying so. Each of those is refused here rather than in `map.js`,
  * because a claim that can only be checked by looking at the screen is a claim
  * nobody checks.
+ *
+ * **The disagreement gets its own scale, and it is a different kind of scale.**
+ * `ratioColor` colours a station by model ÷ measured rather than by speed,
+ * because the thing worth seeing on this map is not that the wind is 12 mph, it
+ * is that the model thinks it is 20 where the anemometer says 12 —
+ * `docs/downscaling.md` measures exactly that over 68 stations and four dates.
+ * The ramp diverges through white at agreement, so it cannot be confused with
+ * the sequential speed ramp beside it, and it refuses to colour anything
+ * `compareStationToModel` will not certify: a station with no observation, no
+ * model sample, an hour that does not match, or a calm reading — which has no
+ * ratio at all, because dividing by nothing is not a large number.
  */
 
 "use strict";
@@ -46,6 +57,27 @@ const SPEED_STOPS = [
   { mph: 25, color: "#f29e2e", label: "25" },
   { mph: 32, color: "#e76818", label: "32" },
   { mph: 39, color: "#d7191c", label: "39" }
+];
+
+/**
+ * The disagreement ramp: model speed ÷ measured speed, at the station.
+ *
+ * Diverging rather than sequential, and through near-white at agreement, for
+ * two reasons. A reader has to be able to see "these two agree" as an absence
+ * of colour rather than as a colour to be looked up, and the ramp shares no
+ * hue with `SPEED_STOPS` — which is a sequential blue-green-yellow-red — so a
+ * marker cannot be misread as a speed. Stops are inclusive lower bounds; the
+ * band from 0.9 to 1.1 is the one that means "nothing to see here".
+ */
+const RATIO_STOPS = [
+  { ratio: 0, color: "#00429d", label: "0.6×" },
+  { ratio: 0.6, color: "#4771b2", label: "0.6" },
+  { ratio: 0.8, color: "#8fa9cd", label: "0.8" },
+  { ratio: 0.9, color: "#e8e8e8", label: "agree" },
+  { ratio: 1.1, color: "#d99caa", label: "1.1" },
+  { ratio: 1.3, color: "#c26076", label: "1.3" },
+  { ratio: 1.6, color: "#a52a4c", label: "1.6" },
+  { ratio: 2, color: "#93003a", label: "2×" }
 ];
 
 function mph(mps) {
@@ -374,6 +406,9 @@ function stationsQuery(spec) {
   params.set("radiusMiles", String(round(spec.radiusMiles, 2)));
   if (spec.limit) params.set("limit", String(Math.round(spec.limit)));
   if (spec.observed === false) params.set("observed", "false");
+  // Opt-in, because it costs an HRRR subset over the whole view where the
+  // markers alone cost a filter over a cached list.
+  if (spec.model === true) params.set("model", "true");
   return "/v1/stations?" + params.toString();
 }
 
@@ -572,6 +607,118 @@ function compareStationToField(view, body, opts) {
   return out;
 }
 
+/**
+ * The colour for a model-to-measured ratio, or `null` when there is not one.
+ *
+ * `null` for anything that is not a finite positive ratio, for the same reason
+ * `speedColor` returns it for an uncovered cell: the caller has to decide what
+ * "no comparison" looks like and must not be able to get a colour by accident.
+ */
+function ratioColor(ratio) {
+  if (!Number.isFinite(ratio) || ratio <= 0) return null;
+  let color = RATIO_STOPS[0].color;
+  for (const stop of RATIO_STOPS) {
+    if (ratio >= stop.ratio) color = stop.color;
+  }
+  return color;
+}
+
+/**
+ * The station against the raw model at the same coordinate.
+ *
+ * The sibling of `compareStationToField`, and deliberately a separate function
+ * rather than a flag on it, because it compares against a different number:
+ * `/v1/stations?model=true` samples HRRR as published at the station, where
+ * `/v1/field` returns HRRR downscaled onto 3DEP terrain over the pin's box.
+ * The first exists because the second only covers a mile of ground and the
+ * stations are tens of miles apart — a map that could only compare inside the
+ * solve box could almost never compare at all.
+ *
+ * It refuses in five named ways, and the fifth is the one that would otherwise
+ * produce a spectacular wrong number: a **calm** measurement has no ratio. The
+ * model saying 5 m/s over a calm anemometer is a real and interesting
+ * disagreement, and it is not "infinity times too fast".
+ */
+function compareStationToModel(view, station, body, opts) {
+  const o = opts || {};
+  const maxGapS = o.maxGapS === undefined ? 3600 : o.maxGapS;
+  const out = {
+    comparable: false, reason: null, modelSpeedMph: null, modelFromDeg: null,
+    ratio: null, directionDeltaDeg: null, measuredCalm: false, heightNote: null
+  };
+
+  const block = body && body.model;
+  if (!block || block.error) {
+    out.reason = block && block.error
+      ? block.error
+      : "the model was not asked for alongside these stations";
+    return out;
+  }
+  const model = station && station.model;
+  if (!model || !Number.isFinite(model.speedMps)) {
+    out.reason = (station && station.modelNote) || "the model has no wind at this station";
+    return out;
+  }
+
+  out.modelSpeedMph = mph(model.speedMps);
+  out.modelFromDeg = Number.isFinite(model.fromDeg) ? model.fromDeg : null;
+  // Said whether or not the comparison goes ahead: a reader who sees the two
+  // numbers has already compared them, whatever this function decides.
+  out.heightNote = "model at " +
+    (Number.isFinite(block.heightAglM) ? block.heightAglM + " m" : "its own height") +
+    " AGL, RAWS nominally 6.1 m — not height-matched" +
+    (block.downscaled === false ? ", and not downscaled onto the terrain" : "");
+
+  if (!view || !view.reporting) {
+    out.reason = "the station reported nothing";
+    return out;
+  }
+
+  const nowMs = o.nowMs === undefined ? Date.now() : o.nowMs;
+  const gapS = block.validTime && view.ageS !== null
+    ? Math.abs(Math.round((nowMs - Date.parse(block.validTime)) / 1000) - view.ageS)
+    : null;
+  if (gapS !== null && gapS > maxGapS) {
+    out.reason = "the observation and the model hour are " +
+      ageText(gapS).replace(" ago", "") + " apart";
+    return out;
+  }
+
+  out.comparable = true;
+  out.timeGapS = gapS;
+  if (view.calm || !(view.speedMps > 0)) {
+    out.measuredCalm = true;
+    return out;
+  }
+  out.ratio = model.speedMps / view.speedMps;
+  if (Number.isFinite(view.fromDeg) && Number.isFinite(model.fromDeg)) {
+    out.directionDeltaDeg = signedDegrees(model.fromDeg - view.fromDeg);
+  }
+  return out;
+}
+
+/**
+ * What the comparable stations say together, as one sentence.
+ *
+ * The **median** rather than the mean, because one station reporting 0.2 m/s
+ * against a 4 m/s model produces a ratio of twenty and a mean that is about
+ * that station. `docs/downscaling.md` measurement 11 found a single station
+ * carrying an entire regression; a caption is not the place to repeat that.
+ */
+function modelSummary(comparisons) {
+  const ratios = (comparisons || [])
+    .filter(function (c) { return c && c.comparable && Number.isFinite(c.ratio); })
+    .map(function (c) { return c.ratio; })
+    .sort(function (a, b) { return a - b; });
+  const out = { compared: ratios.length, medianRatio: null, text: null };
+  if (!ratios.length) return out;
+  const mid = Math.floor(ratios.length / 2);
+  out.medianRatio = ratios.length % 2 ? ratios[mid] : (ratios[mid - 1] + ratios[mid]) / 2;
+  out.text = "model " + out.medianRatio.toFixed(2) + "\u00d7 measured (median of " +
+    ratios.length + ")";
+  return out;
+}
+
 function nearestIndex(values, target) {
   let best = 0;
   let bestD = Infinity;
@@ -587,8 +734,15 @@ function signedDegrees(delta) {
   return ((((delta % 360) + 540) % 360) - 180);
 }
 
-/** The line under the stations toggle: how many, from where, and how old. */
-function stationsCaption(body) {
+/**
+ * The line under the stations toggle: how many, from where, how old — and,
+ * when the model was asked for beside them, what the two disagree by.
+ *
+ * `summary` is passed in rather than computed here because the caller has
+ * already built the per-station comparisons to draw the markers, and computing
+ * them twice is how the caption and the map come to say different things.
+ */
+function stationsCaption(body, summary) {
   if (!body || !body.ok) return "Stations unavailable.";
   const parts = [];
   const empty = body.matched === 0;
@@ -604,6 +758,13 @@ function stationsCaption(body) {
   // none in view it describes nothing and only reads as a fault.
   if (!body.observed && !empty) {
     parts.push("locations only — no observations read");
+  }
+  if (summary && summary.text) parts.push(summary.text);
+  // The refusal that has no entry in `errors`: the search was wider than the
+  // model is sampled over, and the stations themselves are unaffected.
+  if (body.model && body.model.error &&
+      !(body.errors || []).some(function (e) { return e.error === body.model.error; })) {
+    parts.push(body.model.error);
   }
   if (body.directory && body.directory.stale) {
     // The retained-directory case, said out loud. An old list quietly served as
@@ -623,8 +784,10 @@ function round(value, places) {
 const api = {
   MPS_TO_MPH: MPS_TO_MPH,
   SPEED_STOPS: SPEED_STOPS,
+  RATIO_STOPS: RATIO_STOPS,
   mph: mph,
   speedColor: speedColor,
+  ratioColor: ratioColor,
   cellsOf: cellsOf,
   strideFor: strideFor,
   elevationRange: elevationRange,
@@ -642,6 +805,8 @@ const api = {
   ageText: ageText,
   stationView: stationView,
   compareStationToField: compareStationToField,
+  compareStationToModel: compareStationToModel,
+  modelSummary: modelSummary,
   signedDegrees: signedDegrees,
   stationsCaption: stationsCaption
 };

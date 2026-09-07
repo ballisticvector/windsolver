@@ -267,6 +267,164 @@ describe("the service", () => {
   });
 });
 
+/**
+ * A model that answers from memory, in the shape `server.js` builds around a
+ * volume: earth-relative east/north components per point, and a per-point note
+ * for the ones it has no wind for.
+ */
+function fakeModel(opts) {
+  const o = opts || {};
+  const calls = { windAt: 0, boxes: [], points: [] };
+  return {
+    calls: calls,
+    windAt: async function (box, points) {
+      calls.windAt++;
+      calls.boxes.push(box);
+      calls.points.push(points);
+      if (o.error) throw o.error;
+      return Object.assign({
+        source: "HRRR",
+        validTime: "2026-09-06T16:00:00.000Z",
+        heightAglM: 10,
+        winds: points.map(function () { return { east: 3, north: 0 }; }),
+        notes: []
+      }, o.sampled || {});
+    }
+  };
+}
+
+describe("the model beside the measurement", () => {
+  test("is absent unless it is asked for, and costs nothing when it is not", async () => {
+    const model = fakeModel();
+    const svc = stations.createStationService({ source: fakeSource(), model: model });
+    const found = await svc.inBox(BOULDER, { observed: false });
+    expect(model.calls.windAt).toBe(0);
+    expect(found.model).toBeNull();
+    // The field is present and null rather than missing: a reader checking for
+    // a comparison gets the same shape whether or not one was wanted.
+    expect(found.stations[0].model).toBeNull();
+    expect(found.stations[0].modelNote).toBeNull();
+  });
+
+  test("samples the box once for every station, not once per station", async () => {
+    const model = fakeModel();
+    const svc = stations.createStationService({ source: fakeSource(), model: model });
+    const found = await svc.inBox(BOULDER, { observed: false, model: true });
+    expect(model.calls.windAt).toBe(1);
+    expect(model.calls.points[0]).toHaveLength(3);
+    expect(model.calls.boxes[0]).toEqual(BOULDER);
+    expect(found.stations.map((s) => Math.round(s.model.speedMps))).toEqual([3, 3, 3]);
+    // Westerly: east-going wind comes from 270.
+    expect(found.stations[0].model.fromDeg).toBeCloseTo(270, 6);
+  });
+
+  test("says what the number is not, on the answer rather than in the docs", async () => {
+    const svc = stations.createStationService({
+      source: fakeSource(), model: fakeModel()
+    });
+    const found = await svc.inBox(BOULDER, { observed: false, model: true });
+    expect(found.model).toMatchObject({
+      source: "HRRR", heightAglM: 10, downscaled: false, code: null, error: null
+    });
+    expect(found.model.notice).toBe(stations.MODEL_NOTICE);
+    expect(found.model.notice).toMatch(/not.*downscaled/);
+    expect(found.model.notice).toMatch(/6\.1 m/);
+  });
+
+  test("a model outage costs the comparison and keeps the stations", async () => {
+    const svc = stations.createStationService({
+      source: fakeSource({ reads: new Map([["centre", read([record()])]]) }),
+      model: fakeModel({
+        error: Object.assign(new Error("NOMADS answered 503"),
+          { code: "model-unavailable" })
+      })
+    });
+    const found = await svc.inBox(BOULDER, { observed: true, model: true });
+    expect(found.stations).toHaveLength(3);
+    expect(found.observed).toBe(true);
+    expect(found.stations[0].observation.speedMps).toBe(3);
+    expect(found.model).toMatchObject({
+      code: "model-unavailable", source: null, notice: null
+    });
+    expect(found.model.error).toMatch(/503/);
+    // Named where a caller already looks for the reasons, not only in a field
+    // it has to know to read.
+    expect(found.errors).toEqual([{
+      code: "model-unavailable", error: found.model.error
+    }]);
+    expect(found.stations.every((s) => s.model === null)).toBe(true);
+  });
+
+  test("a station off the edge of the grid keeps the model's own reason", async () => {
+    const svc = stations.createStationService({
+      source: fakeSource(),
+      model: fakeModel({
+        sampled: {
+          winds: [{ east: 3, north: 0 }, null, { east: 0, north: -2 }],
+          notes: [null, "this volume covers 39.9 N to 40.2 N, not 40.08 N", null]
+        }
+      })
+    });
+    const found = await svc.inBox(BOULDER, { observed: false, model: true });
+    expect(found.model.code).toBeNull();
+    expect(found.stations[1].model).toBeNull();
+    expect(found.stations[1].modelNote).toMatch(/39\.9 N/);
+    // The other two are unaffected: one station is not an outage.
+    expect(found.stations[0].model.speedMps).toBe(3);
+    expect(found.stations[2].model.fromDeg).toBeCloseTo(0, 6);
+  });
+
+  test("a station the model returned nothing for is not silently uncoloured", async () => {
+    const svc = stations.createStationService({
+      source: fakeSource(),
+      model: fakeModel({ sampled: { winds: [], notes: [] } })
+    });
+    const found = await svc.inBox(BOULDER, { observed: false, model: true });
+    expect(found.stations.every((s) => s.model === null)).toBe(true);
+    expect(found.stations[0].modelNote).toMatch(/no wind at this coordinate/);
+  });
+
+  test("asking a service with no model attached is refused, not answered with nulls", async () => {
+    const svc = stations.createStationService({ source: fakeSource() });
+    const found = await svc.inBox(BOULDER, { observed: false, model: true });
+    expect(found.model.code).toBe("no-model");
+    expect(found.errors[0].code).toBe("no-model");
+    expect(found.stations).toHaveLength(3);
+  });
+
+  test("an empty box does not sample the model at all", async () => {
+    const model = fakeModel();
+    const svc = stations.createStationService({
+      // A directory with nothing in this box, rather than an empty one: an
+      // empty directory is an outage and has its own answer.
+      source: fakeSource({ directory: [station("far", 41.0, -105.3)] }), model: model
+    });
+    const found = await svc.inBox(BOULDER, { observed: true, model: true });
+    expect(found.stations).toHaveLength(0);
+    expect(model.calls.windAt).toBe(0);
+    expect(found.model).toBeNull();
+  });
+});
+
+describe("the wind out of two components", () => {
+  test("gives the meteorological bearing the wind comes from", () => {
+    expect(stations.windOf(3, 0).fromDeg).toBeCloseTo(270, 6);
+    expect(stations.windOf(-3, 0).fromDeg).toBeCloseTo(90, 6);
+    expect(stations.windOf(0, 3).fromDeg).toBeCloseTo(180, 6);
+    expect(stations.windOf(0, -3).fromDeg).toBeCloseTo(0, 6);
+    expect(stations.windOf(3, 4).speedMps).toBeCloseTo(5, 6);
+  });
+
+  test("a still model has no direction, rather than a northerly", () => {
+    expect(stations.windOf(0, 0)).toEqual({ speedMps: 0, fromDeg: null });
+  });
+
+  test("components that are not numbers are no wind, not a zero one", () => {
+    expect(stations.windOf(null, 0)).toBeNull();
+    expect(stations.windOf(NaN, NaN)).toBeNull();
+  });
+});
+
 describe("the FEMS adapter", () => {
   test("asks FEMS for every station and normalises what comes back", async () => {
     const reply = {

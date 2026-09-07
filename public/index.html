@@ -47,8 +47,13 @@
           font-size:12px; margin-top:14px; }
   .check { display:flex; align-items:center; gap:8px; margin:0 0 10px; font-size:13px; }
   .check input { width:auto; margin:0; }
+  /* A choice about the stations, not a fourth top-level layer. */
+  .check.under { margin-left:24px; }
+  .check.off label { color:var(--dim); }
   .check label { margin:0; color:#e6e6e6; font-size:13px; }
   #reliefNote, #stationNote { font-size:12px; color:var(--dim); margin:-4px 0 12px; min-height:16px; }
+  #compareKey { margin:-6px 0 12px; }
+  #compareKey p { margin:6px 0 0; }
   /* The marker is an SVG in a div overlay: Leaflet gives that a white box by
      default, which would put a card behind every anemometer. */
   .station-marker { background:none; border:none; }
@@ -113,7 +118,19 @@
       <input id="stations" type="checkbox" checked>
       <label for="stations">Measured wind at RAWS stations</label>
     </div>
+    <div class="check under" id="compareRow">
+      <input id="compare" type="checkbox">
+      <label for="compare">Colour them by how far the model is out</label>
+    </div>
     <p id="stationNote"></p>
+    <div id="compareKey" hidden>
+      <div class="legend" id="ratioLegend"></div>
+      <div class="legend-scale" id="ratioScale"></div>
+      <p class="prov">Model speed ÷ measured speed, at each station. Pale is
+        agreement; red is the model blowing harder than the anemometer. The model
+        here is HRRR as published — not downscaled onto the terrain, and at its
+        own height rather than the anemometer's 6.1 m.</p>
+    </div>
 
     <div class="row">
       <div><button id="solve">Solve the wind here</button></div>

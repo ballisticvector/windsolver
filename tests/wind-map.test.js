@@ -505,6 +505,15 @@ describe("asking for the stations on screen", () => {
     expect(lib.stationsQuery({ lat: 40, lon: -105, radiusMiles: 25, observed: false }))
       .toContain("observed=false");
   });
+
+  test("the model beside the stations is opted in to, never asked for by default", () => {
+    // It costs an HRRR subset over the whole view, where the markers alone are
+    // a filter over a cached list.
+    expect(lib.stationsQuery({ lat: 40, lon: -105, radiusMiles: 25 }))
+      .not.toContain("model=");
+    expect(lib.stationsQuery({ lat: 40, lon: -105, radiusMiles: 25, model: true }))
+      .toContain("model=true");
+  });
 });
 
 describe("what a station marker is allowed to say", () => {
@@ -640,6 +649,147 @@ describe("the measured wind beside the modelled one", () => {
   });
 });
 
+describe("the station against the model at the same coordinate", () => {
+  const NOW = Date.parse("2026-09-06T16:10:00.000Z");
+
+  function withModel(overrides) {
+    return Object.assign({
+      ok: true,
+      model: {
+        source: "HRRR", validTime: "2026-09-06T16:00:00.000Z", heightAglM: 10,
+        downscaled: false, notice: "…", code: null, error: null
+      }
+    }, overrides || {});
+  }
+
+  function reporting(overrides) {
+    return stationOf(Object.assign({
+      model: { speedMps: 3, fromDeg: 120 },
+      modelNote: null,
+      observation: Object.assign(stationOf().observation,
+        { speedMps: 2, fromDeg: 100, ageS: 600 })
+    }, overrides || {}));
+  }
+
+  test("gives the ratio, the veer, and the two ways the numbers are not alike", () => {
+    const station = reporting();
+    const cmp = lib.compareStationToModel(
+      lib.stationView(station, { nowMs: NOW }), station, withModel(), { nowMs: NOW });
+    expect(cmp.comparable).toBe(true);
+    expect(cmp.ratio).toBeCloseTo(1.5, 6);
+    expect(cmp.directionDeltaDeg).toBe(20);
+    // Both caveats, on every answer: the heights differ and this is the raw
+    // model rather than the downscaled field the rest of the map draws.
+    expect(cmp.heightNote).toMatch(/10 m AGL, RAWS nominally 6\.1 m/);
+    expect(cmp.heightNote).toMatch(/not downscaled onto the terrain/);
+  });
+
+  test("a calm measurement has no ratio, rather than an enormous one", () => {
+    const station = reporting({
+      observation: Object.assign(stationOf().observation,
+        { speedMps: 0, fromDeg: null, calm: true, ageS: 600 })
+    });
+    const cmp = lib.compareStationToModel(
+      lib.stationView(station, { nowMs: NOW }), station, withModel(), { nowMs: NOW });
+    expect(cmp.comparable).toBe(true);
+    expect(cmp.measuredCalm).toBe(true);
+    expect(cmp.ratio).toBeNull();
+    // And therefore no colour: 3 m/s over a calm anemometer is a real
+    // disagreement, and it is not "infinitely fast".
+    expect(lib.ratioColor(cmp.ratio)).toBeNull();
+  });
+
+  test("a station the model has no wind for keeps the model's own reason", () => {
+    const station = reporting({ model: null, modelNote: "outside the model grid" });
+    const cmp = lib.compareStationToModel(
+      lib.stationView(station, { nowMs: NOW }), station, withModel(), { nowMs: NOW });
+    expect(cmp.comparable).toBe(false);
+    expect(cmp.modelSpeedMph).toBeNull();
+    expect(cmp.reason).toBe("outside the model grid");
+  });
+
+  test("a model outage is one refusal for every station, in the model's words", () => {
+    const station = reporting();
+    const body = withModel({
+      model: { error: "NOMADS answered 503", code: "model-unavailable" }
+    });
+    const cmp = lib.compareStationToModel(
+      lib.stationView(station, { nowMs: NOW }), station, body, { nowMs: NOW });
+    expect(cmp.comparable).toBe(false);
+    expect(cmp.reason).toBe("NOMADS answered 503");
+  });
+
+  test("an observation from another hour is refused, not ratioed", () => {
+    const station = reporting({
+      observation: Object.assign(stationOf().observation,
+        { speedMps: 2, fromDeg: 100, ageS: 6 * 3600 })
+    });
+    const cmp = lib.compareStationToModel(
+      lib.stationView(station, { nowMs: NOW }), station, withModel(), { nowMs: NOW });
+    expect(cmp.comparable).toBe(false);
+    expect(cmp.reason).toMatch(/apart/);
+    // The model's number is still carried out: a reader who is shown both has
+    // compared them whatever this function decided.
+    expect(cmp.modelSpeedMph).toBeCloseTo(6.7, 1);
+  });
+
+  test("a station that reported nothing is not compared with anything", () => {
+    const station = reporting({ observation: null });
+    const cmp = lib.compareStationToModel(
+      lib.stationView(station, { nowMs: NOW }), station, withModel(), { nowMs: NOW });
+    expect(cmp.comparable).toBe(false);
+    expect(cmp.reason).toMatch(/reported nothing/);
+  });
+});
+
+describe("the disagreement ramp", () => {
+  test("agreement is the pale band, and the two ways out of it differ", () => {
+    expect(lib.ratioColor(1)).toBe("#e8e8e8");
+    expect(lib.ratioColor(0.95)).toBe("#e8e8e8");
+    // The measured case: HRRR runs 43-70% fast over this network.
+    expect(lib.ratioColor(1.5)).toBe("#c26076");
+    expect(lib.ratioColor(0.4)).toBe("#00429d");
+    expect(lib.ratioColor(9)).toBe("#93003a");
+  });
+
+  test("no ratio is no colour, so nothing can be coloured by accident", () => {
+    expect(lib.ratioColor(null)).toBeNull();
+    expect(lib.ratioColor(0)).toBeNull();
+    expect(lib.ratioColor(NaN)).toBeNull();
+    expect(lib.ratioColor(-1)).toBeNull();
+  });
+
+  test("it shares no colour with the speed ramp it sits beside", () => {
+    const speeds = new Set(lib.SPEED_STOPS.map((s) => s.color));
+    for (const stop of lib.RATIO_STOPS) expect(speeds.has(stop.color)).toBe(false);
+  });
+});
+
+describe("what the comparable stations say together", () => {
+  test("the median, so one becalmed anemometer is not the headline", () => {
+    const summary = lib.modelSummary([
+      { comparable: true, ratio: 1.2 },
+      { comparable: true, ratio: 1.4 },
+      { comparable: true, ratio: 1.6 },
+      // measurement 11's lesson, in one row: a near-zero measurement makes a
+      // ratio of twenty, and a mean that is about that station alone.
+      { comparable: true, ratio: 20 }
+    ]);
+    expect(summary.compared).toBe(4);
+    expect(summary.medianRatio).toBeCloseTo(1.5, 6);
+    expect(summary.text).toBe("model 1.50\u00d7 measured (median of 4)");
+  });
+
+  test("stations that were not compared are not counted as agreeing", () => {
+    const summary = lib.modelSummary([
+      { comparable: false, ratio: null },
+      { comparable: true, measuredCalm: true, ratio: null }
+    ]);
+    expect(summary.compared).toBe(0);
+    expect(summary.text).toBeNull();
+  });
+});
+
 describe("the caption under the stations toggle", () => {
   const body = {
     ok: true, matched: 24, returned: 10, observed: true, errors: [],
@@ -666,6 +816,30 @@ describe("the caption under the stations toggle", () => {
     expect(caption).toContain("FEMS answered 502");
   });
 
+  test("the disagreement is in the caption, not only in twenty popups", () => {
+    const caption = lib.stationsCaption(body, lib.modelSummary([
+      { comparable: true, ratio: 1.4 }, { comparable: true, ratio: 1.6 }
+    ]));
+    expect(caption).toContain("model 1.50\u00d7 measured (median of 2)");
+  });
+
+  test("a model the service would not sample is said out loud once", () => {
+    const caption = lib.stationsCaption(Object.assign({}, body, {
+      model: { error: "the model is only sampled … within 150 miles", code: "model-box-too-large" }
+    }));
+    expect(caption).toContain("only sampled");
+    // Still a station caption: the markers and their observations are fine.
+    expect(caption).toContain("10 of 24 stations");
+  });
+
+  test("a model error already in errors is not said twice", () => {
+    const caption = lib.stationsCaption(Object.assign({}, body, {
+      errors: [{ code: "model-unavailable", error: "NOMADS answered 503" }],
+      model: { error: "NOMADS answered 503", code: "model-unavailable" }
+    }));
+    expect(caption.match(/NOMADS answered 503/g)).toHaveLength(1);
+  });
+
   test("an empty view says so, without a clause about observations it has none of", () => {
     const caption = lib.stationsCaption(Object.assign({}, body, {
       matched: 0, returned: 0, observed: false
@@ -690,13 +864,29 @@ describe("the station layer on the page", () => {
   });
 
   test("a station with no observation still gets a marker, without an arrow", () => {
-    const icon = /function stationIcon\(view\) \{([\s\S]*?)\n {2}\}/.exec(js);
+    const icon = /function stationIcon\(view, comparison\) \{([\s\S]*?)\n {2}\}/.exec(js);
     expect(icon).not.toBeNull();
     expect(icon[1]).toContain("view.reporting && !view.calm");
+    // Compare mode changes the fill and nothing else: the hollow ring, the
+    // dimmed ring for a stale reading and the arrow all still mean what they
+    // meant.
+    expect(icon[1]).toContain("lib.ratioColor(comparison.ratio)");
   });
 
   test("the popup is built when it opens, so a later solve is in it", () => {
-    expect(js).toContain("bindPopup(function () { return stationPopup(view); })");
+    expect(js).toContain("return stationPopup(view, comparison);");
+  });
+
+  test("the markers and the caption are coloured from one pass, not two", () => {
+    // Two passes is how the map and the sentence under it come to disagree.
+    expect(js).toContain("const comparisons = drawStations(body, compare);");
+    expect(js).toContain("lib.modelSummary(comparisons)");
+  });
+
+  test("turning the comparison on refetches, because the model is a second half", () => {
+    expect(js).toContain("$(\"compare\").addEventListener(\"change\", loadStations)");
+    const load = /async function loadStations\(\)([\s\S]*?)\n {2}\}/.exec(js);
+    expect(load[1]).toContain("model: compare");
   });
 
   test("a station outage does not read as a failed solve", () => {
@@ -710,5 +900,12 @@ describe("the station layer on the page", () => {
     expect(html).toContain("Measured and modelled");
     expect(html).toMatch(/Hollow: the station is there and reported nothing\. Not calm\./);
     expect(html).toMatch(/modelled, not measured/);
+  });
+
+  test("the disagreement ramp is explained where it is used, caveats included", () => {
+    expect(html).toContain("id=\"compareKey\"");
+    expect(html).toMatch(/Model speed ÷ measured speed/);
+    expect(html).toMatch(/not downscaled onto the terrain/);
+    expect(html).toMatch(/own height rather than the anemometer's 6\.1 m/);
   });
 });
