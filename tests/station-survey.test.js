@@ -147,7 +147,22 @@ describe("surveying the ground before anything is scored", () => {
     expect(report.query.positionRadiusM).toBe(500);
     expect(report.stations[0].positionRadiusM).toBe(500);
     expect(report.stations[0].class).toBe("ridge");
+    expect(survey.summarise(report)).toContain("posM is the 500 m position index");
     expect(survey.parseArgs(["--threshold", "2000"]).threshold).toBe("2000");
+  });
+
+  test("the footnote quotes the radius the survey was actually run at", async () => {
+    // A survey run at 2 km used to print "posM is the 500 m position index",
+    // which is the exact confusion measurement 14 was about.
+    const report = await survey.survey({
+      source: stubSource([stationAt("HILL")]),
+      service: stubService(function () { return RIDGE; }),
+      positionRadiusM: 2000
+    });
+
+    expect(report.query.positionRadiusM).toBe(2000);
+    expect(survey.summarise(report)).toContain("posM is the 2000 m position index");
+    expect(survey.summarise(report)).not.toContain("500 m position index");
   });
 
   test("a published elevation the ground disagrees with is flagged, not counted", async () => {

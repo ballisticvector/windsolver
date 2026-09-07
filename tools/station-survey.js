@@ -354,8 +354,9 @@ function summarise(report, opts) {
   }
 
   lines.push("");
-  lines.push("posM is the 500 m position index: the station's ground minus the mean of the");
-  lines.push("disc around it. A class is only comparable with one measured at the same radius.");
+  lines.push("posM is the " + report.query.positionRadiusM + " m position index: the " +
+    "station's ground minus the mean of the disc");
+  lines.push("around it. A class is only comparable with one measured at the same radius.");
   return lines.join("\n");
 }
 

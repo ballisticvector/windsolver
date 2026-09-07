@@ -1211,11 +1211,11 @@ group mean is not a pin, and the pin is what the product has to answer.
   still defaults to a 500 m-derived ±15 m, because changing it would silently relabel
   every stratified table already in this note. What changed is that the radius and the
   threshold now travel with the class.
-- **The next run is pre-registerable, and should be.** Fit the valley/ridge scale split on
-  Colorado at 2 km, state it in writing, then score New Mexico's 30 stations against it
-  without looking. Three descriptors have now been chosen after seeing their own results
-  — `Sx`, elevation in New Mexico, and this radius — and all three looked about this
-  strong at this stage.
+- ~~**The next run is pre-registerable, and should be.**~~ Run: measurement 15. Fitted on
+  Colorado, written down, scored on New Mexico's 30 stations without looking — and it did
+  not transfer. Three descriptors had been chosen after seeing their own results — `Sx`,
+  elevation in New Mexico, and this radius — and all three looked about this strong at
+  this stage; this is the first one killed before it could be argued for.
 
 *Caveats. The 2 km radius was chosen because the 500 m one produced no valleys, which is
 selection on the outcome. `t = -1.97` on 31 stations is one station from nothing, and the
@@ -1228,6 +1228,94 @@ stored ones.*
 Artefacts: the 2 km survey and the restratification were run outside the repository
 against `tools/station-survey.js` and `verify.js`; the surveys are reproducible with
 `--position 2000 --radius 2.5`.
+
+## Measurement 15: the first pre-registered run, and the sheltering signal does not travel
+
+Measurement 14 ended by asking for this run in writing, so it was run in that order:
+Colorado's answer and the rules for grading New Mexico were written to a file and its
+digest taken **before any New Mexico number existed**, and the scoring script reads its
+thresholds back out of that file rather than choosing them.
+
+### Registered first
+
+```
+frozen: 2 km position index, ±15 m classes, ≥12 pairs a station,
+        the 30 already-calibrated New Mexico RAWS, the four dates
+        already scored, verify.debiasScale on the raw HRRR sample
+
+Colorado  valley n=10 mean scale 0.598   ridge n=21 mean scale 0.756
+          valley - ridge = -0.157   se 0.080   t = -1.97
+          Spearman rho(index, scale) = +0.228
+
+predicted for New Mexico: negative, at least 0.05 of scale, rho positive
+confirms   diff < 0, |diff| >= 0.05, one-sided p < 0.05
+consistent diff < 0 but p >= 0.05
+refutes    diff >= 0
+untestable fewer than 4 valley stations or fewer than 100 valley pairs
+```
+
+### Scored second
+
+The 3DEP read at 2 km does to the New Mexico catalogue what it did to Colorado's: the 56
+readable RAWS are **20 flat, 22 ridge, 1 slope and 12 valley** where at 500 m they were 33
+flat, 15 ridge, 4 slope and 3 valley (measurement 12). The valley stratum is real in the
+scored set too — seven of the 30 calibrated stations, 671 pairs, not the two the 500 m
+index allowed. The test is not underpowered for want of hollows.
+
+```
+New Mexico, 2 km index, 30 stations, 2,876 pairs
+valley  (index <= -15 m)   n= 7   mean scale 0.577
+between                    n= 9   mean scale 0.796
+ridge   (index >= +15 m)   n=14   mean scale 0.587
+valley - ridge = -0.010   se 0.074   t = -0.13   one-sided p = 0.45
+Spearman rho(index, scale) = -0.097          (Colorado +0.228)
+held out   16/30 better   mean |err| 0.205 -> 0.211   closes -2.7%
+```
+
+**The point estimate is one sixteenth of Colorado's and its own standard error is seven
+times it.** By the registered rules that is `consistent` — the sign happens to be negative
+— and calling it that would be dishonest without the next sentence: the sign of a number
+whose magnitude is 0.010 ± 0.074 is a coin landing, and the two secondary predictions both
+went the other way. Spearman flips sign. The held-out line is *worse* than the pooled mean
+scale, where Colorado's closed 5.3%.
+
+What the run cannot do is call Colorado a fluke. Colorado's −0.157 sits at the very edge of
+New Mexico's interval (−0.155 to +0.136), and the difference between the two states is
+−0.148 ± 0.109, z = −1.36 — so "no effect anywhere" and "Colorado's effect everywhere"
+are both inside what 66 stations can distinguish. Pooling the two states inverse-variance
+gives **−0.078 ± 0.054, t = −1.44**, which is the honest summary of everything measured:
+a sheltering effect about half Colorado's size, not distinguishable from zero.
+
+### What this settles
+
+- **The 2 km valley/ridge split is not a correction.** It was never going to become one
+  on Colorado alone, and it does not survive the first state it was carried to. It goes
+  on the list beside `Sx`, roughness and New Mexico's elevation line — four descriptors
+  now, each of which looked about this good in the state it was found in.
+- **The method is what to keep.** Three of the four dead leads were found by hand,
+  measurements after the claim. This one was killed by a rule written before the data was
+  read, in one run, and there is nothing to argue about afterwards because the thresholds
+  came out of a file. **Any future terrain descriptor should be registered the same
+  way**, and the cost of doing it was one extra script.
+- **The catalogue objection stays withdrawn.** Both states have a real sheltered stratum
+  at 2 km — 15 of 87 in Colorado, 12 of 56 in New Mexico. The stratum is not the problem;
+  what is measured across it is small.
+- **Nothing moved.** No default, no coefficient, no threshold, and `downscale.js` is
+  untouched. `tools/station-survey.js` had one hard-coded "500 m" left in its footnote
+  while the query said 2 km, which is exactly the confusion measurement 14 was about; it
+  now prints the radius it ran at, with a test.
+
+*Caveats. Seven valley stations against fourteen ridge ones is a small test, and its
+interval is wide enough to contain Colorado's estimate — this is a failure to replicate,
+not a demonstration of absence. Same four dates, same 0.85 m/s clock term under every
+pair (measurement 13), which remains larger than the effect. The scales are fitted
+in-sample except for the held-out column. A 2 km position index is a landform statistic,
+not a measurement of exposure: a mast in a broad basin and a mast in a slot canyon can
+share an index, and RAWS are sited for fire-weather exposure in either.*
+
+Artefacts: registration and scoring were run outside the repository against `verify.js`
+and `tools/station-survey.js`; the New Mexico survey is reproducible with
+`--source fems --state NM --position 2000 --radius 2.5`.
 
 ## The hypotheses, and how much weight each one carries
 
@@ -1259,7 +1347,7 @@ Roughly in the order the evidence supports them.
    is a per-station offset eight times wider than its own mean that nothing measured so
    far predicts.
 4. **The sheltering signal rests on one station, and 26 more did not change that —
-   tested twice, and not supported.** The per-station scales correlate with the 500 m
+   tested three times, and not supported.** The per-station scales correlate with the 500 m
    topographic position index at r = +0.70 on eleven stations, which is the shape `Sx`
    claims and 1/50th of the amplitude it applies. Measurement 10 took that from a
    correlation to an out-of-sample score and found it landing on the pooled scale once
@@ -1267,9 +1355,12 @@ Roughly in the order the evidence supports them.
    found the same thing on 37 stations, where terrain closes 8% of the distance to a
    station's own scale and the correlation still halves when STOC2 goes. Measurement 12
    scored 30 New Mexico stations and the position index went 0 of 12 held-out cells
-   there. **This is not where the next station should go, in any state** — New Mexico's
-   RAWS are 3 valleys in 56 against Colorado's 3 in 93, so the sheltered half of the axis
-   is missing from the catalogue rather than from the sample.
+   there. Measurement 14 then found the sheltered half of the axis had been there all
+   along at a 2 km radius — 15 Colorado valleys, not 3 — and a pooled 20% split across it;
+   measurement 15 pre-registered that split and scored New Mexico, where it is −0.010 ±
+   0.074 against Colorado's −0.157 with the Spearman sign reversed. **So the catalogue was
+   not the obstacle and the axis still does not carry a correction.** Pooled over both
+   states the sheltering effect is −0.078 ± 0.054 of scale.
 5. **The station factor is predictable from something, and elevation is the first
    descriptor that has looked like it — in one state.** Measurement 12: fitting the New
    Mexico scale on elevation beats a pooled scale in 12 of 12 held-out cells and closes

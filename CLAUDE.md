@@ -179,9 +179,13 @@ slope and 3 valley (measurement 12) — which is where "RAWS has no hollows" cam
 the 2 km radius a two-mile map is actually about, the 87 Colorado RAWS readable at both
 radii are 15 flat, 51 ridge, 6 slope and **15 valley**: 34 change class and 14 change sign,
 because a mast can sit on a bank inside a gulch and both readings are true (measurement
-14). So the sheltered stratum exists after all, and it is ten stations rather than two in
-the pairs already scored. `--position` and `--threshold` ride on every surveyed station
-for this reason; never compare a count taken at one radius with a count taken at another.
+14). The 56 New Mexico stations read the same way: 20 flat, 22 ridge, 1 slope and **12
+valley** at 2 km (measurement 15). So the sheltered stratum exists after all, and it is
+ten Colorado and seven New Mexico stations in the pairs already scored — what it is not is
+a correction, because the sheltering it shows in Colorado does not survive New Mexico (see
+below). `--position` and `--threshold` ride on every surveyed station for this reason, and
+the survey's footnote quotes the radius it ran at; never compare a count taken at one
+radius with a count taken at another.
 Below 3 m the RAWS network still has nothing — CoAgMet has 95 Colorado masts at 2–3 m and
 USCRN measures at 1.5 m (`docs/observations.md`), and neither is wired into a run.
 
@@ -229,8 +233,14 @@ drift into another's job.
   8% of the distance between a pooled scale and the station's own, and removing STOC2
   still halves the correlation on every date. Held out at a 2 km radius instead of 500 m
   it closes 5.3% and wins 20 of 36 — a coin toss (measurement 14), even though the same
-  radius makes sheltering visible *pooled*: ten valley stations need HRRR slowed about
-  20% more than the 21 ridge ones, at t ≈ 2. **A group mean is not a pin.** The one
+  radius makes sheltering visible *pooled* in Colorado: ten valley stations need HRRR
+  slowed about 20% more than the 21 ridge ones, at t ≈ 2. **That split was then
+  pre-registered and scored on New Mexico, and it did not travel**: −0.010 ± 0.074 where
+  Colorado said −0.157, Spearman flipping sign, the held-out line worse than a pooled
+  scale (measurement 15). Pooled over both states it is −0.078 ± 0.054. Do not build on
+  the 2 km valley/ridge split, and **register the next descriptor before scoring it** —
+  that run cost one extra script and settled in a day what three earlier leads took
+  measurements to unwind. **A group mean is not a pin.** The one
   descriptor that has ever bridged the gap is **elevation in New Mexico** (measurement
   12): 12 of 12 held-out cells and 71% of the distance to the station's own factor — and
   0 of 12 in Colorado, with a New Mexico line actively damaging Colorado. Read that
