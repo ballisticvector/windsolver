@@ -764,9 +764,10 @@ consumer who is reading both:
 }
 ```
 
-It takes `lat`, `lon` and `radiusMiles` exactly as `/v1/field` does, plus `limit` and
+It takes `lat`, `lon` and `radiusMiles` exactly as `/v1/field` does, plus `limit`,
 `observed` (`false` for locations only, which costs one metadata request instead of one
-per batch of twenty stations). `stations.js` is provider-neutral; **FEMS is the source
+per batch of twenty stations) and `model` (`true` to carry the model's own wind at each
+station beside the measurement). `stations.js` is provider-neutral; **FEMS is the source
 today and it needs no account, so this route works on a bare deploy with no new
 configuration.**
 
@@ -798,6 +799,32 @@ solve: the station service is a separate upstream from the field service on purp
 model uses. RAWS masts are nominally 6.1 m, so a station reading and a model level are
 not the same quantity, and defaulting the height would hide that at the exact moment
 someone compares them.
+
+**`model=true` adds what HRRR says at each station, and three sentences about what that
+number is not.** It is opt-in because it costs an HRRR subset over the box where the
+markers alone cost a filter over a cached list, and it is refused above 150 miles with
+`model.code: "model-box-too-large"` — the stations and their observations are unaffected,
+so a comparison is a thing that can be missing and never a request that fails. The same
+is true of an outage: the markers stay, `model.code` names the upstream, and every
+station's `model` is `null`.
+
+```json
+{
+  "model": { "source": "HRRR", "validTime": "2026-09-04T17:00:00.000Z", "heightAglM": 10,
+    "downscaled": false, "notice": "The model wind is HRRR as published, sampled at the station: not downscaled onto the terrain, and not moved to the anemometer's height. …",
+    "code": null, "error": null },
+  "stations": [ { "model": { "speedMps": 3.2, "fromDeg": 265 }, "modelNote": null } ]
+}
+```
+
+Two of those fields exist to stop a comparison being read as more than it is.
+`downscaled: false` says this is the published model and **not** the field `/v1/field`
+returns — 60 stations would be 60 terrain reads, and `docs/downscaling.md` measures the
+downscaling as indistinguishable from raw HRRR once the bias is out, which is the thing
+on display. `heightAglM: 10` beside a `sensorHeightM` of 6.1 m or `null` says the two
+readings are not height-matched. A station the volume does not cover keeps its marker,
+its observation and a `modelNote` saying so, because one station off the edge of a grid
+is not an outage.
 
 The field answers on a **regular lat/long grid**, because a consumer should not have to
 carry a UTM implementation to read a wind. The native projected grid is described

@@ -33,9 +33,11 @@ const zlib = require("zlib");
 const proj = require("../proj.js");
 const derive = require("../derive.js");
 const downscale = require("../downscale.js");
+const grib2 = require("../grib2.js");
 const png = require("../png.js");
 const profile = require("../profile.js");
 const server = require("../server.js");
+const volumeLib = require("../volume.js");
 
 const CENTRE = { lat: 40.0150, lon: -105.2705 };
 // A `Date`, because that is what the engine carries. The first version of this
@@ -852,7 +854,13 @@ function stubStations(opts) {
       this.boxes.push({ box: box, options: options });
       if (o.error) throw o.error;
       const observed = options.observed !== false;
+      const modelled = options.model === true;
       return {
+        model: modelled ? {
+          source: "HRRR", validTime: "2026-09-04T17:00:00.000Z", heightAglM: 10,
+          downscaled: false, notice: "not downscaled, not height-matched",
+          code: null, error: null
+        } : null,
         matched: 24,
         returned: 1,
         truncated: true,
@@ -875,7 +883,9 @@ function stubStations(opts) {
             calm: false, gustMps: 3.57632, qcChecked: false, qcFlags: null, ageS: 600
           } : null,
           observationNote: o.observationsDown ? "FEMS answered 502" : null,
-          observationCode: o.observationsDown ? "observations-unavailable" : null
+          observationCode: o.observationsDown ? "observations-unavailable" : null,
+          model: modelled ? { speedMps: 3.2, fromDeg: 265 } : null,
+          modelNote: null
         }]
       };
     }
@@ -926,6 +936,61 @@ describe("GET /v1/stations", () => {
       expect(call.options.limit).toBe(5);
       expect(call.box.north).toBeGreaterThan(40);
       expect(call.box.south).toBeLessThan(40);
+    } finally {
+      await app.close();
+    }
+  });
+
+  test("the model beside the stations is off unless it is asked for", async () => {
+    const stations = stubStations();
+    const app = await listen({ field: stubService(), stations: stations });
+    try {
+      const res = await get(app.url, "/v1/stations?lat=40&lon=-105");
+      expect(res.status).toBe(200);
+      expect(stations.boxes[0].options.model).toBe(false);
+      expect(res.body.model).toBe(null);
+      expect(res.body.stations[0].model).toBe(null);
+      // Still measured: adding a model number to the payload must not change
+      // what the route says the stations are.
+      expect(res.body.modelled).toBe(false);
+    } finally {
+      await app.close();
+    }
+  });
+
+  test("model=true carries what the model said, and what it is not", async () => {
+    const stations = stubStations();
+    const app = await listen({ field: stubService(), stations: stations });
+    try {
+      const res = await get(app.url, "/v1/stations?lat=40&lon=-105&model=true");
+      expect(res.status).toBe(200);
+      expect(stations.boxes[0].options.model).toBe(true);
+      expect(res.body.model).toMatchObject({
+        source: "HRRR", heightAglM: 10, downscaled: false, code: null
+      });
+      expect(res.body.model.notice).toMatch(/not downscaled/);
+      expect(res.body.stations[0].model).toEqual({ speedMps: 3.2, fromDeg: 265 });
+      expect(res.body.stations[0].modelNote).toBe(null);
+    } finally {
+      await app.close();
+    }
+  });
+
+  test("a search too wide to model loses the comparison, not the stations", async () => {
+    const stations = stubStations();
+    const app = await listen({ field: stubService(), stations: stations });
+    try {
+      const radius = server.MAX_MODEL_RADIUS_MILES + 10;
+      const res = await get(app.url,
+        "/v1/stations?lat=40&lon=-105&model=true&radiusMiles=" + radius);
+      expect(res.status).toBe(200);
+      expect(res.body.ok).toBe(true);
+      expect(res.body.stations).toHaveLength(1);
+      expect(res.body.stations[0].observation.speedMps).toBeCloseTo(1.34112, 5);
+      // And the upstream is never asked, so a wide search costs no HRRR subset.
+      expect(stations.boxes[0].options.model).toBe(false);
+      expect(res.body.model.code).toBe("model-box-too-large");
+      expect(res.body.model.error).toMatch(String(server.MAX_MODEL_RADIUS_MILES));
     } finally {
       await app.close();
     }
@@ -1025,6 +1090,96 @@ describe("GET /v1/stations", () => {
     } finally {
       await app.close();
     }
+  });
+});
+
+/**
+ * The model the stations are compared with.
+ *
+ * Graded against a real volume rather than a stubbed sampler, because the two
+ * things that can go wrong here are both about the grid: a station on the edge
+ * of a bounding box can fall outside a Lambert volume cut to it, and a station
+ * off the grid entirely must cost its own comparison and nobody else's.
+ */
+const HRRR_FIXTURE = path.join(__dirname, "fixtures",
+  "hrrr-20260826t20z-f00-boulder.grib2");
+
+function fixtureVolume() {
+  return volumeLib.buildVolume(grib2.decode(fs.readFileSync(HRRR_FIXTURE)));
+}
+
+function stubAtmosphere(volume) {
+  return {
+    calls: [],
+    getLatest: async function (q) {
+      this.calls.push(q);
+      return volume;
+    }
+  };
+}
+
+describe("the model sampled beside a station", () => {
+  test("reads one volume for the whole box and samples each station in it", async () => {
+    const v = fixtureVolume();
+    const air = stubAtmosphere(v);
+    const model = server.createStationModel(air);
+    const box = {
+      south: v.bounds.south, north: v.bounds.north,
+      west: v.bounds.west, east: v.bounds.east
+    };
+    const points = [
+      { lat: v.latitudes[0], lon: v.longitudes[0] },
+      { lat: v.latitudes[8], lon: v.longitudes[8] }
+    ];
+    const out = await model.windAt(box, points);
+
+    expect(air.calls).toHaveLength(1);
+    expect(air.calls[0].levels).toEqual(["heightAboveGround:10"]);
+    expect(air.calls[0].variables).toEqual(["UGRD", "VGRD"]);
+    // Widened by a cell: the box's corner is inside the box and can still be
+    // outside a Lambert volume cut to it.
+    expect(air.calls[0].box.north).toBeGreaterThan(box.north);
+    expect(air.calls[0].box.west).toBeLessThan(box.west);
+
+    // The model's own level, said out loud rather than left for a reader to
+    // assume it matches a 6.1 m anemometer.
+    expect(out.heightAglM).toBe(10);
+    expect(out.validTime).toBe(v.validTime.toISOString());
+    expect(out.winds).toHaveLength(2);
+    const wind = v.wind["heightAboveGround:10"];
+    expect(out.winds[0].east).toBeCloseTo(wind.east[0], 6);
+    expect(out.winds[1].north).toBeCloseTo(wind.north[8], 6);
+    expect(out.notes.filter(Boolean)).toHaveLength(0);
+  });
+
+  test("a station off the grid loses its own wind and keeps its neighbours'", async () => {
+    const v = fixtureVolume();
+    const model = server.createStationModel(stubAtmosphere(v));
+    const box = {
+      south: v.bounds.south, north: v.bounds.north,
+      west: v.bounds.west, east: v.bounds.east
+    };
+    const out = await model.windAt(box, [
+      { lat: v.latitudes[0], lon: v.longitudes[0] },
+      { lat: 20, lon: -80 }
+    ]);
+    expect(out.winds[0]).not.toBeNull();
+    expect(out.winds[1]).toBeNull();
+    // The volume's own sentence, not a shrug: it names the bounds it does have.
+    expect(out.notes[1]).toMatch(/outside the volume/);
+  });
+
+  test("an outage upstream is thrown, so the station service can name it", async () => {
+    const model = server.createStationModel({
+      getLatest: async function () {
+        throw Object.assign(new Error("NOMADS answered 503"),
+          { code: "model-unavailable" });
+      }
+    });
+    await expect(model.windAt(
+      { south: 39, north: 41, west: -106, east: -104 },
+      [{ lat: 40, lon: -105 }]
+    )).rejects.toMatchObject({ code: "model-unavailable" });
   });
 });
 

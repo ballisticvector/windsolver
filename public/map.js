@@ -32,6 +32,13 @@
  * a heavy arrow against a flat wash with thin ones, above the wash rather than
  * under it, so which is which survives a glance — and a station that reported
  * nothing keeps a hollow marker rather than disappearing or reading as calm.
+ *
+ * **The disagreement is a mode, not a third layer.** Ticking "colour them by
+ * how far the model is out" recolours the same markers on a diverging ramp and
+ * refetches with `model=true`, because the model beside each station is a
+ * second, opt-in half of the station answer and costs an HRRR subset over the
+ * view. Nothing else about the marker changes, and a station whose comparison
+ * is refused gets no colour at all rather than a middling one.
  */
 
 /* global L, WindMapLib */
@@ -300,11 +307,32 @@
     if (el) el.textContent = text || "";
   }
 
-  function stationIcon(view) {
+  /**
+   * The marker, in whichever of the two things it can be coloured by.
+   *
+   * By default the disc is the measured speed, on the same ramp as the wash, so
+   * a station reads as "the wind here is this fast". In compare mode it is the
+   * ratio to the model on a diverging ramp instead, so the map answers a
+   * different question — "where is the model wrong, and by how much" — without
+   * anything else about the marker changing: the ring, the arrow, the hollow
+   * for a station that reported nothing, all mean what they meant before.
+   *
+   * A station with no ratio in compare mode is **not** given a colour. It goes
+   * grey with a dotted ring, which is the same mark as "no observation" for the
+   * same reason: there is nothing to say, and an uncoloured mark is the only
+   * way to say that.
+   */
+  function stationIcon(view, comparison) {
     const size = 30;
+    const compare = comparison !== undefined && comparison !== null;
+    const ratioFill = compare ? lib.ratioColor(comparison.ratio) : null;
     const ring = view.stale ? "rgba(255,255,255,0.45)" : "#ffffff";
-    const fill = view.reporting ? (view.color || "#8b95a5") : "transparent";
-    const dash = view.reporting ? "" : " stroke-dasharray=\"3 2\"";
+    const fill = compare
+      ? (ratioFill || "transparent")
+      : (view.reporting ? (view.color || "#8b95a5") : "transparent");
+    const dash = (compare ? !ratioFill : !view.reporting)
+      ? " stroke-dasharray=\"3 2\""
+      : "";
     const parts = [
       "<svg width=\"" + size + "\" height=\"" + size + "\" viewBox=\"0 0 30 30\">",
       "<circle cx=\"15\" cy=\"15\" r=\"6.5\" fill=\"" + fill + "\" stroke=\"" + ring +
@@ -335,8 +363,35 @@
    * yet" for the rest of the session, on a page where the answer is one click
    * away.
    */
-  function stationPopup(view) {
+  function stationPopup(view, modelComparison) {
     const lines = view.lines.slice();
+    if (modelComparison) {
+      if (modelComparison.modelSpeedMph === null) {
+        lines.push("No model wind here: " + modelComparison.reason + ".");
+      } else {
+        lines.push("HRRR at this station: " +
+          modelComparison.modelSpeedMph.toFixed(1) + " mph" +
+          (modelComparison.modelFromDeg === null
+            ? ""
+            : " from " + Math.round(modelComparison.modelFromDeg) + "\u00b0") +
+          (modelComparison.comparable && modelComparison.ratio !== null
+            ? " — " + modelComparison.ratio.toFixed(2) + "x measured"
+            : "") +
+          (modelComparison.comparable && modelComparison.directionDeltaDeg !== null
+            ? ", " + Math.abs(Math.round(modelComparison.directionDeltaDeg)) + "\u00b0 " +
+              (modelComparison.directionDeltaDeg >= 0 ? "clockwise" : "anticlockwise")
+            : ""));
+        // The calm case, which has no ratio and is not a small disagreement.
+        if (modelComparison.measuredCalm) {
+          lines.push("Measured calm, so there is no ratio — the model is not " +
+            "a multiple of nothing.");
+        }
+        if (!modelComparison.comparable && modelComparison.reason) {
+          lines.push("Not compared: " + modelComparison.reason + ".");
+        }
+        lines.push(modelComparison.heightNote);
+      }
+    }
     const comparison = lib.compareStationToField(view, lastField);
     if (comparison.comparable) {
       const modelled = comparison.modelSpeedMph.toFixed(1) + " mph";
@@ -359,22 +414,35 @@
       lines.map(escape).join("<br>");
   }
 
-  function drawStations(body) {
+  /**
+   * Draws the markers and returns the comparisons it drew them from.
+   *
+   * Returned rather than recomputed for the caption: the caption's median and
+   * the colours on the map have to come from one pass, or the day they disagree
+   * is the day a reader believes the wrong one.
+   */
+  function drawStations(body, compare) {
     stationLayer.clearLayers();
-    if (!body || !body.ok) return;
+    if (!body || !body.ok) return [];
+    const comparisons = [];
     for (const station of body.stations) {
       const view = lib.stationView(station);
+      const comparison = compare
+        ? lib.compareStationToModel(view, station, body)
+        : null;
+      if (comparison) comparisons.push(comparison);
       const marker = L.marker([view.lat, view.lon], {
-        icon: stationIcon(view),
+        icon: stationIcon(view, comparison),
         pane: "stations",
         title: view.title,
         // Keyboard-reachable, and above the pin only when hovered: a station is
         // information, the pin is the control.
         riseOnHover: true
       });
-      marker.bindPopup(function () { return stationPopup(view); });
+      marker.bindPopup(function () { return stationPopup(view, comparison); });
       stationLayer.addLayer(marker);
     }
+    return comparisons;
   }
 
   function clearStations() {
@@ -384,7 +452,29 @@
     setStationNote("");
   }
 
+  /** The ratio ramp, shown only while the markers are actually using it. */
+  function renderCompareKey(on) {
+    const box = $("compareKey");
+    if (!box) return;
+    box.hidden = !on;
+    if (!on || box.dataset.drawn === "1") return;
+    const bar = $("ratioLegend");
+    const scale = $("ratioScale");
+    for (const stop of lib.RATIO_STOPS) {
+      const span = document.createElement("span");
+      span.style.background = stop.color;
+      span.title = stop.label;
+      bar.appendChild(span);
+      const tick = document.createElement("span");
+      tick.textContent = stop.label;
+      scale.appendChild(tick);
+    }
+    box.dataset.drawn = "1";
+  }
+
   async function loadStations() {
+    const compare = $("stations").checked && $("compare").checked;
+    renderCompareKey(compare);
     if (!$("stations").checked) return clearStations();
     if (stationRequest) stationRequest.abort();
 
@@ -396,12 +486,15 @@
 
     const controller = new AbortController();
     stationRequest = controller;
-    setStationNote("Reading the anemometers…");
+    setStationNote(compare
+      ? "Reading the anemometers, and the model over them…"
+      : "Reading the anemometers…");
 
     let body;
     try {
       const response = await fetch(lib.stationsQuery({
-        lat: spec.lat, lon: spec.lon, radiusMiles: spec.radiusMiles, limit: 60
+        lat: spec.lat, lon: spec.lon, radiusMiles: spec.radiusMiles, limit: 60,
+        model: compare
       }), { signal: controller.signal });
       body = await response.json().catch(function () { return null; });
       if (!response.ok || !body || !body.ok) {
@@ -419,8 +512,8 @@
     }
     stationRequest = null;
 
-    drawStations(body);
-    setStationNote(lib.stationsCaption(body) +
+    const comparisons = drawStations(body, compare);
+    setStationNote(lib.stationsCaption(body, lib.modelSummary(comparisons)) +
       (spec.capped ? " · zoom in: only the nearest are shown" : ""));
   }
 
@@ -625,9 +718,18 @@
   });
 
   $("stations").addEventListener("change", function () {
-    if (!$("stations").checked) return clearStations();
+    $("compareRow").classList.toggle("off", !$("stations").checked);
+    $("compare").disabled = !$("stations").checked;
+    if (!$("stations").checked) {
+      renderCompareKey(false);
+      return clearStations();
+    }
     loadStations();
   });
+
+  // A refetch rather than a recolour: the model is a second, opt-in half of the
+  // station answer, and the markers already on screen were fetched without it.
+  $("compare").addEventListener("change", loadStations);
 
   // The stations belong to the view rather than to the pin: they are what is on
   // screen, not what was solved. Debounced, so a drag is one request.

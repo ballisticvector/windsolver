@@ -56,6 +56,7 @@ const slice = require("./slice.js");
 const profile = require("./profile.js");
 const stationsLib = require("./stations.js");
 const terrainLib = require("./terrain.js");
+const volumeLib = require("./volume.js");
 
 const API_VERSION = 1;
 
@@ -99,6 +100,14 @@ const MAX_RADIUS_MILES = 30;
 // than a solve, so its own radius is larger and allowed to go much further.
 const DEFAULT_STATION_RADIUS_MILES = 25;
 const MAX_STATION_RADIUS_MILES = 250;
+
+// The model beside the measurement costs an HRRR subset over the whole box,
+// where the markers alone cost a filter over a cached list. 150 miles is about
+// 100 x 100 HRRR cells, which the NOMADS filter serves in one small request; a
+// 250-mile search still answers, without the comparison and saying so, rather
+// than pulling most of a continent because someone zoomed out.
+const MAX_MODEL_RADIUS_MILES = 150;
+
 const MAX_LENGTH_M = 100000;
 const MAX_STATIONS = 2000;
 const MAX_HEIGHTS = 40;
@@ -106,6 +115,10 @@ const MAX_HEIGHTS = 40;
 // HRRR's grid spacing, reported so a consumer can display what the field was
 // downscaled from rather than inferring it.
 const MODEL_RESOLUTION_M = 3000;
+
+// The station comparison is drawn from the 10 m wind alone: the 80 m level and
+// the surface scalars are what a downscale needs, and this does not downscale.
+const STATION_MODEL_LEVEL = "heightAboveGround:10";
 
 // The opposite sentence, and the only route that gets to say it.
 const MEASURED_NOTICE =
@@ -493,6 +506,54 @@ function createGate(maxConcurrent, maxQueue) {
 }
 
 /**
+ * What HRRR says at each station, for the map that draws both.
+ *
+ * One volume over the whole box and a bilinear sample per station, rather than
+ * a solve per station: a solve would read 3DEP under sixty coordinates to
+ * produce a number that `docs/downscaling.md` measures as indistinguishable
+ * from this one once the bias is removed. The raw model is also the honest
+ * thing to put beside a measurement while the downscaling is still under
+ * investigation — the disagreement on display is HRRR's, and attributing it to
+ * a correction that has not been shown to help would be a claim.
+ */
+function createStationModel(atmosphere) {
+  return {
+    windAt: async function (box, points) {
+      // A station on the edge of the box is inside it and can still fall
+      // outside the volume: the grid is Lambert and the box is not.
+      const air = geo.expand(box, MODEL_RESOLUTION_M / geo.METERS_PER_MILE);
+      const volume = await atmosphere.getLatest({
+        box: air,
+        levels: [STATION_MODEL_LEVEL],
+        variables: ["UGRD", "VGRD"]
+      });
+
+      const notes = [];
+      const winds = points.map(function (p, i) {
+        try {
+          return volumeLib.sampleWind(volume, p.lat, p.lon, STATION_MODEL_LEVEL);
+        } catch (err) {
+          // One station off the edge of the grid is not an outage. It loses its
+          // comparison and keeps everything else.
+          notes[i] = (err && err.message) || "the model has no wind at this coordinate";
+          return null;
+        }
+      });
+
+      return {
+        source: volume.source || "HRRR",
+        validTime: volume.validTime instanceof Date
+          ? volume.validTime.toISOString()
+          : volume.validTime,
+        heightAglM: 10,
+        winds: winds,
+        notes: notes
+      };
+    }
+  };
+}
+
+/**
  * The handler.
  *
  * `field` is the field service — injected so the suite is offline, and so an
@@ -505,7 +566,14 @@ function createHandler(opts) {
   // Separate from the field service because it is a different upstream with a
   // different failure mode: FEMS being down must not stop a wind solve, and a
   // NOMADS outage must not empty the map of stations.
-  const stationService = o.stations || stationsLib.createStationService(o);
+  // The stations' model half shares the field service's atmosphere cache, so a
+  // map that has already solved a pin does not pull a second HRRR subset to
+  // colour the markers over the same ground.
+  const stationModel = o.stationModel === undefined
+    ? createStationModel(fieldService.atmosphere)
+    : o.stationModel;
+  const stationService = o.stations ||
+    stationsLib.createStationService(Object.assign({}, o, { model: stationModel }));
   const timeoutMs = o.timeoutMs === undefined ? DEFAULT_TIMEOUT_MS : o.timeoutMs;
   const maxCells = o.maxCells === undefined ? DEFAULT_MAX_CELLS : o.maxCells;
   const maxHillshadePixels = o.maxHillshadePixels === undefined
@@ -795,9 +863,28 @@ function createHandler(opts) {
     const limit = Math.round(numberParam(params, "limit",
       { default: stationsLib.DEFAULT_LIMIT, min: 1, max: stationsLib.MAX_STATIONS }));
     const observed = boolParam(params, "observed", true);
+    const wantModel = boolParam(params, "model", false);
+    const tooWideForModel = wantModel && radiusMiles > MAX_MODEL_RADIUS_MILES;
 
     const box = geo.boundingBox(from.lat, from.lon, radiusMiles);
-    const found = await stationService.inBox(box, { observed: observed, limit: limit });
+    const found = await stationService.inBox(box, {
+      observed: observed,
+      limit: limit,
+      model: wantModel && !tooWideForModel
+    });
+
+    // Refused rather than served slowly, and refused by name: the markers and
+    // their observations are unaffected, so this is a missing comparison and
+    // never a failed request.
+    const modelBlock = tooWideForModel
+      ? {
+        source: null, validTime: null, heightAglM: null, downscaled: false,
+        notice: null, code: "model-box-too-large",
+        error: "the model is only sampled beside the stations within " +
+          MAX_MODEL_RADIUS_MILES + " miles, and this search is " + radiusMiles +
+          "; the stations and their observations are unaffected"
+      }
+      : (found.model || null);
 
     return send(res, 200, {
       ok: true,
@@ -816,6 +903,10 @@ function createHandler(opts) {
       truncated: found.truncated,
       observed: found.observed,
       window: found.window,
+      // Present only when it was asked for, and carrying its own notice: the
+      // model number is the one thing in this answer that is not a measurement,
+      // and `modelled: false` above is about the stations.
+      model: modelBlock,
       directory: found.directory,
       errors: found.errors,
       stations: found.stations.map(function (s) {
@@ -833,7 +924,9 @@ function createHandler(opts) {
           distanceM: Math.round(s.distanceM),
           observation: s.observation,
           observationNote: s.observationNote === undefined ? null : s.observationNote,
-          observationCode: s.observationCode === undefined ? null : s.observationCode
+          observationCode: s.observationCode === undefined ? null : s.observationCode,
+          model: s.model === undefined ? null : s.model,
+          modelNote: s.modelNote === undefined ? null : s.modelNote
         };
       })
     }, headers);
@@ -1094,10 +1187,12 @@ module.exports = {
   DEFAULT_MAX_HILLSHADE_PIXELS,
   DEFAULT_STATION_RADIUS_MILES,
   MAX_STATION_RADIUS_MILES,
+  MAX_MODEL_RADIUS_MILES,
   NOTICE,
   MEASURED_NOTICE,
   STATUS_BY_CODE,
   createGate,
+  createStationModel,
   createHandler,
   redactQuery,
   createServer
