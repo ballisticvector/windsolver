@@ -143,6 +143,13 @@ changes when one station leaves, the run has not produced a ranking and there is
 to quote. Below three stations the block is `null`, because leaving one out of two is two
 numbers and their difference is about which two stations answered.
 
+**The product this is all for is a wind at 0–3 m over a two-mile box, and it is further
+away than it looks.** `docs/near-ground-wind.md` is the route: the clock, an observation
+below 6.1 m, a reference wind per cell, channelling that is not a perturbation, and only
+then the near-ground layer. Read it before building anything aimed at that map — three of
+its five steps have to be finished before the fourth can be measured at all, and the two
+largest error terms in the project are not about terrain.
+
 **The measured wind is the scarce half, and it no longer has to be.** `archive.js`
 reaches 2014 on the model side; the Synoptic token refuses observation history older than
 about a week, which is what actually blocks seasons, other states and a station set
