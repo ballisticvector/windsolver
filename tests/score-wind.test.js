@@ -1208,3 +1208,104 @@ describe("which observation service the run scores against", () => {
       .toEqual({ source: "fems", "fems-map": "x.json" });
   });
 });
+
+describe("what the ranking is standing on", () => {
+  // Three stations on their own ground, one of them carrying the score.
+  //
+  // KBDU is read nearly right, RIDGE is read nearly right, and HOLLOW is read
+  // a factor too fast — the shape every run in `docs/downscaling.md` has had,
+  // where one mast supplies most of the error and nothing in the pooled table
+  // says so.
+  const WINDY_END = Date.UTC(2026, 8, 1, 6);
+
+  function threeStations() {
+    const ridge = { id: "RIDGE", lat: station.lat + 0.05, lon: station.lon };
+    const hollow = { id: "HOLLOW", lat: station.lat - 0.05, lon: station.lon };
+    const source = stubSource({
+      station: async function (id) {
+        if (id === "RIDGE") return Object.assign({}, station, ridge);
+        if (id === "HOLLOW") return Object.assign({}, station, hollow);
+        return station;
+      }
+    });
+    const service = stubService(function (spec) {
+      if (spec.lat > station.lat + 0.01) {
+        return stubField({ speedMps: 4.2, fromDeg: 270, referenceMps: 4.2 },
+          { reliefM: 60, centre: Object.assign({}, station, ridge), elevationM: station.elevationM });
+      }
+      if (spec.lat < station.lat - 0.01) {
+        return stubField({ speedMps: 12, fromDeg: 270, referenceMps: 12 },
+          { reliefM: -60, centre: Object.assign({}, station, hollow), elevationM: station.elevationM });
+      }
+      return stubField({ speedMps: 4.4, fromDeg: 270, referenceMps: 4.4 }, { reliefM: 5 });
+    });
+    return { source: source, service: service };
+  }
+
+  async function threeStationReport() {
+    const { source, service } = threeStations();
+    return scoreWind.buildReport({
+      source: source, service: service,
+      stations: ["KBDU", "RIDGE", "HOLLOW"], hours: 6, endMs: WINDY_END
+    });
+  }
+
+  test("every candidate is rescored with each station's pairs removed", async () => {
+    const report = await threeStationReport();
+    expect(report.leverage.stations).toBe(3);
+    const down = report.leverage.candidates.downscaled;
+    expect(down.stations.map(function (s) { return s.id; }).sort())
+      .toEqual(["HOLLOW", "KBDU", "RIDGE"]);
+    // The same scoring the debiased table reports, over the same pairs.
+    expect(down.fullRmseMps).toBeCloseTo(report.debiased.downscaled.speed.rmseMps, 3);
+    for (const s of down.stations) {
+      expect(s.n).toBeGreaterThan(0);
+      expect(typeof s.rmseMps).toBe("number");
+      expect(s.deltaMps).toBeCloseTo(s.rmseMps - down.fullRmseMps, 3);
+    }
+  });
+
+  test("the station supplying the error is visible as a delta, not as a footnote", async () => {
+    const report = await threeStationReport();
+    const down = report.leverage.candidates.downscaled;
+    const hollow = down.stations.find(function (s) { return s.id === "HOLLOW"; });
+    // Removing the station the model is worst at improves the score, so its
+    // delta is the negative end of the spread — which is the number that says
+    // the pooled score was mostly one mast.
+    expect(hollow.deltaMps).toBeLessThan(0);
+    expect(down.minDeltaMps).toBeCloseTo(hollow.deltaMps, 3);
+    expect(down.maxDeltaMps).toBeGreaterThanOrEqual(down.medianDeltaMps);
+    expect(down.medianDeltaMps).toBeGreaterThanOrEqual(down.minDeltaMps);
+    expect(down.carrying).not.toBe("HOLLOW");
+  });
+
+  test("whether the winner survives losing a station is stated, not left to be worked out", async () => {
+    const report = await threeStationReport();
+    expect(Object.keys(report.leverage.winners).sort()).toEqual(["HOLLOW", "KBDU", "RIDGE"]);
+    expect(report.leverage.winnerKeys.length).toBeGreaterThan(0);
+    expect(report.leverage.stable)
+      .toBe(report.leverage.winnerKeys.length === 1);
+    for (const key of report.leverage.winnerKeys) {
+      expect(Object.keys(report.leverage.candidates)).toContain(key);
+    }
+  });
+
+  test("the summary prints the spread and says whether the ranking held", async () => {
+    const report = await threeStationReport();
+    const text = scoreWind.summarise(report);
+    expect(text).toMatch(/leave one station out/);
+    expect(text).toMatch(/carried by/);
+    expect(text).toMatch(report.leverage.stable
+      ? /wins with every station held out/
+      : /has not produced a ranking/);
+  });
+
+  test("two stations is not a distribution, so nothing is reported", async () => {
+    const { source, service } = threeStations();
+    const report = await scoreWind.buildReport({
+      source: source, service: service, stations: ["KBDU", "RIDGE"], hours: 6, endMs: WINDY_END
+    });
+    expect(report.leverage).toBeNull();
+    expect(scoreWind.summarise(report)).not.toMatch(/leave one station out/);
+  });
+});

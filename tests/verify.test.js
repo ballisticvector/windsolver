@@ -377,6 +377,98 @@ describe("terrain under a station", () => {
   });
 });
 
+describe("leaving one station out", () => {
+  // Three stations, two observations each, all from the same direction so the
+  // arithmetic is only about speed. A is +1 m/s throughout, B is -1, C is +4:
+  // the pooled RMSE is sqrt((1+1+1+1+16+16)/6) = sqrt(6), and every leave-one-out
+  // below is worked out by hand from the same six errors.
+  function stationPairs(id, modelled) {
+    const pairs = verify.pair(
+      [observed(T0, 4, 270), observed(T0 + HOUR, 4, 270)],
+      [sample(T0, modelled, 270), sample(T0 + HOUR, modelled, 270)]
+    ).pairs;
+    for (const p of pairs) p.station = { id: id };
+    return pairs;
+  }
+  const byId = function (p) { return p.station.id; };
+  const pairs = stationPairs("A", 5).concat(stationPairs("B", 3), stationPairs("C", 8));
+
+  test("each station's removal is priced against the score with everything in", () => {
+    const jack = verify.jackknife(pairs, byId);
+    expect(jack.full).toBeCloseTo(Math.sqrt(6), 9);
+    const at = function (id) {
+      return jack.groups.find(function (g) { return g.group === id; });
+    };
+    expect(at("A").n).toBe(2);
+    expect(at("A").nRemaining).toBe(4);
+    // Without A: errors -1, -1, +4, +4 → sqrt(34/4).
+    expect(at("A").metric).toBeCloseTo(Math.sqrt(34 / 4), 9);
+    expect(at("A").deltaMps).toBeCloseTo(Math.sqrt(34 / 4) - Math.sqrt(6), 9);
+    // Without C: errors +1, -1, +1, -1 → exactly 1, far better than the pooled
+    // score, so the delta is negative.
+    expect(at("C").metric).toBeCloseTo(1, 9);
+    expect(at("C").deltaMps).toBeCloseTo(1 - Math.sqrt(6), 9);
+  });
+
+  test("the station that is carrying the score is the one whose removal costs most", () => {
+    // Not the outlier. C is the worst station and dropping it *helps*; the
+    // stations holding the number up are the ordinary ones, and reading the
+    // largest |delta| instead of the largest delta would name C.
+    const jack = verify.jackknife(pairs, byId);
+    expect(jack.carrying).toBe("A");
+    expect(jack.carryingDeltaMps).toBeCloseTo(Math.sqrt(34 / 4) - Math.sqrt(6), 9);
+    expect(jack.maxDeltaMps).toBeCloseTo(Math.sqrt(34 / 4) - Math.sqrt(6), 9);
+    expect(jack.minDeltaMps).toBeCloseTo(1 - Math.sqrt(6), 9);
+    // A and B are symmetric, so the middle of the three is one of them.
+    expect(jack.medianDeltaMps).toBeCloseTo(Math.sqrt(34 / 4) - Math.sqrt(6), 9);
+    expect(jack.n).toBe(3);
+  });
+
+  test("the debias is refitted on the survivors, not carried over from the full set", () => {
+    // A scale fitted on a station that is no longer being scored is that
+    // station still voting, which is exactly what the leave-one-out is asking
+    // about. Without C the surviving means are 4 observed against 4 modelled,
+    // so the refitted scale is 1 and the score is the undebiased one.
+    const jack = verify.jackknife(pairs, byId, { debias: true });
+    const rest = pairs.filter(function (p) { return p.station.id !== "C"; });
+    expect(verify.debiasScale(rest)).toBeCloseTo(1, 9);
+    const without = jack.groups.find(function (g) { return g.group === "C"; });
+    expect(without.metric).toBeCloseTo(1, 9);
+    // And the full score it is compared against is debiased too: the pooled
+    // scale is 24/32, which takes the mean error out and leaves the scatter.
+    expect(jack.full).toBeCloseTo(
+      verify.score(pairs, { scale: verify.debiasScale(pairs) }).speed.rmseMps, 9);
+    expect(jack.full).toBeLessThan(Math.sqrt(6));
+  });
+
+  test("one station is not a distribution, and the row says so instead of scoring nothing", () => {
+    const alone = stationPairs("A", 5);
+    const jack = verify.jackknife(alone, byId);
+    expect(jack.groups).toHaveLength(1);
+    expect(jack.groups[0].nRemaining).toBe(0);
+    expect(jack.groups[0].metric).toBeNull();
+    expect(jack.groups[0].deltaMps).toBeNull();
+    expect(jack.carrying).toBeNull();
+    expect(jack.medianDeltaMps).toBeNull();
+  });
+
+  test("no pairs at all is no score, not a zero", () => {
+    const jack = verify.jackknife([], byId);
+    expect(jack.full).toBeNull();
+    expect(jack.groups).toHaveLength(0);
+    expect(jack.n).toBe(0);
+  });
+
+  test("the metric is a choice: direction leverage is the same question", () => {
+    const jack = verify.jackknife(pairs, byId, {
+      metric: function (s) { return s.direction.rmseDeg; }
+    });
+    // Every wind here is from 270°, so no station is carrying the direction.
+    expect(jack.full).toBeCloseTo(0, 9);
+    expect(jack.maxDeltaMps).toBeCloseTo(0, 9);
+  });
+});
+
 describe("a station's published elevation against the ground under it", () => {
   test("agreement is within the tolerance, and the difference is reported either way", () => {
     const agree = verify.elevationCheck(3179.5, 3172.0);

@@ -139,6 +139,20 @@
  * `nomads.js`'s interface, so nothing downstream of the volume changes, and the
  * live service still reaches for NOMADS.
  *
+ * **Every ranking in this tool comes with the stations it stands on.** Twice
+ * now a result here has turned out to be one mast — STOC2 carries half the
+ * terrain correlation in measurement 11 — and both times it was found by hand,
+ * measurements after the claim. The report therefore carries a `leverage`
+ * block: each candidate rescored with each station's pairs removed and its
+ * debias refitted on the survivors, reported as the spread of the change and
+ * the station that costs the most. `leverage.stable` is the part to read first,
+ * because if the winning candidate changes with which station is held out then
+ * the run did not produce a ranking, whatever the pooled table says. It is
+ * arithmetic over pairs already in memory — one rescore per station per
+ * candidate, no network — so it is not behind a flag; below
+ * `MIN_LEVERAGE_STATIONS` stations it is null, because leaving one out of two
+ * is not a distribution.
+ *
  * **A station is dropped if its published elevation disagrees with the ground
  * under its published coordinate.** One of the two is then wrong, and the
  * coordinate is the one that decides which hillside the model is sampled on. A
@@ -166,6 +180,12 @@ const HOUR_MS = 3600 * 1000;
 
 /** Where tools/fems-stations.js writes by convention. */
 const DEFAULT_FEMS_MAP = "data/fems-stations.json";
+
+// Below three stations, leaving one out is not a distribution — it is two
+// numbers, and the spread between them says more about which two stations
+// answered than about the candidate. The table is omitted rather than printed
+// with a caveat under it.
+const MIN_LEVERAGE_STATIONS = 3;
 
 // Every flag this tool answers to. A misspelling is checked against it rather
 // than ignored: an unknown flag leaves the candidate it was meant to add out of
@@ -899,6 +919,57 @@ async function buildReport(options) {
     }
   }
 
+  // What the ranking above is standing on.
+  //
+  // Every table in this tool is one number per candidate over whatever stations
+  // the run happened to include, and twice now a result has turned out to be a
+  // single mast — found by hand, measurements after the claim. The
+  // Communications Earth & Environment station study does this as a matter of
+  // course, reporting removal sensitivity as a distribution rather than a
+  // score, and it costs one rescore per station per candidate over pairs that
+  // are already in memory.
+  //
+  // The scale is refitted on the surviving stations for each leave-one-out,
+  // because a debias fitted on a station that is no longer scored is that
+  // station still voting. `winners` is the part to read first: if the best
+  // candidate changes when one station leaves, there was no ranking.
+  const stationOf = function (p) { return p.station ? p.station.id : "unknown"; };
+  const distinctStations = new Set(allPairs.map(stationOf)).size;
+  let leverage = null;
+  if (distinctStations >= MIN_LEVERAGE_STATIONS) {
+    leverage = { minStations: MIN_LEVERAGE_STATIONS, stations: distinctStations, candidates: {} };
+    // Which candidate wins with each station held out. One name is a ranking;
+    // several is a sample too small to have produced one. Decided on the
+    // unrounded scores — the reported ones are rounded to a millimetre per
+    // second, and a tie created by rounding would read as a ranking that held.
+    const bestAt = new Map();
+    for (const candidate of candidates) {
+      const opts = Object.assign({ debias: true }, reading(floor, candidate.key));
+      const jack = verify.jackknife(allPairs, stationOf, opts);
+      for (const g of jack.groups) {
+        if (g.metric === null) continue;
+        const best = bestAt.get(g.group);
+        if (!best || g.metric < best.metric) bestAt.set(g.group, { key: candidate.key, metric: g.metric });
+      }
+      leverage.candidates[candidate.key] = {
+        fullRmseMps: round(jack.full, 3),
+        minDeltaMps: round(jack.minDeltaMps, 3),
+        medianDeltaMps: round(jack.medianDeltaMps, 3),
+        maxDeltaMps: round(jack.maxDeltaMps, 3),
+        carrying: jack.carrying,
+        carryingDeltaMps: round(jack.carryingDeltaMps, 3),
+        stations: jack.groups.map(function (g) {
+          return { id: g.group, n: g.n, rmseMps: round(g.metric, 3), deltaMps: round(g.deltaMps, 3) };
+        })
+      };
+    }
+    const winners = {};
+    for (const [id, best] of bestAt) winners[id] = best.key;
+    leverage.winners = winners;
+    leverage.winnerKeys = Array.from(new Set(Object.values(winners))).sort();
+    leverage.stable = leverage.winnerKeys.length === 1;
+  }
+
   const report = {
     schemaVersion: 4,
     generated: new Date(started).toISOString(),
@@ -961,6 +1032,9 @@ async function buildReport(options) {
     debiased: debiased,
     byTerrain: byTerrain,
     debiasedByTerrain: debiasedByTerrain,
+    // Null below MIN_LEVERAGE_STATIONS stations, which is a statement about the
+    // run and not a missing field.
+    leverage: leverage,
     droppedStations: dropped,
     elevationToleranceM: elevationToleranceM,
     failures: failures,
@@ -1259,6 +1333,13 @@ function fixed(value, places) {
   return value === null || value === undefined ? "—" : value.toFixed(places);
 }
 
+/** The same, with the sign kept — a leverage of +0.02 and one of -0.02 are
+ * opposite findings and a bare `0.02` hides which. */
+function signed(value) {
+  if (value === null || value === undefined) return "—";
+  return (value >= 0 ? "+" : "") + value.toFixed(3);
+}
+
 /**
  * The tolerance the anemometer is allowed, beside the score it is judged with.
  *
@@ -1484,6 +1565,33 @@ function summarise(report) {
     }
     out.push("fitted on the observations they are then scored against — compare these with " +
       "each other, do not quote them");
+    out.push("");
+  }
+
+  // How much of the ranking above is one station. Printed after the debiased
+  // table because it is that table's error bar, and read before it because a
+  // ranking that changes when one mast leaves was never a ranking.
+  if (report.leverage && candidates.length > 1) {
+    const lev = report.leverage;
+    out.push("leave one station out, debiased speed RMSE refitted on the survivors (" +
+      lev.stations + " stations):");
+    out.push(["candidate".padEnd(16), "rmse".padStart(7), "worst".padStart(7),
+      "median".padStart(7), "best".padStart(7), "  carried by"].join(" "));
+    for (const c of candidates) {
+      const l = lev.candidates[c.key];
+      if (!l) continue;
+      out.push([c.label.padEnd(16), fixed(l.fullRmseMps, 3).padStart(7),
+        signed(l.maxDeltaMps).padStart(7), signed(l.medianDeltaMps).padStart(7),
+        signed(l.minDeltaMps).padStart(7),
+        "  " + (l.carrying || "-") + " " + signed(l.carryingDeltaMps)].join(" "));
+    }
+    out.push("worst/median/best are the change in RMSE when one station is removed — a " +
+      "positive number is a station whose removal makes the candidate look worse, so it " +
+      "was carrying it");
+    out.push(lev.stable
+      ? "the same candidate wins with every station held out: " + lev.winnerKeys[0]
+      : "the winning candidate changes with which station is held out (" +
+        lev.winnerKeys.join(", ") + ") — this sample has not produced a ranking");
     out.push("");
   }
 
