@@ -26,6 +26,7 @@ If you are picking this up cold: `downscale.js` is the module in question,
 - [Measurement 10: a scale instead of an offset, and the station the fit never saw](#measurement-10-a-scale-instead-of-an-offset-and-the-station-the-fit-never-saw)
 - [Measurement 11: the same question on 37 stations chosen by the ground](#measurement-11-the-same-question-on-37-stations-chosen-by-the-ground)
 - [Measurement 12: a second state, and a descriptor that works in one of them](#measurement-12-a-second-state-and-a-descriptor-that-works-in-one-of-them)
+- [Measurement 13: how much of every score was only the clock](#measurement-13-how-much-of-every-score-was-only-the-clock)
 - [The hypotheses, and how much weight each one carries](#the-hypotheses-and-how-much-weight-each-one-carries)
 - [What would settle it](#what-would-settle-it)
 - [Things that would poison the answer](#things-that-would-poison-the-answer)
@@ -975,6 +976,137 @@ Artefacts: `tools/station-survey.js --source fems --state NM --spread 30`,
 `tools/fems-stations.js` over the 68-station list, then `tools/score-wind.js --source
 fems --archive --forecast 0 --tolerance 30 --hours 24 --pairs <run>.pairs.json` for the
 four dates and `tools/site-factor.js --holdout`, kept outside the repo.
+
+## Measurement 13: how much of every score was only the clock
+
+Every number above pairs an hourly model with an observation taken at some other minute.
+`--tolerance 30` allows half an hour of that, and the size of the mistake it admits has
+never been measured — it has only ever been argued about. NCEI's one-minute ASOS record
+(DSI-6405, see `docs/observations.md`) measures it: **how far the wind moves away from
+itself as the gap grows**, at real stations, one minute at a time.
+
+14 stations across Colorado, New Mexico, Utah, Montana and Nevada, two months six seasons
+apart (September 2024 and March 2026), **26 station-months and 819,249 minutes** with a
+wind in them, 14,835 minutes absent, none malformed. Two station-months were refused
+rather than scored: `KCAO` September 2024, where NCEI answers 200 with an HTML 404, and
+`KABQ` March 2026, which is 36,568 well-formed records with `M` in every wind field.
+
+```
+lag (min)   speed RMS   vector RMS   direction RMS      over 10-minute means
+    1          0.48        0.67          8 deg          0.12 / 0.18
+    5          0.96        1.49         21 deg          0.49 / 0.75
+   10          1.13        1.80         27 deg          0.79 / 1.25
+   15          1.24        2.00         31 deg          0.96 / 1.54
+   30          1.48        2.44         39 deg          1.27 / 2.09
+   60          1.80        3.01         48 deg          1.64 / 2.73
+   90          2.03        3.41         54 deg          1.89 / 3.17
+```
+
+**The wind's own change reaches ASOS's ±2 kt after a median 7.5 minutes** — 2.8 minutes
+at LEADVILLE, 27.1 at SPRINGFIELD, and inside 10 for 20 of the 26 station-months. A
+pairing window of 30 minutes is therefore three to four times the interval over which the
+wind stops being the same wind, at these stations.
+
+The right number is not the window, though — it is the offsets a run **actually drew**,
+because a FEMS station's offset is a property of its GOES transmit slot and not of the
+tolerance. `tools/wind-decorrelation.js --offsets <run>.pairs.json` reads the offsets out
+of a `score-wind.js --pairs` artefact and prices them against the pooled curve:
+
+```
+run                              mean offset   max   speed  vector  direction
+11 Colorado stations, Aug 31        12.7 min    25    1.15    1.84     28 deg
+  ... over 10-minute means                            0.84    1.36     23 deg
+38 Colorado stations, Aug 31        12.6 min    30    1.15    1.84     28 deg
+  ... over 10-minute means                            0.85    1.36     23 deg
+30 New Mexico stations, Aug 31      14.3 min    28    1.20    1.93     30 deg
+  ... over 10-minute means                            0.92    1.48     25 deg
+```
+
+The second line of each pair is the one to quote against a RAWS run: FEMS reports a
+10-minute mean, and averaging removes the part of the minute-to-minute change that a
+10-minute mean would never have seen. **So the clock alone put roughly 0.85 m/s of speed
+RMS, 1.36 m/s of vector RMS and 23° of direction RMS into every score in this note.**
+
+### What that does to the table
+
+Timing error and model error are close enough to independent to subtract in quadrature.
+Taking measurement 10's four-run table at face value and removing a 0.85 m/s clock:
+
+```
+                                   as scored   less the clock   share of the variance
+raw HRRR, 31 August                  2.455         2.303                12%
+raw HRRR, 14 March                   4.542         4.462                 3%
+station scale from March, on Aug     1.439         1.161                35%
+station scale from Sep 4, on Sep 2   1.290         0.971                43%
+the same day on itself (hindsight)   1.301         0.985                43%
+```
+
+Two readings come out of that, and the second is the one that matters.
+
+**The raw bias is not a timing artefact.** 12% of the variance on a September day and 3%
+on the March one: HRRR really does run 43–70% fast over these stations, and no pairing
+rule was ever going to explain it away.
+
+**The best correction this project has has already reached the noise floor.** Once the
+per-station scale is applied, **a third to a half of what is left is the clock**, not the
+model — and the debiased ablation table that separates every terrain candidate ever tried
+spans **0.06 m/s**, against 0.85 of timing noise sitting under all of them. A ranking
+taken at that spread was never resolving physics. The same holds on direction, where the
+clock contributes 23° against the 70.5° scored at these stations, and measurement 4's
+diverting term moves the direction RMSE by **0.3°**.
+
+### Narrowing the window is the wrong lever
+
+Three pairing rules, over the same 26 station-months:
+
+```
+                                        speed  vector  direction
+a 30 minute pairing window               1.22    1.97     31 deg
+the same, averaged over 10 min first     0.94    1.52     26 deg
+the nearest whole hour                   1.20    1.94     30 deg
+interpolated between the two hours       1.09    1.70     27 deg
+```
+
+Interpolating the model in time to the observation's own minute — the fix
+`docs/observations.md` has recommended since the transmit slots were measured — is worth
+about **12% of the vector term** and no more. That is the honest ceiling on it: linear
+interpolation between two hourly samples cannot recover variability that is not in an
+hourly series in the first place. **The floor is a property of pairing an hourly model
+with an anemometer, and it does not go away by choosing a better minute.**
+
+Nor does narrowing `--tolerance`. The offset is set by the station's transmit slot, so a
+10-minute window does not make the surviving pairs better matched — it deletes the
+stations whose slot falls outside it, which is exactly the five-of-eleven result in
+`docs/observations.md`. **`--tolerance 30` stays, and the number above travels with it.**
+
+### By how hard the wind is blowing
+
+```
+mean wind        pairs     speed  vector   relative
+0-2 m/s         154257      0.92    1.66     69% of the wind
+2-4 m/s         313950      1.36    2.32     46%
+4-6 m/s         194093      1.58    2.53     32%
+6+  m/s         136246      2.04    3.21     25%
+```
+
+In absolute terms a light wind moves less; in relative terms it moves far more, and the
+RAWS sample's observed mean is 2.1 m/s. Scaling the 0–2 m/s bin's ratio onto the offsets
+above puts a regime-matched floor nearer **0.53 m/s** of speed RMS, which is the lower end
+of the honest range — 14% rather than 35% of the corrected score's variance. Both ends of
+that range are large next to 0.06 m/s.
+
+*Caveats, and they are the same shape as everything else in this note. These are
+**airports**: flat, exposed, and chosen by aviation — they bound the timing term for the
+runs already done and they cannot re-open the terrain question. ASOS reports a 2-minute
+mean where FEMS reports a 10-minute one, which is why both rows are given rather than
+one. The sample means run 3.6–6.2 m/s against the RAWS sample's 2.1, so the unadjusted
+floor is an over-estimate and the regime-scaled one is an estimate rather than a
+measurement. The quadrature subtraction assumes timing error is uncorrelated with model
+error, which is approximately but not exactly true — a model is worst in the conditions
+that change fastest. Two months, and no default, coefficient or tolerance moved.*
+
+Artefacts: `node tools/wind-decorrelation.js --stations … --month 2024-09,2026-03 --cache
+~/asos1min --offsets <run>.pairs.json --out report.json`, kept outside the repo.
 
 ## The hypotheses, and how much weight each one carries
 

@@ -19,6 +19,7 @@ from one anonymous GET.
 - [MADIS: everything NOAA ingests, with QC attached](#madis-everything-noaa-ingests-with-qc-attached)
 - [The three providers disagree about when the wind was measured](#the-three-providers-disagree-about-when-the-wind-was-measured)
 - [What the instrument did before anyone scored it](#what-the-instrument-did-before-anyone-scored-it)
+- [A one-minute record, and what the pairing window costs](#a-one-minute-record-and-what-the-pairing-window-costs)
 - [What an adapter has to refuse](#what-an-adapter-has-to-refuse)
 - [Using it: fems.js](#using-it-femsjs)
 - [Recommendation](#recommendation)
@@ -260,6 +261,50 @@ attaching a citation to the wrong network. The one figure that can be derived is
 ceiling: FEMS speeds are whole miles per hour, so a 0 is anything below 0.22 m/s. That is
 a **lower** bound on the censoring, since the cup's own starting threshold is larger and
 unmeasured, so a run leaning on it understates the effect.
+
+## A one-minute record, and what the pairing window costs
+
+Everything above says an hourly model is paired with an observation whose own minute had
+to be reconstructed, and that `--tolerance 30` was chosen by feel. NCEI publishes the
+record that turns that into a measurement: **DSI-6405**, one-minute ASOS wind, a 2-minute
+mean and a 5-second peak at every minute, back to 2000, about a thousand stations, free
+and unauthenticated.
+
+```
+https://www.ncei.noaa.gov/data/automated-surface-observing-system-one-minute-pg1/access/YYYY/MM/asos-1min-pg1-<ID>-YYYYMM.dat
+https://www.ncei.noaa.gov/pub/data/asos-onemin/td6405.txt   — the layout
+```
+
+`asos1min.js` reads page 1 and `tools/wind-decorrelation.js` scores it. What the parser
+had to decide, because each one is a way of getting the answer wrong:
+
+| | Decision |
+| --- | --- |
+| Layout | Fixed width, not delimited: direction at 70–74, speed at 74–79, peak direction 79–84, peak 84–89, in a 112-character record |
+| Time | The local stamp gives the date and the clock; the UTC field gives the offset. Both are used, because the local stamp alone is ambiguous across a DST boundary |
+| Missing | `M` is **absent**, not calm. Those minutes are counted and dropped, never read as zero |
+| Calm | A numeric `0` stays 0 in the arithmetic and is flagged, because ASOS calm is censored at 2 kt and not measured |
+| Direction | Pairs involving a calm are excluded from direction statistics and kept in speed statistics — a calm has a speed bound but no bearing |
+| Not records | An NCEI 200 carrying an HTML 404, and an empty body, are both refused by name rather than parsed into an empty weather history |
+
+That last one is not hypothetical: the cached `KCAO` September 2024 file is a 404 page,
+and it had already been parsed once as a station with no wind in it. And `KABQ` March 2026
+is a real hole of the other kind — 36,568 well-formed records in which every wind field is
+`M`. Neither is an observation of calm; both are reported as refused.
+
+The measurement itself — how fast the wind at these stations stops resembling itself, and
+how much of every score in `docs/downscaling.md` was only the clock — is
+[measurement 13](downscaling.md#measurement-13-how-much-of-every-score-was-only-the-clock).
+The short version, over 819,249 minutes at 14 stations:
+
+- the wind's own change reaches ASOS's ±2 kt after a **median 7.5 minutes** (2.8 to 27.1 by station);
+- the runs in that note drew mean offsets of 12.6–14.3 minutes, which prices at **1.36–1.48 m/s of vector RMS and 23–25° of direction** against a 10-minute mean;
+- interpolating between hours instead of taking the nearest one recovers about **12%** of it, and no pairing rule can recover the rest, because the sub-hourly variance is not in an hourly series at all.
+
+The caveat that limits all of it: these are airports. Flat ground, a 2-minute mean rather
+than a RAWS 10-minute mean, and a 3.6–6.2 m/s sample mean against the RAWS sample's 2.1.
+It bounds the timing term for the runs already done; it cannot re-open the terrain
+question, and it is not a RAWS specification.
 
 ## What an adapter has to refuse
 

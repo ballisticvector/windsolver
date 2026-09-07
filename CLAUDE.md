@@ -116,6 +116,12 @@ to make a well-meant change wrong:
   rather than as a ratio of means, the same per-station scale runs x0.17 to x2.05 and
   transfers between them; that is measurement 10 and it is the one correction in this
   note with a measured out-of-sample effect.
+- **There is a noise floor under every score in that note, and it is bigger than the
+  effects being ranked.** Pairing an hourly model with an anemometer at the offsets these
+  runs drew costs about 0.85 m/s of speed RMSE and 23° of direction before the model is
+  wrong about anything (measurement 13, from NCEI one-minute ASOS). The debiased ablation
+  table spans 0.06 m/s and the diverting term moves direction by 0.3°. Quote a candidate's
+  gain beside that floor or not at all.
 - **The model has its own mountains.** `tools/model-terrain.js` measures HRRR's surface
   orography against the 3DEP ground under a station: about 70 m above the floor of a
   valley station, 41 m below the top of a ridge one. A correction computed against the
@@ -164,8 +170,18 @@ the model's whole hour; it makes the distance visible. At the 10-minute default,
 the first eleven calibrated stations have no observation inside the window at all — their
 slots are :19 to :25 off the hour — and the run reports them rather than shrinking the
 sample quietly. The METAR runs never hit this because airports report at :53.
-Interpolating the model between hours to the observation's own minute is the better
-answer and does not exist yet.
+
+**And do not narrow it to make the pairs tidier.** Measurement 13 prices the window
+against NCEI's one-minute ASOS record: at these stations the wind's own change reaches
+±2 kt after a median **7.5 minutes**, and the offsets the FEMS runs actually drew —
+mean 12.6–14.3 minutes — cost about **0.85 m/s of speed RMS, 1.36 m/s of vector and 23°
+of direction** against a 10-minute mean. That is a third to a half of the variance left
+in the best per-station correction, and fourteen times the 0.06 m/s that separates every
+terrain candidate ever ablated. The offset is a property of the station's transmit slot,
+so narrowing the tolerance deletes stations instead of improving pairs. Interpolating the
+model between hours to the observation's own minute is still the better answer and still
+does not exist — but it is worth about **12%** of the timing term and no more, because
+sub-hourly variability is not in an hourly series to recover.
 
 ## A weather history is four products, and one of them must never ship
 
