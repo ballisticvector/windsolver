@@ -285,6 +285,55 @@ describe("the floor under any score", () => {
     const s = verify.score([]);
     expect(s.floor.dirRmseDeg).toBeCloseTo(2.887, 3);
   });
+
+  test("the sensor's stated tolerance is larger than the rounding, and is reported too", () => {
+    const inst = verify.instrumentTolerance();
+    // ASOS User's Guide: ±2 kt on speed, ±5° on direction above 5 kt.
+    expect(inst.speedToleranceMps).toBeCloseTo(1.0289, 4);
+    expect(inst.dirToleranceDeg).toBe(5);
+    expect(inst.speedToleranceMps).toBeGreaterThan(verify.quantisationFloor().speedRmseMps);
+  });
+
+  test("the tolerance rides along with every score as well", () => {
+    const s = verify.score([]);
+    expect(s.instrument.speedToleranceMps).toBeCloseTo(1.0289, 4);
+  });
+
+  test("a RAWS is not an ASOS, so the tolerance can be given per network", () => {
+    const inst = verify.instrumentTolerance({ speedToleranceMps: 0.5, dirToleranceDeg: 10 });
+    expect(inst.speedToleranceMps).toBe(0.5);
+    expect(inst.dirToleranceDeg).toBe(10);
+  });
+});
+
+describe("a reported calm is censored, not zero", () => {
+  const at = (speedMps, calm) => ({
+    stationId: "K1",
+    observed: { speedMps: speedMps, fromDeg: calm ? null : 270, calm: !!calm },
+    sample: { speedMps: 3, fromDeg: 270, timeMs: 1 }
+  });
+
+  test("the ceiling a calm observation really means is reported beside the count", () => {
+    const s = verify.score([at(0, true), at(4, false)]);
+    expect(s.excluded.calm).toBe(1);
+    // ASOS reports calm at or below 2 kt, so a 0.0 is an upper bound of 1.03 m/s.
+    expect(s.calmCeilingMps).toBeCloseTo(1.0289, 4);
+  });
+
+  test("the ceiling is stated even when nothing was calm, so a reader can check it", () => {
+    expect(verify.score([at(4, false)]).calmCeilingMps).toBeCloseTo(1.0289, 4);
+  });
+
+  test("the most a censored sample can have moved the speed bias is reported", () => {
+    // Two calm observations scored as 0.0 could each be up to 1.0289 m/s, so
+    // the bias is overstated by at most 2 × 1.0289 / 3 over three pairs.
+    const s = verify.score([at(0, true), at(0, true), at(4, false)]);
+    expect(s.speed.biasCensoringMps).toBeCloseTo(2 * 1.0289 / 3, 4);
+  });
+
+  test("no calm observations is no censoring, not a small amount of it", () => {
+    expect(verify.score([at(4, false)]).speed.biasCensoringMps).toBe(0);
+  });
 });
 
 describe("terrain under a station", () => {

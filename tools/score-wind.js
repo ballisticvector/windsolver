@@ -220,12 +220,22 @@ function hoursIn(endMs, count) {
   return times;
 }
 
-/** Score options: which candidate wind to read, and the observer's rounding. */
+/**
+ * Score options: which candidate wind to read, and what the observer's own
+ * instrument does to the number before anybody scores it.
+ *
+ * Two different things, and the second is the larger: the rounding is a tenth
+ * of a m/s and the sensor's stated tolerance is a whole one. Both ride out on
+ * every score so that neither can be quoted without the other.
+ */
 function reading(floor, which) {
   return {
     read: function (p) { return p.sample.byCandidate[which]; },
     speedStepMps: floor.speedStepMps,
-    dirStepDeg: floor.dirStepDeg
+    dirStepDeg: floor.dirStepDeg,
+    calmCeilingMps: floor.calmCeilingMps,
+    speedToleranceMps: floor.speedToleranceMps,
+    dirToleranceDeg: floor.dirToleranceDeg
   };
 }
 
@@ -499,9 +509,17 @@ function tidy(score) {
     vectorRmseMps: round(score.vectorRmseMps, 3),
     scale: round(score.scale, 4),
     excluded: score.excluded,
+    // What a calm was worth at most, and how far the calms in this sample could
+    // have moved the bias if every one of them sat on that ceiling.
+    calmCeilingMps: round(score.calmCeilingMps, 3),
+    biasCensoringMps: round(score.speed.biasCensoringMps, 3),
     floor: {
       speedRmseMps: round(score.floor.speedRmseMps, 3),
       dirRmseDeg: round(score.floor.dirRmseDeg, 2)
+    },
+    instrument: {
+      speedToleranceMps: round(score.instrument.speedToleranceMps, 3),
+      dirToleranceDeg: round(score.instrument.dirToleranceDeg, 1)
     }
   };
 }
@@ -1125,6 +1143,27 @@ async function main() {
 }
 
 /**
+ * What a RAWS does to a wind before it is scored, as far as it is known.
+ *
+ * `verify.js` defaults to the ASOS specification because that is what the first
+ * runs were scored against, and a RAWS is not an ASOS: no equivalent of the
+ * ASOS User's Guide has been read for this network, so the tolerances are left
+ * null rather than borrowed. A null says "nobody has looked this up", which is
+ * true, where 1.03 m/s would say the wrong thing with a citation attached.
+ *
+ * The calm ceiling is the one figure that can be derived rather than cited: a
+ * speed rounded to a whole mile per hour reports 0 for anything under half of
+ * one. That is a **lower bound on the censoring** — the cup's own starting
+ * threshold is larger and unmeasured here — so a run that leans on it is
+ * understating the effect, which is the safe direction.
+ */
+const RAWS_INSTRUMENT = {
+  calmCeilingMps: 0.44704 / 2,
+  speedToleranceMps: null,
+  dirToleranceDeg: null
+};
+
+/**
  * The reader named on the command line.
  *
  * The token comes from the environment and never from an argument: an argument
@@ -1135,7 +1174,10 @@ function sourceFor(name, ids, args) {
   if (which === "nws") {
     return {
       source: observationsModule.createObservationSource({}),
-      label: "NWS api.weather.gov station observations (ASOS/AWOS METAR)",
+      label: "NWS api.weather.gov station observations (ASOS/AWOS METAR), " +
+        "2-minute means at 33 or 27 ft, ±2 kt, calm at or below 2 kt",
+      // The empty object takes verify.js's ASOS defaults, which is the right
+      // instrument for this reader and the wrong one for the two below.
       floor: {}
     };
   }
@@ -1145,7 +1187,7 @@ function sourceFor(name, ids, args) {
     return {
       source: synoptic.createSynopticSource({ token: token, stids: ids }),
       label: "Synoptic Data stations (RAWS and other mesonets), 1° directions, QC-flagged rows dropped",
-      floor: synoptic.RAWS_QUANTISATION
+      floor: Object.assign({}, synoptic.RAWS_QUANTISATION, RAWS_INSTRUMENT)
     };
   }
   if (which === "fems") {
@@ -1181,7 +1223,7 @@ function sourceFor(name, ids, args) {
       source: fems.createFemsSource({ stations: map, stationIds: ids }),
       label: "USDA FEMS RAWS archive, 1 mph speeds and 1° directions, observation times " +
         "recovered from " + where,
-      floor: fems.RAWS_QUANTISATION
+      floor: Object.assign({}, fems.RAWS_QUANTISATION, RAWS_INSTRUMENT)
     };
   }
   throw new Error("--source is nws, synoptic or fems, not " + JSON.stringify(name));
@@ -1218,11 +1260,51 @@ function fixed(value, places) {
 }
 
 /**
+ * The tolerance the anemometer is allowed, beside the score it is judged with.
+ *
+ * This is the sentence that stops a 0.06 m/s spread between candidates being
+ * read as a result: the ASOS User's Guide allows the instrument ±2 kt, which is
+ * 1.03 m/s, seventeen times that spread. It is not subtracted from anything —
+ * a tolerance is not an error — it is printed where the errors are.
+ */
+function instrumentNote(report) {
+  const inst = (report.overall.downscaled || {}).instrument || {};
+  if (inst.speedToleranceMps === null || inst.speedToleranceMps === undefined) {
+    return "this network's instrument tolerance has not been looked up, so a difference " +
+      "smaller than the sensor's own accuracy cannot be ruled out here";
+  }
+  return "the sensor is allowed ±" + fixed(inst.speedToleranceMps, 2) + " m/s and ±" +
+    fixed(inst.dirToleranceDeg, 0) + "° by its own specification: a difference smaller " +
+    "than that is not evidence about the model";
+}
+
+/**
+ * How far the calms in this run could have moved the speed bias.
+ *
+ * A reported calm is censored, not measured — ASOS declares one at or below
+ * 2 kt — so scoring it as 0.0 makes every model look faster than it is. The
+ * arithmetic keeps the reported 0 and this line says what that cost, which is
+ * the honest way round: an invented value would be in the numbers, where this
+ * is only beside them.
+ */
+function censoringNote(report) {
+  const s = report.overall.downscaled || {};
+  const calms = (s.excluded && s.excluded.calm) || 0;
+  if (!calms) return "no observation in this run was reported calm, so none of the speed " +
+    "bias is the censoring at the bottom of the instrument's range";
+  return calms + " observation(s) were reported calm and scored as 0.0, which the " +
+    "instrument censors at " + fixed(s.calmCeilingMps, 2) + " m/s: at most " +
+    fixed(s.biasCensoringMps, 3) + " m/s of every speed bias above is that and not the model";
+}
+
+/**
  * One line about the height the model was moved to, per height in the run.
  *
  * Grouped rather than per station because a whole network shares a standard —
- * every RAWS is at 6.1 m, every ASOS at 10 m — and fifteen identical lines
- * would bury the one station that is different.
+ * every RAWS is nominally at 6.1 m — and fifteen identical lines would bury the
+ * one station that is different. ASOS is the network that does *not* share one:
+ * the User's Guide says 33 ft or 27 ft "depending on local site-specific
+ * criteria", so an airport run is grouped for a reason and not by convention.
  */
 function heights(report) {
   const groups = new Map();
@@ -1328,6 +1410,8 @@ function summarise(report) {
       "observations' rounding alone",
     "obs is observations scored; hrs is the model hours behind them — a station " +
       "reporting every five minutes contributes several obs to one sample",
+    instrumentNote(report),
+    censoringNote(report),
     heights(report),
     ""
   );
