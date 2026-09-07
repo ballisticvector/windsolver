@@ -171,17 +171,19 @@ stays calibrated.
 
 **Choose the set by the ground, not by the ids already to hand.**
 `tools/station-survey.js --source fems --state CO --spread 30` reads 3DEP under every
-RAWS in the catalogue and picks a set spaced across the 500 m position index, which is
-what measurement 10 asked for. The survey's own finding is the caveat on everything
-fitted to it: over 93 readable Colorado RAWS the split is 34 flat, 33 ridge, 19 slope and
-**3 valley**, because RAWS are sited on exposed fire-weather ground on purpose. A terrain
-regression fitted here is far better constrained on crests than in hollows, and no amount
-of spreading fixes a catalogue that has no valleys in it. **Changing state does not fix
-it either**: all 56 readable New Mexico RAWS are 33 flat, 15 ridge, 4 slope and 3 valley,
-over a position index with the same two ends to within a metre and a half (measurement
-12). The sheltered half of the axis has to come from a network that is not RAWS — MADIS
-carries the agricultural and hydrological ones, which are in bottoms because that is
-where the crops and the streams are.
+RAWS in the catalogue and picks a set spaced across the position index, which is what
+measurement 10 asked for. **A class is a statement about a radius, so quote the radius
+with the count.** At the 500 m default, 93 readable Colorado RAWS are 34 flat, 33 ridge,
+19 slope and **3 valley**, and all 56 readable New Mexico RAWS are 33 flat, 15 ridge, 4
+slope and 3 valley (measurement 12) — which is where "RAWS has no hollows" came from. At
+the 2 km radius a two-mile map is actually about, the 87 Colorado RAWS readable at both
+radii are 15 flat, 51 ridge, 6 slope and **15 valley**: 34 change class and 14 change sign,
+because a mast can sit on a bank inside a gulch and both readings are true (measurement
+14). So the sheltered stratum exists after all, and it is ten stations rather than two in
+the pairs already scored. `--position` and `--threshold` ride on every surveyed station
+for this reason; never compare a count taken at one radius with a count taken at another.
+Below 3 m the RAWS network still has nothing — CoAgMet has 95 Colorado masts at 2–3 m and
+USCRN measures at 1.5 m (`docs/observations.md`), and neither is wired into a run.
 
 **Score FEMS with `--tolerance 30`.** Dating a RAWS correctly does not move it closer to
 the model's whole hour; it makes the distance visible. At the 10-minute default, five of
@@ -225,12 +227,15 @@ drift into another's job.
   gap does not survive being tested properly. Measurement 11 put it on 37 stations chosen
   by the ground they stand on rather than 11 chosen by convenience: terrain closes about
   8% of the distance between a pooled scale and the station's own, and removing STOC2
-  still halves the correlation on every date. **Do not spend another Colorado run on it**
-  — the state's RAWS are 3 valleys in 93, so the sheltered half of the axis is not in
-  this catalogue. The one descriptor that has ever bridged the gap is **elevation in New
-  Mexico** (measurement 12): 12 of 12 held-out cells and 71% of the distance to the
-  station's own factor — and 0 of 12 in Colorado, with a New Mexico line actively
-  damaging Colorado. Read that measurement before treating it as more than a lead.
+  still halves the correlation on every date. Held out at a 2 km radius instead of 500 m
+  it closes 5.3% and wins 20 of 36 — a coin toss (measurement 14), even though the same
+  radius makes sheltering visible *pooled*: ten valley stations need HRRR slowed about
+  20% more than the 21 ridge ones, at t ≈ 2. **A group mean is not a pin.** The one
+  descriptor that has ever bridged the gap is **elevation in New Mexico** (measurement
+  12): 12 of 12 held-out cells and 71% of the distance to the station's own factor — and
+  0 of 12 in Colorado, with a New Mexico line actively damaging Colorado. Read that
+  measurement before treating it as more than a lead, and note that three descriptors in
+  a row have now been chosen after seeing their own result.
 - **Climatology — what the wind usually does here, in March, at 09:00: a mode of its own.**
   Honest because nobody mistakes it for a forecast, provided it is shaped like a
   distribution over a stated period with no `validTime`, rather than a `/v1/field`

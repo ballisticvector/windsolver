@@ -27,6 +27,7 @@ If you are picking this up cold: `downscale.js` is the module in question,
 - [Measurement 11: the same question on 37 stations chosen by the ground](#measurement-11-the-same-question-on-37-stations-chosen-by-the-ground)
 - [Measurement 12: a second state, and a descriptor that works in one of them](#measurement-12-a-second-state-and-a-descriptor-that-works-in-one-of-them)
 - [Measurement 13: how much of every score was only the clock](#measurement-13-how-much-of-every-score-was-only-the-clock)
+- [Measurement 14: the valleys were there all along, at a radius nobody asked at](#measurement-14-the-valleys-were-there-all-along-at-a-radius-nobody-asked-at)
 - [The hypotheses, and how much weight each one carries](#the-hypotheses-and-how-much-weight-each-one-carries)
 - [What would settle it](#what-would-settle-it)
 - [Things that would poison the answer](#things-that-would-poison-the-answer)
@@ -1108,6 +1109,126 @@ that change fastest. Two months, and no default, coefficient or tolerance moved.
 Artefacts: `node tools/wind-decorrelation.js --stations … --month 2024-09,2026-03 --cache
 ~/asos1min --offsets <run>.pairs.json --out report.json`, kept outside the repo.
 
+## Measurement 14: the valleys were there all along, at a radius nobody asked at
+
+Measurements 11 and 12 both closed on the same objection: the RAWS catalogue has no
+hollows in it, 3 valleys in 93 in Colorado and 3 in 56 in New Mexico, so the sheltered
+half of the terrain axis cannot be tested and the search should move to another network.
+**That objection was a statement about a 500 m disc**, which is the default in
+`tools/station-survey.js` and was never chosen for this question. The product being
+designed is a two-mile box. Asked at that scale, the same catalogue answers differently.
+
+`tools/station-survey.js --source fems --state CO --position 2000 --radius 2.5` re-read
+3DEP under the whole Colorado catalogue. Over the 87 stations readable at both radii:
+
+```
+                     500 m disc     2 km disc
+flat                        33            15
+ridge                       33            51
+slope                       19             6
+valley                       2            15
+position index    -30.8 .. +97.0   -185.7 .. +363.6
+```
+
+Thirty-four of the 87 change class and **fourteen change sign**. PICKLE GULCH is +22.4 m
+over its 500 m surroundings and −22.6 m over its 2 km ones; BEULAH is +8.1 and −50.8.
+Neither number is wrong and neither is more correct: a 500 m disc measures the bank a mast
+stands on, a 2 km disc measures the valley that bank is in, and a knoll inside a gulch is
+both. **A class is a statement about a radius**, and every count in this note before now
+was quoted without one. `--position` and the new `--threshold` are recorded on every
+station for that reason.
+
+### Restratifying the pairs that were already scored
+
+The same 3,548 stored pairs from the 37-station Colorado set, four archive dates, nothing
+re-fetched — only the label changed:
+
+```
+by the 500 m index (as scored in measurements 10-12)
+stratum      pairs   stns    hrrr    down   hrrr*   down*   scale
+valley         192      2    3.74    3.30    1.89    1.84    0.46
+slope          862      9    2.52    2.62    1.61    1.62    0.62
+flat          1154     12    2.71    2.75    1.76    1.65    0.66
+ridge         1340     14    2.72    2.98    2.38    2.31    0.79
+
+by a 2 km index
+valley         954     10    2.73    2.78    1.46    1.47    0.59
+slope          192      2    2.48    2.66    1.43    1.39    0.63
+flat           288      3    2.38    2.32    2.16    1.87    0.84
+ridge         2018     21    2.66    2.86    2.19    2.13    0.74
+```
+
+The valley stratum goes from two stations to ten. **The downscaling is still no better
+than raw HRRR in any stratum at either radius** — `down` beats `hrrr` nowhere except flat
+ground, by 0.06 m/s, and the debiased columns are within 0.05 m/s of each other in every
+row. Nothing here rescues the terms.
+
+### What the wider valley stratum does say
+
+Fitting each station's own speed scale by least squares and grouping by the 2 km index:
+
+```
+valley (index <= -15 m)      n=10  mean scale 0.598  sd 0.117  se 0.037
+between                      n= 5  mean scale 0.741  sd 0.305  se 0.136
+ridge  (index >= +15 m)      n=21  mean scale 0.756  sd 0.323  se 0.071
+valley - ridge = -0.157  se 0.080  t = -1.97
+Spearman rho(scale, 2 km index) = 0.228 over 36 stations
+```
+
+**HRRR is about 20% faster over the sheltered stations than over the exposed ones, at
+t ≈ 2 on 31 masts.** That is the sheltering signal this note has been looking for since
+measurement 3, and it is the first time it has appeared with more than two stations under
+it. It is also, at t ≈ 2 with the radius chosen after seeing that the smaller one gave
+nothing, exactly the strength of evidence that produced the last two dead leads.
+
+**And it does not predict an individual station.** Held out one station at a time,
+predicting that station's fitted scale from a line through the others:
+
+```
+2 km position index    20/36 better   mean |err| 0.224 -> 0.212   closes  5.3%
+500 m position index   20/36 better   0.224 -> 0.225              closes -0.5%
+slope                  22/36 better   0.224 -> 0.223              closes  0.4%
+elevation              18/36 better   0.224 -> 0.226              closes -1.1%
+```
+
+5.3% against measurement 11's 8% at 500 m, and 20 of 36 is a coin toss. So the honest
+reading is two statements that both have to be carried: **pooled, sheltered ground needs
+the model slowed further; per station, the landform still cannot say by how much.** A
+group mean is not a pin, and the pin is what the product has to answer.
+
+### What this changes and what it does not
+
+- **The catalogue objection is withdrawn as stated.** "RAWS has no valleys" was true of a
+  500 m index and is false of a 2 km one, and both of measurements 11 and 12 closed on it.
+  A run that wants sheltered Colorado ground can have ten stations of it today, and 15 of
+  the 87 the survey could read at both radii.
+- **It does not withdraw the case for a non-RAWS network.** These are still masts sited
+  for fire-weather exposure; a station in a 2 km hollow is not a station in a sheltered
+  spot, which is why the pooled effect is 20% and not the factor of two a canyon does.
+  The near-ground question is untouched by any of it — every one of these anemometers is
+  still at 6.1 m.
+- **No default, coefficient or classification threshold moved.** `verify.classifyTerrain`
+  still defaults to a 500 m-derived ±15 m, because changing it would silently relabel
+  every stratified table already in this note. What changed is that the radius and the
+  threshold now travel with the class.
+- **The next run is pre-registerable, and should be.** Fit the valley/ridge scale split on
+  Colorado at 2 km, state it in writing, then score New Mexico's 30 stations against it
+  without looking. Three descriptors have now been chosen after seeing their own results
+  — `Sx`, elevation in New Mexico, and this radius — and all three looked about this
+  strong at this stage.
+
+*Caveats. The 2 km radius was chosen because the 500 m one produced no valleys, which is
+selection on the outcome. `t = -1.97` on 31 stations is one station from nothing, and the
+groups are unbalanced 10 against 21. The scales are fitted on the same four dates the
+strata are compared on, so this is in-sample except for the held-out column. Every pair
+carries the 0.85 m/s clock term from measurement 13, which is larger than the effect being
+discussed. Nothing was re-fetched: the terrain is a fresh 3DEP read, the pairs are the
+stored ones.*
+
+Artefacts: the 2 km survey and the restratification were run outside the repository
+against `tools/station-survey.js` and `verify.js`; the surveys are reproducible with
+`--position 2000 --radius 2.5`.
+
 ## The hypotheses, and how much weight each one carries
 
 Roughly in the order the evidence supports them.
@@ -1208,7 +1329,21 @@ In cost order.
   station's own scale instead of half of it, and removing STOC2 still halves the
   correlation on every date. **The successor is not another Colorado station**: the
   catalogue is 34 flat, 33 ridge, 19 slope and 3 valley, so the sheltered half of the axis
-  cannot be filled from this state at all.
+  cannot be filled from this state at all. **Half-withdrawn by measurement 14** — that
+  split is what a 500 m disc says, and at 2 km the same catalogue has 15 valleys and the
+  scored set has ten. The sheltered stratum can be had after all; what it buys is a pooled
+  20% and no per-station skill.
+- **Pre-register the 2 km sheltering split and score New Mexico against it.** Measurement
+  14 found it at t ≈ 2 after choosing the radius that produced it, which is the same
+  position `Sx` and the New Mexico elevation line were both in before they died. Write the
+  Colorado valley/ridge scale ratio down, then run the 30 New Mexico stations once. This
+  is the cheapest deciding run currently available — the pairs and the terrain are both
+  already stored.
+- **Score against a network that measures below 3 m.** `docs/observations.md` now has the
+  catalogue: CoAgMet at 2 m over 95 Colorado sites and USCRN at a documented 1.5 m over
+  116 CONUS sites, 16 of them in 2 km valley bottoms, both free and both 5-minute. Every
+  measurement in this note is against a 6.1 m mast or an 8.2-10.1 m one, and the product
+  being designed draws 0-3 m. Neither has an adapter; that is the work.
 - **Separate the height correction from the terrain correction in the scoring** so a
   change in one cannot be credited to the other.
 - ~~**Regress the per-station scale on terrain, now that the scale is known to repeat.**~~
