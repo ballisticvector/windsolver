@@ -34,23 +34,58 @@
  * everywhere and a model with 2 m/s of scatter have the same RMSE and want
  * completely different fixes.
  *
- * **The observation has a floor.** A METAR is rounded to a whole knot and 10°
- * before anybody reads it, so a *perfect* model cannot score better than about
- * 0.15 m/s and 2.9° against one. `quantisationFloor` computes that, and a score
- * that quotes an error without it invites the reader to attribute the rounding
- * to the model.
+ * **The observation has a floor, and there are two of them.** A METAR is
+ * rounded to a whole knot and 10° before anybody reads it, so a *perfect* model
+ * cannot score better than about 0.15 m/s and 2.9° against one;
+ * `quantisationFloor` computes that. The larger floor is the instrument's own:
+ * the ASOS User's Guide states ±2 kt on speed and ±5° on direction, which is
+ * **1.03 m/s** — seven times the rounding, and larger than every downscaling
+ * candidate ever scored here put together. `instrumentTolerance` reports it,
+ * and a score that quotes an error without both invites the reader to
+ * attribute the anemometer to the model.
+ *
+ * **A reported calm is an upper bound, not a zero.** ASOS declares calm at or
+ * below its 2 kt starting threshold, so `00000KT` means somewhere in 0-1.03
+ * m/s, and scoring it as 0.0 makes the model look faster than it is. The
+ * arithmetic still uses the reported 0 — inventing a value would be worse — but
+ * `calmCeilingMps` and `speed.biasCensoringMps` say how far that could have
+ * moved the answer.
  */
 
 "use strict";
 
 const DEG = Math.PI / 180;
 
+/** One knot in m/s. Every ASOS figure below is published in knots. */
+const KNOT_MPS = 1852 / 3600;
+
+/**
+ * The speed at or below which ASOS reports a calm.
+ *
+ * 2 kt. The ASOS User's Guide (March 1998, §3.2.2.1) puts the sensor's starting
+ * threshold at 2 kt and says winds measured at 2 kt or less are reported as
+ * calm: a 2-minute average at or below it goes out as `00000KT`. A calm is
+ * therefore a censored observation with this as its ceiling, not a measurement
+ * of zero.
+ */
+const ASOS_CALM_CEILING_MPS = 2 * KNOT_MPS;
+
+/**
+ * What the anemometer promises, which is not what it prints: ±2 kt on speed and
+ * ±5° on direction above 5 kt (ASOS User's Guide, sensor specification).
+ *
+ * A stated tolerance is not a distribution, so it is reported as a tolerance
+ * and never turned into an RMS by assuming one.
+ */
+const ASOS_SPEED_TOLERANCE_MPS = 2 * KNOT_MPS;
+const ASOS_DIR_TOLERANCE_DEG = 5;
+
 /**
  * Below this speed a measured direction is not evidence about the model.
  *
- * 1 m/s, just under 2 kt. ASOS reports calm below 3 kt in the METAR
- * (AC 00-45H / FMH-1), and between calm and about 5 kt a vane's reading is
- * dominated by eddies rather than by the mean wind.
+ * 1 m/s, just under the 2 kt at which ASOS gives up and calls it calm, and
+ * between there and about 5 kt a vane's reading is dominated by eddies rather
+ * than by the mean wind.
  */
 const DEFAULT_MIN_DIRECTION_MPS = 1.0;
 
@@ -191,13 +226,35 @@ function circularMeanDeg(differences) {
  */
 function quantisationFloor(opts) {
   const o = opts || {};
-  const speedStepMps = o.speedStepMps === undefined ? 1852 / 3600 : o.speedStepMps;
+  const speedStepMps = o.speedStepMps === undefined ? KNOT_MPS : o.speedStepMps;
   const dirStepDeg = o.dirStepDeg === undefined ? 10 : o.dirStepDeg;
   const twelve = Math.sqrt(12);
   return {
     speedRmseMps: speedStepMps / twelve,
     dirRmseDeg: dirStepDeg / twelve,
     note: "the RMS of rounding alone: a model that is exactly right cannot score below this"
+  };
+}
+
+/**
+ * The tolerance the instrument is allowed, which is not the resolution it
+ * prints at.
+ *
+ * Defaults to the ASOS specification because that is the network the first runs
+ * were scored against; a caller with another network passes its own. It is an
+ * interval and not an error term: it cannot be subtracted from a score, only
+ * held up beside one.
+ */
+function instrumentTolerance(opts) {
+  const o = opts || {};
+  return {
+    speedToleranceMps: o.speedToleranceMps === undefined
+      ? ASOS_SPEED_TOLERANCE_MPS
+      : o.speedToleranceMps,
+    dirToleranceDeg: o.dirToleranceDeg === undefined
+      ? ASOS_DIR_TOLERANCE_DEG
+      : o.dirToleranceDeg,
+    note: "the sensor's stated tolerance: a difference smaller than this is not evidence about the model"
   };
 }
 
@@ -250,6 +307,9 @@ function score(pairs, opts) {
   const o = opts || {};
   const read = o.read || function (p) { return p.sample; };
   const scale = o.scale === undefined || o.scale === null ? 1 : o.scale;
+  const calmCeilingMps = o.calmCeilingMps === undefined
+    ? ASOS_CALM_CEILING_MPS
+    : o.calmCeilingMps;
   const minDirectionMps = o.minDirectionMps === undefined
     ? DEFAULT_MIN_DIRECTION_MPS
     : o.minDirectionMps;
@@ -326,6 +386,12 @@ function score(pairs, opts) {
     distinctSamples: distinct.size,
     speed: {
       biasMps: mean(speedErrors),
+      // A calm was scored as the 0.0 it was reported as, but it could have been
+      // anything up to the ceiling and every one of them pushes the bias the
+      // same way. This is the whole of that push, not an estimate of it.
+      biasCensoringMps: speedErrors.length
+        ? (calm * calmCeilingMps) / speedErrors.length
+        : 0,
       maeMps: mean(speedErrors.map(Math.abs)),
       rmseMps: rms(speedErrors),
       observedMeanMps: mean(observedSpeeds),
@@ -348,8 +414,10 @@ function score(pairs, opts) {
       noDirection: noObservedDirection
     },
     minDirectionMps: minDirectionMps,
+    calmCeilingMps: calmCeilingMps,
     scale: scale,
-    floor: quantisationFloor(o)
+    floor: quantisationFloor(o),
+    instrument: instrumentTolerance(o)
   };
 }
 
@@ -447,12 +515,14 @@ function stratify(pairs, labelOf, opts) {
 module.exports = {
   debiasScale,
   DEFAULT_MIN_DIRECTION_MPS,
+  ASOS_CALM_CEILING_MPS,
   DEFAULT_POSITION_THRESHOLD_M,
   DEFAULT_TOLERANCE_MS,
   angleDifferenceDeg,
   componentsOf,
   circularMeanDeg,
   quantisationFloor,
+  instrumentTolerance,
   pair,
   score,
   classifyTerrain,

@@ -25,6 +25,7 @@ const proj = require("../proj.js");
 const scoreWind = require("../tools/score-wind.js");
 const observationsModule = require("../observations.js");
 const roughness = require("../roughness.js");
+const verify = require("../verify.js");
 
 const STATION = JSON.parse(fs.readFileSync(
   path.join(__dirname, "fixtures", "nws-kbdu-station.json"), "utf8"));
@@ -597,6 +598,48 @@ describe("the summary a person reads", () => {
     expect(text).not.toMatch(/azimuth|hold|bullet|shot/i);
   });
 
+  test("the sensor's own tolerance is printed beside the errors it dwarfs", async () => {
+    // The whole ablation table spans 0.06 m/s and the ASOS specification allows
+    // the instrument ±1.03. A reader who cannot see that in the same block of
+    // text will read a rank ordering out of the observer's own slack.
+    const service = stubService(function () {
+      return stubField({ speedMps: 4, fromDeg: 270, referenceMps: 9 });
+    });
+    const report = await scoreWind.buildReport({
+      source: stubSource(), service: service, stations: ["KBDU"], hours: 4, endMs: END
+    });
+    const text = scoreWind.summarise(report);
+
+    expect(text).toMatch(/sensor is allowed ±1\.03 m\/s and ±5°/);
+    expect(text).toMatch(/not evidence about the model/);
+    expect(report.overall.downscaled.instrument.speedToleranceMps).toBe(1.029);
+    expect(report.overall.downscaled.instrument.dirToleranceDeg).toBe(5);
+  });
+
+  test("the calms in the sample carry the most they could have added to the bias", async () => {
+    // KBDU reported three calms in this window. Each was scored as the 0.0 the
+    // METAR carried, and each could have been anything up to 2 kt: the summary
+    // says how much of the speed bias that is worth at the very most, so the
+    // number is beside the score instead of invented inside it.
+    const service = stubService(function () {
+      return stubField({ speedMps: 4, fromDeg: 270, referenceMps: 9 });
+    });
+    const report = await scoreWind.buildReport({
+      source: stubSource(), service: service, stations: ["KBDU"], hours: 4, endMs: END
+    });
+    const scored = report.overall.downscaled;
+
+    expect(scored.excluded.calm).toBeGreaterThan(0);
+    expect(scored.calmCeilingMps).toBe(1.029);
+    expect(scored.biasCensoringMps)
+      .toBeCloseTo(scored.excluded.calm * 1.0288888 / scored.n, 3);
+    // It is a bound on the bias, so it cannot exceed the ceiling itself.
+    expect(scored.biasCensoringMps).toBeLessThanOrEqual(scored.calmCeilingMps);
+    expect(scoreWind.summarise(report)).toMatch(
+      new RegExp(scored.excluded.calm + " observation\\(s\\) were reported calm"));
+    expect(scoreWind.summarise(report)).toMatch(/at most [\d.]+ m\/s of every speed bias/);
+  });
+
   test("it shows the model hours behind the observations, not just the count", async () => {
     // A station reporting every five minutes pairs several observations to one
     // model hour, so a row reading n = 135 over a day is 24 independent
@@ -1105,10 +1148,24 @@ describe("which observation service the run scores against", () => {
     return where;
   }
 
-  test("the default is the NWS reader, and its quantisation floor is empty", () => {
+  test("the default is the NWS reader, and it takes the ASOS instrument by default", () => {
     const chosen = scoreWind.sourceFor(undefined, ["KBDU"], {});
     expect(chosen.label).toMatch(/api\.weather\.gov/);
+    // Empty, so verify.js applies the ASOS specification the guide states.
     expect(chosen.floor).toEqual({});
+    expect(verify.score([], chosen.floor).instrument.speedToleranceMps)
+      .toBeCloseTo(1.0289, 4);
+    expect(verify.score([], chosen.floor).calmCeilingMps).toBeCloseTo(1.0289, 4);
+  });
+
+  test("a RAWS does not borrow the ASOS tolerance, because nobody has looked it up", () => {
+    const chosen = scoreWind.sourceFor("fems", ["PCPC2"], { "fems-map": mapAt("i.json", MAP) });
+    const scored = verify.score([], chosen.floor);
+    expect(scored.instrument.speedToleranceMps).toBeNull();
+    expect(scored.instrument.dirToleranceDeg).toBeNull();
+    // Half of the 1 mph it is rounded to: a lower bound on the censoring, and
+    // the only part of it that can be derived rather than cited.
+    expect(scored.calmCeilingMps).toBeCloseTo(0.22352, 5);
   });
 
   test("a service nobody implemented is named in the refusal", () => {

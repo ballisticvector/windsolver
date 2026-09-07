@@ -18,6 +18,7 @@ from one anonymous GET.
 - [FEMS: the RAWS system of record](#fems-the-raws-system-of-record)
 - [MADIS: everything NOAA ingests, with QC attached](#madis-everything-noaa-ingests-with-qc-attached)
 - [The three providers disagree about when the wind was measured](#the-three-providers-disagree-about-when-the-wind-was-measured)
+- [What the instrument did before anyone scored it](#what-the-instrument-did-before-anyone-scored-it)
 - [What an adapter has to refuse](#what-an-adapter-has-to-refuse)
 - [Using it: fems.js](#using-it-femsjs)
 - [Recommendation](#recommendation)
@@ -207,6 +208,59 @@ The uncomfortable version of this is that the METAR runs were never affected bec
 airports report at :53, close enough to the hour that a 10 minute window works by
 accident. RAWS transmit whenever their GOES slot falls.
 
+## What the instrument did before anyone scored it
+
+Every number above is about *which* wind and *when*. This section is about what the
+anemometer had already done to it, and it is read off the
+[ASOS User's Guide](https://www.weather.gov/media/asos/aum-toc.pdf) (March 1998) rather
+than inferred, because the first five-station run in `docs/downscaling.md` was scored
+against ASOS/AWOS METARs through `observations.js`.
+
+| | ASOS, as specified | What it does to a score |
+| --- | --- | --- |
+| Averaging | 2-minute running mean of 5-second averages | An hourly model is paired with two minutes of wind, not with an hour of it |
+| Starting threshold | 2 kt | Below it the cups do not turn |
+| Calm | "winds measured at 2 kt or less are reported as calm" | `00000KT` means somewhere in **0–1.03 m/s**, not 0 |
+| Speed accuracy | ±2 kt (**±1.03 m/s**) | Larger than every candidate difference ever measured here |
+| Speed resolution | 1 kt (0.51 m/s) | 0.15 m/s of RMSE from rounding alone |
+| Direction accuracy | ±5° above 5 kt | |
+| Direction resolution | 1° (10° in the METAR) | 2.9° of RMSE from the METAR's rounding alone |
+| Sensor height | **33 ft or 27 ft**, by local siting | 10.1 m or 8.2 m: the airport runs were never height-matched either |
+| Gusts | not reported below 14 kt | A blank gust field is not a gust-free wind |
+
+Three of those change how a number in this repository should be read.
+
+**A calm is censored, not measured.** Scoring `00000KT` as 0.0 drags the observed mean
+down and makes every model look faster than it is — and the RAWS sample's observed mean is
+about 2.1 m/s, which is on top of the censoring rather than safely above it. `verify.js`
+still scores the reported 0, because inventing a replacement would put a guess inside the
+arithmetic, and reports two things beside it instead: `calmCeilingMps`, the ceiling the
+report really means, and `speed.biasCensoringMps`, the **most** the calms in that sample
+could have added to the speed bias. Both are bounds. Neither is subtracted from anything.
+
+**The tolerance is not the resolution, and it is the larger of the two.** `verify.js` has
+always reported a quantisation floor — the RMS of the observer's rounding, which a perfect
+model cannot score below. That floor is 0.15 m/s for a whole knot. The instrument's own
+stated accuracy is ±1.03 m/s, seven times it, and about seventeen times the 0.06 m/s that
+spans every terrain candidate ever ablated. `score().instrument` carries it so that a
+ranking cannot be quoted without the slack it was read out of. It is an interval and not
+an error term: it cannot be subtracted from a score, only held up beside one.
+
+**An ASOS is not at 10 m.** The RAWS masts' 6.1 m has always been corrected for; the
+airports were quietly assumed to be the clean case and they are not. Elnahla, Guo & Wu
+(2026) date the fix from the instrument side: the Belfort cups sat "primarily at 10
+meters, though some were positioned at 7.9 meters", and the Vaisala sonics that
+standardised the height at 10 m were fully adopted by 2010 — so a pre-2010 ASOS series has
+a sensor-height *and* a sensor-type change buried in it.
+
+**A RAWS is not an ASOS, and none of this transfers to one.** No equivalent specification
+has been read for the RAWS network, so `tools/score-wind.js` passes the FEMS and Synoptic
+readers a null tolerance — "nobody has looked this up" — rather than borrowing ±2 kt and
+attaching a citation to the wrong network. The one figure that can be derived is the calm
+ceiling: FEMS speeds are whole miles per hour, so a 0 is anything below 0.22 m/s. That is
+a **lower** bound on the censoring, since the cup's own starting threshold is larger and
+unmeasured, so a run leaning on it understates the effect.
+
 ## What an adapter has to refuse
 
 FEMS answers an unknown station with **HTTP 200 and a blank row**:
@@ -315,6 +369,11 @@ pricing page.
 - **The FEMS elevation unit.** `elevation` is unitless in the metadata and is read as
   feet, which agrees with Synoptic and with the published elevation at all eleven matched
   stations. That is an inference from agreement, not from documentation.
+- **The RAWS instrument specification.** The NWCG/NFDRS standards behind the 6.1 m mast
+  should state a starting threshold, an averaging period and an accuracy the way the ASOS
+  User's Guide does. They have not been read, so twelve of the twelve measurements in
+  `docs/downscaling.md` are scored against a network whose own tolerance is unknown.
+  Until they are, `RAWS_INSTRUMENT` in `tools/score-wind.js` carries nulls.
 - **How far the calibration reaches.** Eleven Colorado stations. `--source fems` refuses
   a station with no map entry rather than falling back to the hour label, so widening the
   study means widening the map first.

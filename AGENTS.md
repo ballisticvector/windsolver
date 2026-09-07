@@ -61,7 +61,21 @@ npm run lint
 >   the stations are at airports, so they sit on the flattest ground for miles: the first
 >   five-station run found the downscaling **no better than raw HRRR**, on terrain where
 >   it should do least. Do not quote that as a verdict on the downscaling, and do not
->   quote it as a confidence either.
+>   quote it as a confidence either. **And the ASOS User's Guide puts a floor under that
+>   run that is bigger than anything it could have measured**: the sensor is allowed
+>   ±2 kt (±1.03 m/s) where the whole ablation table spans 0.06.
+> - **A reported calm is censored, not zero, and the sample sits on top of the
+>   censoring** — ASOS declares calm at or below 2 kt, so `00000KT` means somewhere in
+>   0-1.03 m/s against an observed mean of about 2.1. `verify.js` still scores the
+>   reported 0 rather than inventing a value, and reports `calmCeilingMps` and
+>   `speed.biasCensoringMps` — the most the calms could have added to the speed bias —
+>   beside it. Neither is subtracted from a score. A RAWS is a different instrument and
+>   its specification has not been read, so `tools/score-wind.js` gives those readers a
+>   null tolerance instead of borrowing the airport's. `docs/observations.md` has the
+>   table.
+> - **An ASOS is not at 10 m either** — the guide says 33 ft or 27 ft "depending on local
+>   site-specific criteria", so the airport comparisons were never height-matched, and a
+>   pre-2010 series also has the Belfort-to-Vaisala change buried in it.
 > - **The terrain downscaling is not yet known to help, and on ridges it measurably
 >   hurts.** `docs/downscaling.md` is the standing note: read it before changing anything
 >   in `downscale.js`, and add to it rather than starting a new one.
