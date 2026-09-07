@@ -1338,6 +1338,12 @@ node tools/model-terrain.js --stations PCPC2,KSHC2,TT532 --at 2026-09-04T18:00:0
 **No default or formula has been changed on the strength of any of it**, and none should
 be on one state and one day.
 
+`docs/near-ground-wind.md` takes the same evidence forward to the product it is for: a
+map of the wind at 0–3 m over a two-mile box. It is the route rather than the result —
+which four numbers bound the problem, why the two largest of them are not about terrain,
+and why there is currently **no observation anywhere in this project below 6.1 m** to
+score such a field against.
+
 ### The measured wind is the thing that is scarce, not the model
 
 Every open question above needs more days, more seasons and more stations, and
