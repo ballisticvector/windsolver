@@ -207,6 +207,40 @@ own caption `#stationNote`, its own failure text. Test it as an independent laye
 - An empty area legitimately reads `0 of 0 stations · RAWS via fems · locations only — no
   observations read`; that is not a failure.
 
+## Compare mode: colouring the stations by model ÷ measured (`#compare`)
+
+- Selectors: `#compare` ("Colour them by how far the model is out") inside `#compareRow`
+  (gains `.check.off` and `#compare.disabled` when `#stations` is unticked), legend block
+  `#compareKey` (hidden unless compare is on), median text appended to `#stationNote`
+  (`model N.NN× measured (median of K)`).
+- **The comparability rule is time-dependent and will make a correct build look broken.**
+  A station is only compared when |observation hour − model hour| ≤ 1 h. HRRR's ~2 h
+  publication lag plus a *cached* volume in a long-running server can put the model two
+  hours behind the newest FEMS observations, in which case **every** station is
+  legitimately uncoloured with "the observation and the model hour are N min apart".
+  Restarting `tools/serve.js` makes it pick up the fresh cycle; check
+  `model.validTime` in `/v1/stations?...&model=true` before calling it a bug.
+- Grade the colours numerically, not by eye: fetch the same `/v1/stations` query with
+  `model=true`, compute `model.speedMps / observation.speedMps` per station and compare
+  with the marker `fill` and the caption median. Calm (`0 m/s`) must stay
+  `fill="transparent"` + `stroke-dasharray="3 2"` with a "not a multiple of nothing"
+  popup — never a near-white "agreement" colour.
+- Refusal paths worth filming: zoom out until the derived radius (half the view diagonal)
+  exceeds **150 mi** (`MAX_MODEL_RADIUS_MILES`) → `model-box-too-large`, all markers
+  uncoloured but observations intact; and a box outside the HRRR CONUS domain (Puerto
+  Rico `lat=18.2&lon=-66.5&radiusMiles=100`) → `model-unavailable` with the observations
+  still present. A per-station `modelNote` is hard to hit naturally — do not block on it.
+- Hillshade registration can be graded exactly in the browser: read
+  `x-windsolver-bounds` from the `/v1/hillshade` response and compare with
+  `map.latLngToContainerPoint()` of the drawn `.leaflet-relief-pane img` corners; agreement
+  to well under a pixel is the pass.
+- **Mobile screenshots: the DevTools device toolbar gives useless pictures.** Docked
+  DevTools scales the emulated viewport (34% is common), so the app is a postage stamp and
+  the frame visually clips content that is actually in-bounds. Use the device toolbar only
+  for the *measurements* (`innerWidth`, per-element `getBoundingClientRect()`,
+  `scrollingElement.scrollWidth === innerWidth`), then close DevTools and
+  `wmctrl -i -r <id> -e 0,40,40,500,900` for a legible single-column screenshot.
+
 ## Compare provenance with the raw JSON
 
 Run the identical query with curl and diff field by field — the panel is meant to be a
