@@ -25,6 +25,7 @@ If you are picking this up cold: `downscale.js` is the module in question,
 - [Measurement 9: how much of the error belongs to the station](#measurement-9-how-much-of-the-error-belongs-to-the-station)
 - [Measurement 10: a scale instead of an offset, and the station the fit never saw](#measurement-10-a-scale-instead-of-an-offset-and-the-station-the-fit-never-saw)
 - [Measurement 11: the same question on 37 stations chosen by the ground](#measurement-11-the-same-question-on-37-stations-chosen-by-the-ground)
+- [Measurement 12: a second state, and a descriptor that works in one of them](#measurement-12-a-second-state-and-a-descriptor-that-works-in-one-of-them)
 - [The hypotheses, and how much weight each one carries](#the-hypotheses-and-how-much-weight-each-one-carries)
 - [What would settle it](#what-would-settle-it)
 - [Things that would poison the answer](#things-that-would-poison-the-answer)
@@ -833,6 +834,148 @@ Artefacts: `tools/score-wind.js --source fems --archive --forecast 0 --tolerance
 --hours 24 --pairs <run>.pairs.json` for the four dates over the 38-station list, then
 `tools/site-factor.js --holdout`, kept outside the repo.
 
+## Measurement 12: a second state, and a descriptor that works in one of them
+
+Measurement 11 ended by asking for terrain with hollows in it, and named New Mexico as
+the candidate. This is that run. It answers a question nobody asked instead of the one
+that was asked, and the answer is the most useful thing in this note since measurement 9
+— **and it must not be shipped**, for a reason the last two measurements have taught.
+
+**The valley question died in the catalogue, not in the run.** `station-survey.js` read
+3DEP under all 2,088 FEMS RAWS and found 57 in New Mexico, 56 of them readable:
+
+```
+              read   flat  ridge  slope  valley    position index
+Colorado        93     34     33     19       3   -30.8 .. +97.0 m
+New Mexico      56     33     15      4       3   -31.8 .. +95.2 m
+```
+
+Fifty-six is the whole state, not a sample of it. **Three valleys again, and the axis has
+the same two ends to within a metre and a half.** This is not a fact about Colorado's
+topography; it is a fact about where a fire-weather agency puts a mast. No amount of
+state-hopping fills the sheltered half of the position axis, and the cheap way to learn
+that was ten minutes of 3DEP rather than four archive days.
+
+Thirty stations were chosen spread across the index anyway, matched to Synoptic at
+0.00 km, and calibrated: `data/fems-stations.json` goes 38 → 68. **The 38 Colorado
+transmit minutes came back bit-identical on a second calibration three months later**,
+which is the first evidence that a GOES slot is stable rather than merely measured once.
+Four archive dates at f00, `--tolerance 30`, 24 hours each: 720, 720, 717 and 719 pairs.
+
+**Everything measurement 11 found about the model is still true in a second state.** HRRR
+is fast on all four days — speed bias +1.00, +0.93, +1.14 and +2.69 m/s, each about a
+x0.61–0.69 debias — and the downscaling is 0.11 to 0.32 m/s *worse* than raw HRRR on
+every one of them, landing within 0.01 m/s of it once each candidate's own bias is out.
+The per-station scale transfers here too, and across the season boundary: over the twelve
+held-out cells a station's own fitted scale is 0.244 m/s better than a pooled one
+(Colorado: 0.312).
+
+**A single pooled scale is not even state-specific.** Substituting Colorado's pooled
+scale for New Mexico's own changes the held-out score by +0.003 m/s on average, and the
+reverse by −0.006. Whatever the gross bias is, it is not local.
+
+### What is new: elevation predicts the New Mexico station factor
+
+Leave-one-station-out, fitted on one date and scored on another, mean over the twelve
+cells against the pooled scale — positive is better than pooling:
+
+```
+predictor              New Mexico            Colorado
+                     cells    gain        cells    gain
+demElevationM        12/12  +0.173 m/s     0/12  -0.031 m/s
+positionIndexM        0/12  -0.034          6/12  -0.004
+tpi                   0/12  -0.020          5/12  -0.001
+slopeDeg              6/12  -0.015          0/12  -0.050
+modelOffsetM          0/12  -0.030          1/12  -0.041
+the station's own    12/12  +0.244         12/12  +0.312
+```
+
+**Elevation closes 71% of the distance between a pooled scale and the station's own**, in
+every one of the twelve cells, where every terrain descriptor tried so far has closed
+about 8% at best. The in-sample correlation is −0.65 to −0.71 on each of the four dates
+separately and −0.73 on the four-date mean scale. It is not one or two stations: dropping
+the two extremes (GRSN5, JARN5) leaves +0.141 m/s, dropping CIMARRON leaves +0.156, and
+the correlation survives inside both halves of the sample (−0.43 below 2,000 m on nine
+stations, −0.47 above it on twenty-one), so it is not a two-population artefact either.
+
+The mechanism is visible and it is not elevation:
+
+```
+                    stations   observed   HRRR   ratio
+New Mexico  <2000 m        9    3.57       4.03   1.13
+            >=2000 m      21    2.15       4.01   1.86
+Colorado    <2000 m        5    3.64       4.22   1.16
+            >=2000 m      32    3.00       4.50   1.50
+```
+
+**HRRR's wind barely changes with elevation (r = +0.14 in New Mexico, +0.10 in Colorado);
+the anemometers' does (−0.67 against −0.19).** The model blows much the same wind over
+the desert and over the mountains, and the mountains are where it is wrong — on New
+Mexico's plains it is 13% fast, which is close to right. Colorado shows the same contrast
+between its two elevation bands and has five lowland stations to draw the line with,
+which is why elevation is r = −0.18 there and nothing in a regression.
+
+### Why it still must not ship
+
+**Each state's best descriptor is useless in the other.** Colorado's position index is
+0 of 12 in New Mexico; New Mexico's elevation is 0 of 12 in Colorado. Fitting the
+elevation line in one state and applying it in the other, mean gain over pooling:
+
+```
+scored   fitted on          cells    gain
+NM       New Mexico         12/12  +0.173 m/s
+NM       Colorado           10/12  +0.056
+NM       all 67 stations    12/12  +0.115
+CO       Colorado            0/12  -0.031
+CO       New Mexico          0/12  -0.156
+CO       all 67 stations     4/12  -0.011
+```
+
+A relationship learned in New Mexico actively damages Colorado, by five times more than
+Colorado's own line does — and a pin does not come labelled with which state's behaviour
+it will follow.
+
+**The mechanism scores an order of magnitude worse than the proxy.** If elevation stands
+in for canopy — high New Mexico ground is forest, low ground is desert — then HRRR's own
+roughness should carry it. `--exposure` on 31 August: SFCR reads 0.075–0.699 m over the
+30 stations, correlates with elevation at +0.57 and with the fitted scale at −0.41, and
+scoring the roughness physics explicitly buys **0.02 m/s** debiased where the empirical
+elevation line buys 0.17. A descriptor that outperforms the mechanism it supposedly
+stands for is a descriptor that is standing for something else.
+
+**And it is the best of five, chosen after looking at all five.** That is the selection
+this note has already been burned by twice — measurement 10's r = +0.70 and measurement
+11's position index both looked like this from the inside.
+
+### Cimarron, and the Whittington Center
+
+There is **no RAWS on or near the NRA Whittington Center**. The nearest are CIMARRON at
+54.3 km, Bosque (Colorado) at 57.0 km and Mills Canyon at 72.9 km, so nothing measured
+speaks for that ground.
+
+CIMARRON is worth its own line anyway: it is the most sheltered station in New Mexico at
+−31.8 m, one of the three valleys, and its fitted scale is **x0.341, x0.341, x0.330 and
+x0.330** on the four dates. HRRR is three times too fast there, by the same factor in
+March at an observed mean of 2.85 m/s as in September at 1.15–1.30, with at most 2 of 24
+hours flagged calm — so it is not the cup anemometer's stall threshold, which is the trap
+two other stations in this set fall into (GRSN5 and JARN5 average 0.30–1.06 m/s in
+September with 6 to 14 of 24 hours calm, and their x0.14–0.33 is partly an instrument
+floor; they are the pair dropped in the sensitivity run above). A blank direction column
+for GRSN5 on 2 September is those calms, not a failure.
+
+*Caveats. Two states, four days, one season boundary, 24 consecutive hours per day, all
+f00 and therefore grading an analysis these stations were assimilated into. `own` is a
+hindsight ceiling, not a prediction. The elevation result is one descriptor out of five
+on one state and needs a third state before it is anything more than a lead — the
+difference from the previous two leads is that it is 12 of 12 rather than 6 of 12, and
+that its failure mode in Colorado is measured rather than assumed. No default moved, and
+`downscale.js` is untouched.*
+
+Artefacts: `tools/station-survey.js --source fems --state NM --spread 30`,
+`tools/fems-stations.js` over the 68-station list, then `tools/score-wind.js --source
+fems --archive --forecast 0 --tolerance 30 --hours 24 --pairs <run>.pairs.json` for the
+four dates and `tools/site-factor.js --holdout`, kept outside the repo.
+
 ## The hypotheses, and how much weight each one carries
 
 Roughly in the order the evidence supports them.
@@ -869,17 +1012,27 @@ Roughly in the order the evidence supports them.
    correlation to an out-of-sample score and found it landing on the pooled scale once
    STOC2 was removed; measurement 11 ran the wider set that was supposed to settle it and
    found the same thing on 37 stations, where terrain closes 8% of the distance to a
-   station's own scale and the correlation still halves when STOC2 goes. **This is no
-   longer where the next Colorado station should go** — the state's RAWS are 3 valleys in
-   93, so the sheltered half of the axis has to come from somewhere else or not at all.
-5. **The slope term does nothing as scored.** `os = alongWind / (2 * maxSlope)` is
+   station's own scale and the correlation still halves when STOC2 goes. Measurement 12
+   scored 30 New Mexico stations and the position index went 0 of 12 held-out cells
+   there. **This is not where the next station should go, in any state** — New Mexico's
+   RAWS are 3 valleys in 56 against Colorado's 3 in 93, so the sheltered half of the axis
+   is missing from the catalogue rather than from the sample.
+5. **The station factor is predictable from something, and elevation is the first
+   descriptor that has looked like it — in one state.** Measurement 12: fitting the New
+   Mexico scale on elevation beats a pooled scale in 12 of 12 held-out cells and closes
+   71% of the distance to the station's own factor, where every terrain descriptor before
+   it closed 8%. It is 0 of 12 in Colorado, a line fitted in one state damages the other,
+   and HRRR's own roughness — the mechanism elevation would be standing in for — scores
+   0.02 m/s where the proxy scores 0.17. It is on this list as the best open lead and
+   **not** as something to put in `downscale.js`; a third state decides it.
+6. **The slope term does nothing as scored.** `os = alongWind / (2 * maxSlope)` is
    normalised by the domain's own steepest slope, so a station on a 20° slope in a domain
    containing a 50° cliff reads as gentle ground. Fixed physical scales exist now
    (`slopeScaleRad`, `curvatureScale`, `shelterScaleDeg`) but are off by default.
-6. **Diversion is unearned.** It is a plausible piece of physics with no measured support
+7. **Diversion is unearned.** It is a plausible piece of physics with no measured support
    in this sample and a small measured cost. It should either be justified against a
    station set where it can show itself, or turned off.
-7. **The shelter term is the wrong shape for wind.** `Sx` in this form comes from the
+8. **The shelter term is the wrong shape for wind.** `Sx` in this form comes from the
    snow-redistribution literature; a term that moves the answer by 0.6% is either
    mis-scaled, mis-signed, or measuring something that does not limit surface wind.
 
@@ -904,9 +1057,13 @@ In cost order.
   USDA FEMS serving eleven of these thirteen stations back to 2005, free, 113,892 hourly
   rows for thirteen stations x one year in a single 7-second request. Read that note's
   timestamp section before pairing anything from it.
-- **Repeat on other terrain.** Colorado RAWS are a convenience sample of fire-prone
-  ground with road access, in one climate. The Cascades, the Appalachians and the Great
-  Basin are all different problems.
+- **Repeat on other terrain.** Partly run: measurement 12 scored 30 New Mexico stations
+  over the same four dates, and the bias, the scale form and the failure of the position
+  index all reproduce. What it also shows is that the descriptor that works there does
+  not work in Colorado, so **a third state is now the deciding run** rather than a
+  confirming one — the Cascades, the Appalachians and the Great Basin are still different
+  problems, and one of them settles whether the elevation relationship is physics or
+  New Mexico.
 - ~~**Score with a per-station roughness** instead of one constant.~~ Run: measurement 7,
   using HRRR's own SFCR as well as fixed Davenport classes. It survives all of it: the
   correction is a constant in disguise and correlates with what the stations need at
