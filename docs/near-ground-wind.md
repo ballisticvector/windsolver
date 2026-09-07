@@ -100,18 +100,63 @@ Three things fall out of that table, and they are the whole of step 2.
   plays here — that use is a specification, not a hypothesis, and it is why `roughness.js`
   stays out of the runtime path until it is used for this.
 
-**What would actually settle it: a network that measures at 2 m.** Several agricultural
-mesonets do, and some measure at 2 m *and* 10 m on the same mast, which is a directly
-measured profile ratio rather than an assumed one — the strongest lead available for this
-step. It is a catalogue question and has not been done: **read MADIS' agricultural and
-hydrological networks for sensor heights before anything else in this note.** Those are
-the same networks that would fill the sheltered half of the terrain axis — RAWS is 3
-valleys in 93 in Colorado and 3 in 56 in New Mexico — so one survey answers step 2 and
-step 4's blocker at once.
+### The survey has now been done, and it half-answers this
 
-**Falsifiable by:** paired 2 m and 10 m observations on one mast. If the measured ratio
-does not track z₀ from land cover, the log profile is not the right instrument and the
-product needs an empirical per-class factor instead.
+The ask was: read MADIS' agricultural and hydrological networks for sensor heights, on
+the grounds that some measure 2 m *and* 10 m on the same mast and would hand over a
+measured profile ratio instead of an assumed one. `docs/observations.md` carries the
+catalogue read. Three findings, in order of how much they change this note:
+
+- **Sub-3 m observations exist in quantity and are free.** CoAgMet publishes a per-station
+  `anemometerHeight` and has **95 active Colorado stations at 2.0–3.0 m** on a 5-minute
+  timestep, 14 of them in 2 km valley bottoms. USCRN's `WIND_1_5` is a documented **1.5 m**
+  5-minute mean at 158 US stations — *inside* the drawn layer rather than above it — and
+  3DEP under all 116 CONUS sites puts **16 of them in 2 km valley bottoms**, down to
+  −158 m at John Day, Oregon. Step 2's "nothing below 6.1 m" is a statement about what
+  this project has scored, not about what is available.
+- **MADIS itself does not carry a sensor height.** Its `windSpeed10` variable is empty for
+  every provider in the hour sampled and no variable in the file states a height, so the
+  height comes from each provider separately. A field named for a height is not a
+  measurement at that height.
+- **No source found measures two heights on one mast.** Not CoAgMet, not USCRN, not any
+  provider reachable through MADIS. **The measured profile ratio is not available**, and
+  the table above stays an assumption.
+
+### What two nearby masts say instead, and why it is not a profile
+
+The closest substitute is CoAgMet's Fort Collins cluster: `ftc01` at 2.01 m and `fcc01` at
+10.0 m, **520 m apart**. Two whole months at 5 minutes, paired on the timestamp, ratios
+taken only where the 10 m mast reads ≥ 2 m/s:
+
+```
+                                   n    median   p10    p90    day    night   dir RMS
+ftc01 2 m / fcc01 10 m, Aug     4697     0.489  0.160  0.778  0.567   0.295      29 deg
+ftc01 2 m / fcc01 10 m, Feb     3754     0.602  0.204  0.844  0.666   0.422      33 deg
+```
+
+The log-law table above predicts 0.56–0.77 for this step. The August median is **below the
+bottom of it**, the February median is inside it, and the same pair of instruments moves
+0.11 between two months and 0.24 between day and night — a stable-nocturnal-layer
+signature that a neutral log profile does not contain at all. Two controls say how much of
+that is even about height:
+
+```
+ftc01 2 m / fcl01 10 m, 4.8 km, Feb    2045     1.098  0.414  2.018             47 deg
+fcc01 10 m / fcl01 10 m, 5.0 km, Feb   2058     1.515  0.792  2.997             44 deg
+```
+
+**A 2 m mast reads *faster* than a 10 m one 4.8 km away, and two 10 m masts 5 km apart
+disagree by half.** Siting, irrigation and exposure are larger than the entire height
+correction being argued about, so **two nearby stations are not a vertical profile** and
+nothing above should be read as a measured z₀. What the 520 m pair does establish is that
+the ratio is real, seasonal and diurnal, which is worse news for a single fixed factor
+than having no measurement was.
+
+**Falsifiable by:** paired 2 m and 10 m observations on one mast — still the thing that
+would settle it, and now known not to exist in the free networks. Failing that, scoring
+the solved field directly against USCRN's 1.5 m and CoAgMet's 2 m masts skips the profile
+argument entirely: it grades the drawn layer against instruments standing in it, which is
+the first time that has been possible here.
 
 ## Step 3: a reference wind per cell, not per box
 
@@ -137,10 +182,16 @@ against anemometers it moves direction RMSE by 0.3°. A real canyon turns the fl
 harder than that and can reverse it; a weak-perturbation term cannot represent it by
 construction, and **no amount of tuning the coefficient turns it into one**.
 
-This is the step that would actually make the map worth zooming into, and it is blocked on
-step 2's survey rather than on modelling effort: there is nowhere in the current station
-set to test a channelling term, because the catalogue has almost no hollows in it. Fitting
-one on ridge stations would be curve-fitting with a physical-sounding name, which is the
+This is the step that would actually make the map worth zooming into, and the blocker on
+it has changed. It was "the catalogue has no hollows in it"; measurement 14 shows that was
+a statement about a 500 m disc, and at the 2 km scale a two-mile map is actually about,
+15 of the 87 Colorado RAWS readable at both radii are valleys, and the already-scored
+pairs restratify to ten valley stations instead of two. Pooled over those ten, HRRR needs slowing by about 20% more than
+over the exposed ones (t ≈ 2) — sheltering is visible for the first time. Per station the
+landform still predicts almost nothing of it (5.3% held out, 20 of 36), so a channelling
+term fitted today would be fitted to a group mean. CoAgMet adds 14 more valley-bottom
+sites at 2 m if the term needs testing near the ground rather than at 6.1 m. Fitting one
+on ridge stations would still be curve-fitting with a physical-sounding name, which is the
 failure mode measurements 6, 10 and 11 were each caught by.
 
 ## Step 5: the 0–3 m layer itself

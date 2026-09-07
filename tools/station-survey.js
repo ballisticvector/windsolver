@@ -16,6 +16,8 @@
  *   --radius     domain radius in miles around each station (default 0.5)
  *   --resolution target terrain resolution in metres (default 30)
  *   --position   radius of the landform index, in metres (default 500)
+ *   --threshold  how far the index must be from zero before a station is
+ *                called ridge or valley, in metres (default 15)
  *   --elevation  how far the published elevation may sit from the 3DEP ground
  *                under the coordinate before the station is called suspect,
  *                in metres (default 50)
@@ -48,6 +50,19 @@
  * against Synoptic's free window — so this prints the FEMS id a calibration
  * run needs beside the ground.
  *
+ * **A class is a statement about a radius, and `--position` is that radius.**
+ * Measurement 14 read the same Colorado RAWS twice. Over the 87 stations
+ * readable at both, a 500 m disc gives 33 flat, 33 ridge, 19 slope and **2
+ * valley**; a 2 km disc gives 15 flat, 51 ridge, 6 slope and **15 valley**, over
+ * an index that reaches -185.7 m where the smaller disc bottomed out at -30.8.
+ * Thirty-four of the 87 change class and fourteen change sign. Neither radius is
+ * wrong: 500 m describes the bank a mast stands on, 2 km describes the valley
+ * that bank is in. PICKLE GULCH sits 22.4 m above its own 500 m surroundings and
+ * 22.6 m below its 2 km ones, which is a knoll inside a gulch, and both numbers
+ * say so. **Compare a class only with one measured at the same radius, and say
+ * the radius whenever a count is quoted** — `positionRadiusM` and
+ * `positionThresholdM` ride on every station for that reason.
+ *
  * **`--spread` chooses the set, and choosing it is the experiment.** Taking the
  * first N of a listing takes N stations sorted by whatever the service sorts
  * by; taking N spaced evenly across the position index puts stations at both
@@ -70,7 +85,7 @@ const DEFAULT_POSITION_RADIUS_M = 500;
 const DEFAULT_ELEVATION_TOLERANCE_M = 50;
 const OPTIONS = [
   "source", "state", "network", "limit", "spread", "radius", "resolution",
-  "position", "elevation", "class", "out"
+  "position", "threshold", "elevation", "class", "out"
 ];
 
 function parseArgs(argv) {
@@ -147,6 +162,8 @@ function spread(stations, count) {
  */
 function landformAt(derived, station, opts) {
   const o = opts || {};
+  const positionThresholdM = o.positionThresholdM === undefined
+    ? verify.DEFAULT_POSITION_THRESHOLD_M : o.positionThresholdM;
   const position = derive.positionIndexAt(derived, station.lat, station.lon, {
     radiusM: o.positionRadiusM
   });
@@ -164,9 +181,10 @@ function landformAt(derived, station, opts) {
     positionIndexM: position ? round(position.tpiM, 1) : null,
     positionRadiusM: position ? position.radiusM : o.positionRadiusM,
     positionCoverage: position ? round(position.coverage, 3) : null,
+    positionThresholdM: positionThresholdM,
     demElevationM: demElevationM
   };
-  terrain.class = verify.classifyTerrain(terrain);
+  terrain.class = verify.classifyTerrain(terrain, { positionIndexM: positionThresholdM });
   return terrain;
 }
 
@@ -177,6 +195,8 @@ async function survey(opts) {
   const limit = o.limit === undefined ? DEFAULT_LIMIT : o.limit;
   const positionRadiusM = o.positionRadiusM === undefined
     ? DEFAULT_POSITION_RADIUS_M : o.positionRadiusM;
+  const positionThresholdM = o.positionThresholdM === undefined
+    ? verify.DEFAULT_POSITION_THRESHOLD_M : o.positionThresholdM;
   const elevationToleranceM = o.elevationToleranceM === undefined
     ? DEFAULT_ELEVATION_TOLERANCE_M : o.elevationToleranceM;
 
@@ -220,7 +240,10 @@ async function survey(opts) {
       continue;
     }
 
-    const terrain = landformAt(land.derived, station, { positionRadiusM: positionRadiusM });
+    const terrain = landformAt(land.derived, station, {
+      positionRadiusM: positionRadiusM,
+      positionThresholdM: positionThresholdM
+    });
     const disagreementM = station.elevationM === null || terrain.demElevationM === null ||
       Number.isNaN(terrain.demElevationM)
       ? null
@@ -244,6 +267,11 @@ async function survey(opts) {
       tpi: round(terrain.tpi, 2),
       positionIndexM: terrain.positionIndexM,
       positionCoverage: terrain.positionCoverage,
+      // The radius and the threshold travel with the class, because the class
+      // means nothing without them: the same Colorado catalogue is 3 valleys
+      // over a 500 m disc and 15 over a 2 km one.
+      positionRadiusM: terrain.positionRadiusM,
+      positionThresholdM: terrain.positionThresholdM,
       class: terrain.class,
       dataset: land.dataset
     });
@@ -265,6 +293,7 @@ async function survey(opts) {
       radiusMiles: o.radiusMiles,
       resolutionM: o.resolutionM,
       positionRadiusM: positionRadiusM,
+      positionThresholdM: positionThresholdM,
       elevationToleranceM: elevationToleranceM,
       limit: limit,
       spread: o.spread === undefined ? null : o.spread
@@ -284,7 +313,8 @@ function summarise(report, opts) {
   const lines = [];
   lines.push(
     report.listed + " stations listed, " + report.read + " read over " +
-    report.query.positionRadiusM + " m of ground" +
+    report.query.positionRadiusM + " m of ground, ridge and valley beyond " +
+    report.query.positionThresholdM + " m" +
     (report.failures.length ? ", " + report.failures.length + " unreadable" : ""));
   lines.push("");
   lines.push(Object.entries(report.byClass).map(function (e) {
@@ -353,6 +383,8 @@ async function main(argv) {
     resolutionM: args.resolution === undefined ? 30 : Number(args.resolution),
     positionRadiusM: args.position === undefined
       ? DEFAULT_POSITION_RADIUS_M : Number(args.position),
+    positionThresholdM: args.threshold === undefined
+      ? verify.DEFAULT_POSITION_THRESHOLD_M : Number(args.threshold),
     elevationToleranceM: args.elevation === undefined
       ? DEFAULT_ELEVATION_TOLERANCE_M : Number(args.elevation)
   });

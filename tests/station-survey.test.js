@@ -119,6 +119,37 @@ describe("surveying the ground before anything is scored", () => {
     expect(report.stations[0].positionIndexM).toBeLessThan(-15);
   });
 
+  test("the same ground is a different class at a different threshold, and says which", async () => {
+    // Measurement 14: over 93 Colorado RAWS the same catalogue reads 3 valleys
+    // at a 500 m radius and 15 at 2 km. A class is a statement about a scale,
+    // so the scale has to travel with it or two counts get compared that are
+    // not about the same thing.
+    const report = await survey.survey({
+      source: stubSource([stationAt("HILL")]),
+      service: stubService(function () { return RIDGE; }),
+      positionThresholdM: 500
+    });
+
+    expect(report.stations[0].positionIndexM).toBeGreaterThan(15);
+    expect(report.stations[0].class).toBe("flat");
+    expect(report.stations[0].positionThresholdM).toBe(500);
+    expect(report.query.positionThresholdM).toBe(500);
+    expect(survey.summarise(report)).toContain("beyond 500 m");
+  });
+
+  test("the threshold defaults to the one every earlier survey used", async () => {
+    const report = await survey.survey({
+      source: stubSource([stationAt("HILL")]),
+      service: stubService(function () { return RIDGE; })
+    });
+
+    expect(report.query.positionThresholdM).toBe(15);
+    expect(report.query.positionRadiusM).toBe(500);
+    expect(report.stations[0].positionRadiusM).toBe(500);
+    expect(report.stations[0].class).toBe("ridge");
+    expect(survey.parseArgs(["--threshold", "2000"]).threshold).toBe("2000");
+  });
+
   test("a published elevation the ground disagrees with is flagged, not counted", async () => {
     const report = await survey.survey({
       // 2600 m of ground under a station that says it is at 4000 m: one of the

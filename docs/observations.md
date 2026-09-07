@@ -17,6 +17,7 @@ from one anonymous GET.
 - [The candidates, measured](#the-candidates-measured)
 - [FEMS: the RAWS system of record](#fems-the-raws-system-of-record)
 - [MADIS: everything NOAA ingests, with QC attached](#madis-everything-noaa-ingests-with-qc-attached)
+- [Which networks measure below 3 m, and where they stand](#which-networks-measure-below-3-m-and-where-they-stand)
 - [The three providers disagree about when the wind was measured](#the-three-providers-disagree-about-when-the-wind-was-measured)
 - [What the instrument did before anyone scored it](#what-the-instrument-did-before-anyone-scored-it)
 - [A one-minute record, and what the pairing window costs](#a-one-minute-record-and-what-the-pairing-window-costs)
@@ -133,6 +134,89 @@ behind the live directory (`archive/2026/09/04/` held only `0000` while
 `data/LDAD/mesonet/netCDF/` held the recent hours). For 24 hours of one day that is
 about 840 MB of download to extract a few thousand rows. Fine occasionally, wrong as the
 default puller.
+
+## Which networks measure below 3 m, and where they stand
+
+`docs/near-ground-wind.md` step 2 asked for this: nothing scored in this project is
+below 6.1 m, so a 0–3 m product cannot be graded at all, and the lead was that
+agricultural mesonets measure at 2 m and some carry 2 m *and* 10 m on one mast. This is
+the catalogue read. **One of the two halves is there and the other is not.**
+
+### MADIS does not carry the height
+
+The generic `LDAD/mesonet` file has a `windSpeed10` variable beside `windSpeed`, which
+reads like the paired-height field the search was for. In the hour sampled
+(`20260907_1600`, 204,226 records over 221 variables) **`windSpeed10` is empty for every
+record of every provider**, and no variable in the file states a sensor height at all. So
+MADIS is the right index of *which networks exist* — CoAgMet, NC-ECONet, MOComAgNet, HADS,
+CA-Hydro, NRCS and the rest are all in the provider list — and it is not a source of
+measurement height. **The height has to come from the provider, one provider at a time**,
+and a field named `windSpeed10` is not evidence that anything was measured at 10 m.
+
+### CoAgMet: 95 stations at 2–3 m, with the height published per station
+
+`coagmet.colostate.edu/data/metadata.json`, no account, and `anemometerHeight` **in feet**
+against elevations in feet — converting is the whole trap. 129 stations, 101 active, and
+of the 100 whose 3DEP ground agrees with their published elevation:
+
+```
+2.01 m    72        5-minute timestep     99 of 100
+2.99 m    22        published height      97
+2.19 m     1        at or below 3 m       95
+10.00 m    2
+none       3
+```
+
+Landform under all of them, through the same `tools/station-survey.js` path (`--radius
+2.5 --position 2000`): **79 flat, 14 valley, 5 ridge, 2 slope**, index −82.4 to +29.5 m.
+All 14 valley stations are at or below 3 m — Gunnison, Carbondale, Eagle, Pagosa Springs,
+Kremmling, Meeker, Ridgway, Granby, Cortez, Hayden, Cañon City, Gypsum, Durango, Clark.
+Over a 500 m disc the same catalogue is 95 flat of 98, index −14.2 to +18.1 m, and **not
+one valley** — which is measurement 14's point again: a farm on the floor of the Gunnison
+valley is flat ground inside a hollow, and both readings are true.
+
+That is a real answer to half the problem — **sub-3 m wind in western-slope valley
+bottoms, 5-minute, free, with per-station heights** — and a partial one to the other half:
+these are irrigated farm sites, which is a land cover, an exposure and a diurnal regime of
+its own, and one state.
+
+### USCRN measures at 1.5 m, nationally, and says so in the specification
+
+`WIND_1_5` in the sub-hourly product is a 5-minute mean at **1.5 m**, documented rather
+than inferred, over 158 operational US stations, 116 of them in CONUS. It is the only
+source found anywhere in this survey that measures *inside* the layer the product is
+about rather than above it.
+
+3DEP under all 116 (`--radius 2.5`, the same `station-survey.js` path): 113 readable, 3
+`outside-tile`, and of the 103 whose published elevation agrees with the DEM to 50 m —
+
+```
+              500 m disc    2 km disc
+flat                  84           72
+valley                 3           16
+slope                 13           10
+ridge                  3            5
+index range  -32.7..+22.4  -158.5..+39.6
+```
+
+Sixteen valley-bottom stations at 1.5 m, including John Day OR at −158.5 m, Lander WY,
+Darrington WA and Moose WY. The trap in the catalogue: **`ELEVATION` in
+`crn_stations.tsv` is feet**, unlabelled, beside latitudes and longitudes in degrees —
+read as metres it puts every station 3.3x too high and every elevation cross-check fails.
+
+It is sparse — 4 in Colorado, 2 in New Mexico, about 33 across the eleven western states —
+so it is a **validation set and could never be an input field**. That is the right shape
+for the question here: it is the only way to score a drawn near-ground wind against an
+instrument standing in it.
+
+### Nothing found measures two heights on one mast
+
+Neither CoAgMet nor USCRN nor any provider reachable through MADIS publishes a second
+anemometer on the same tower. CoAgMet's two 10 m sites are separate stations. So the
+measured profile ratio step 2 asked for **does not exist in these networks**, and the
+nearest thing to it is two stations at different heights close together, which is a
+different measurement — see `docs/near-ground-wind.md`, where the controls say how
+different.
 
 ## The three providers disagree about when the wind was measured
 
@@ -386,6 +470,10 @@ feed, and Synoptic cannot reach the years FEMS is here for.
    suspicious series, and for reaching networks FEMS does not carry.
 3. **Keep the free Synoptic token** for live and recent-past work, which is what it is
    good at and where its account limit does not bite.
+4. **USCRN and CoAgMet for the near-ground layer, when there is one to score** — 1.5 m and
+   2 m respectively, 5-minute, no account, and the only instruments found that stand
+   inside the 0–3 m layer `docs/near-ground-wind.md` is about. Neither has an adapter and
+   neither should get one before there is a field worth grading against it.
 
 If a commercial source is wanted later, the question to ask a vendor is not coverage or
 price but **"is this an anemometer or a reanalysis, and what timestamp convention is on
@@ -424,6 +512,17 @@ pricing page.
   study means widening the map first.
 - **How far behind the MADIS archive tree actually runs**, and whether the live directory
   is a fixed rolling window.
+- **Whether `windSpeed10` is ever populated.** It is empty for every provider in the one
+  hour opened, and one hour is not the archive. Nothing was found in the file's variable
+  attributes that states a sensor height either, so the conclusion "MADIS does not carry
+  the height" rests on a single 383 MB sample.
+- **CoAgMet and USCRN QC semantics, terms of use and rate limits.** Neither was read
+  beyond the sensor height and the timestep; no adapter exists for either, and no run in
+  `docs/downscaling.md` has been scored against a mast below 6.1 m.
+- **What a CoAgMet 2 m mast on irrigated ground represents.** The metadata carries an
+  `irrigation` field with `full`, `part` and `dry` in it, which is a statement about the
+  surface and the stability directly under the anemometer. Nothing here has used it, and
+  the 520 m Fort Collins pair straddles it — `ftc01` is `part`, `fcc01` is `dry`.
 - **IEM's mesonet holdings.** Its network list has no RAWS entry, but 600 networks were
   not enumerated one by one, and the single data call made returned a capacity error.
 - No run in `docs/downscaling.md` has yet been re-scored over a window Synoptic could not
