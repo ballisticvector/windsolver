@@ -84,6 +84,13 @@ function fail(code, message, detail) {
 
 function toRad(deg) { return (deg * Math.PI) / 180; }
 function toDeg(rad) { return (rad * 180) / Math.PI; }
+/** A difference of bearings, folded into -180..180. */
+function wrapDeg(deg) {
+  let d = deg % 360;
+  if (d > 180) d -= 360;
+  if (d < -180) d += 360;
+  return d;
+}
 
 function filled(n) { return new Float32Array(n).fill(NaN); }
 
@@ -298,6 +305,37 @@ function bracketSectors(sectors, fromAzimuthDeg) {
   return { lower: sectors[lower], upper: sectors[upper], t: span === 0 ? 0 : along / span };
 }
 
+/**
+ * A reference given per cell rather than once for the domain, or null.
+ *
+ * Two east/north arrays on the weights' own lattice, so cell `i` of the
+ * reference is cell `i` of the field and no interpolation happens here. Whoever
+ * builds it decides what the model says where; this module only refuses a grid
+ * that is not the same shape as the ground it would be applied to, because a
+ * reference off by one row is a wind field that looks entirely reasonable.
+ */
+function readReferenceGrid(wind, weights) {
+  if (!wind || typeof wind.east === "number" || typeof wind.speedMps === "number") return null;
+  const hasEast = wind.east && typeof wind.east.length === "number";
+  const hasNorth = wind.north && typeof wind.north.length === "number";
+  if (!hasEast && !hasNorth) return null;
+  if (!hasEast || !hasNorth) {
+    throw fail("bad-reference-grid", "a per-cell reference needs east and north together");
+  }
+  if (wind.width !== weights.width || wind.height !== weights.height) {
+    throw fail(
+      "bad-reference-grid",
+      "the reference grid and the terrain must be on the same grid: reference " +
+      wind.width + "x" + wind.height + ", terrain " + weights.width + "x" + weights.height
+    );
+  }
+  const n = weights.width * weights.height;
+  if (wind.east.length !== n || wind.north.length !== n) {
+    throw fail("bad-reference-grid", "the reference components must be width x height long");
+  }
+  return wind;
+}
+
 /** East/north in m/s and the meteorological "from" bearing, from either. */
 function readWind(wind) {
   if (!wind) throw fail("no-wind", "a reference wind is required");
@@ -343,12 +381,17 @@ function heightFactor(fromHeightM, toHeightM, roughnessM) {
  * One coarse wind, over a domain of ground, at every cell.
  *
  * `wind` is the model's answer for the domain — `{speedMps, fromDeg}` or
- * `{east, north}` in m/s — and it is treated as uniform. Over a 2 mile box that
- * is what HRRR has to say anyway: a domain that size is one grid cell of the
- * model, and pretending otherwise would be interpolating detail the model does
- * not carry. A domain big enough for the coarse field to vary across should be
- * downscaled in pieces, or this should grow a per-cell reference; it has not,
- * because nothing needs it yet.
+ * `{east, north}` in m/s — and it is then treated as uniform. Over a 2 mile box
+ * that is most of what HRRR has to say: a domain that size is about one grid
+ * cell of the model.
+ *
+ * It may instead be a **per-cell reference**, `{width, height, east, north}` on
+ * the weights' own lattice, which is what a domain spanning several model cells
+ * needs. The two sources of structure stay separate either way: `factor` and
+ * `divertDeg` are what the *ground* did, and they are a function of the ground
+ * and the local bearing alone, so the same terrain under a varying model wind
+ * returns the same weighting. A map that varies because HRRR varies is not
+ * evidence that the downscaling did anything.
  *
  * Each cell gets the model wind multiplied by
  *
@@ -369,7 +412,8 @@ function heightFactor(fromHeightM, toHeightM, roughnessM) {
 function downscale(weights, wind, opts) {
   const o = opts || {};
   if (!weights || !weights.omegaC) throw fail("bad-weights", "a terrainWeights result is required");
-  const ref = readWind(wind);
+  const refGrid = readReferenceGrid(wind, weights);
+  const ref = refGrid ? null : readWind(wind);
   const gains = Object.assign({}, DEFAULT_WEIGHTS, o.weights);
   // Resolved once, and reported, so that a field always says what it did to
   // each half of the ground rather than leaving it to be inferred from the
@@ -390,19 +434,46 @@ function downscale(weights, wind, opts) {
   const factor = filled(n);
   const divertDeg = filled(n);
 
-  const bracket = useShelter ? bracketSectors(weights.shelter.sectors, ref.fromDeg) : null;
-  const thetaRad = toRad(ref.fromDeg);
+  // Bracketed once for a uniform reference, and per cell for a grid: Sx is a
+  // function of the direction the wind arrives from, so a cell whose model wind
+  // has veered has to read the sectors either side of *its* bearing.
+  const uniformBracket = useShelter && !refGrid
+    ? bracketSectors(weights.shelter.sectors, ref.fromDeg)
+    : null;
+  const uniformTheta = refGrid ? NaN : toRad(ref.fromDeg);
   const maxSlope = weights.slopeScaleRad === undefined ? weights.maxSlopeRad : weights.slopeScaleRad;
 
   let defined = 0;
   let sumFactor = 0;
   let minFactor = Infinity;
   let maxFactor = -Infinity;
+  let sumEast = 0;
+  let sumNorth = 0;
+  let minRefSpeed = Infinity;
+  let maxRefSpeed = -Infinity;
+  let minRefTurn = Infinity;
+  let maxRefTurn = -Infinity;
+  let datumDeg = NaN;
 
   for (let i = 0; i < n; i++) {
     const slopeRad = toRad(weights.slopeDeg[i]);
     const oc = weights.omegaC[i];
     if (Number.isNaN(slopeRad) || Number.isNaN(oc)) continue;
+
+    let refSpeed;
+    let thetaRad;
+    let bracket = uniformBracket;
+    if (refGrid) {
+      const re = refGrid.east[i];
+      const rn = refGrid.north[i];
+      if (Number.isNaN(re) || Number.isNaN(rn)) continue;
+      refSpeed = Math.hypot(re, rn);
+      thetaRad = Math.atan2(-re, -rn);
+      if (useShelter) bracket = bracketSectors(weights.shelter.sectors, toDeg(thetaRad));
+    } else {
+      refSpeed = ref.speedMps;
+      thetaRad = uniformTheta;
+    }
 
     // Slope in the direction of the wind, scaled the same way as the curvature.
     // `aspectDeg` is the downhill bearing, so the cosine is +1 where the ground
@@ -433,7 +504,7 @@ function downscale(weights, wind, opts) {
       ? 0
       : -0.5 * os * Math.sin(2 * (aspectRad - thetaRad));
     const from = thetaRad + divert;
-    const s = bounded * ref.speedMps;
+    const s = bounded * refSpeed;
 
     factor[i] = bounded;
     divertDeg[i] = toDeg(divert);
@@ -448,7 +519,26 @@ function downscale(weights, wind, opts) {
     sumFactor += bounded;
     if (bounded < minFactor) minFactor = bounded;
     if (bounded > maxFactor) maxFactor = bounded;
+    if (refGrid) {
+      sumEast += refGrid.east[i];
+      sumNorth += refGrid.north[i];
+      if (refSpeed < minRefSpeed) minRefSpeed = refSpeed;
+      if (refSpeed > maxRefSpeed) maxRefSpeed = refSpeed;
+      // Turning measured against the first cell the model filled rather than
+      // against north, so a domain either side of 360 does not report a 359
+      // degree spread. Not cell 0: that one is in the margin the curvature
+      // length costs and on a real domain it is usually a hole, which would
+      // make every difference NaN and the span -Infinity.
+      if (Number.isNaN(datumDeg)) datumDeg = toDeg(thetaRad);
+      const turn = wrapDeg(toDeg(thetaRad) - datumDeg);
+      if (turn < minRefTurn) minRefTurn = turn;
+      if (turn > maxRefTurn) maxRefTurn = turn;
+    }
   }
+
+  const mean = refGrid && defined
+    ? readWind({ east: sumEast / defined, north: sumNorth / defined })
+    : ref;
 
   return {
     schemaVersion: 1,
@@ -459,7 +549,23 @@ function downscale(weights, wind, opts) {
     bounds: weights.bounds,
     resolutionM: weights.resolutionM,
     heightAglM: o.heightAglM === undefined ? (wind && wind.heightAglM) || null : o.heightAglM,
-    reference: { speedMps: ref.speedMps, fromDeg: ref.fromDeg, east: ref.east, north: ref.north },
+    reference: {
+      speedMps: mean ? mean.speedMps : NaN,
+      fromDeg: mean ? mean.fromDeg : NaN,
+      east: mean ? mean.east : NaN,
+      north: mean ? mean.north : NaN,
+      // Whether the model varied across the domain, and by how much — the
+      // number that says how much of a map's structure is HRRR's rather than
+      // the ground's. `speedMps` above is the vector mean over the cells used,
+      // which is what the single-vector path reported and what a consumer
+      // wanting "the model wind here" still means.
+      perCell: Boolean(refGrid),
+      spread: refGrid && defined ? {
+        speedMinMps: minRefSpeed,
+        speedMaxMps: maxRefSpeed,
+        fromDegSpanDeg: maxRefTurn - minRefTurn
+      } : null
+    },
     method: {
       name: "micromet",
       weights: gains,

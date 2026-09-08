@@ -10,7 +10,10 @@
  *
  *   node tools/field-live.js --lat 40.0150 --lon -105.2705 --radius 1
  *
- * Options: --resolution (metres, default 10), --shelter, --level, --json.
+ * Options: --resolution (metres, default 10), --shelter, --level, --json,
+ * --per-cell (take the reference from the model at every cell rather than once
+ * at the centre; off in production, and this is the tool that measures what it
+ * changes).
  */
 
 "use strict";
@@ -65,6 +68,46 @@ function insideDomain(f) {
   return total ? missing / total : NaN;
 }
 
+/**
+ * How spread out the drawn arrows are, in degrees, about the mean direction.
+ *
+ * Bearings, so the spread is taken about the circular mean rather than the
+ * arithmetic one — a field straddling north is not a field blowing east. The
+ * percentiles are the answer to "do these arrows look the same": the eye reads
+ * a few degrees as identical, so a 5th-to-95th span is the honest measure of
+ * visible variation.
+ */
+function directionSpread(f) {
+  let sumE = 0;
+  let sumN = 0;
+  let n = 0;
+  for (let i = 0; i < f.fromDeg.length; i++) {
+    if (Number.isNaN(f.fromDeg[i])) continue;
+    sumE += Math.sin((f.fromDeg[i] * Math.PI) / 180);
+    sumN += Math.cos((f.fromDeg[i] * Math.PI) / 180);
+    n++;
+  }
+  if (!n) return null;
+  const mean = (Math.atan2(sumE, sumN) * 180 / Math.PI + 360) % 360;
+  const offsets = [];
+  for (let i = 0; i < f.fromDeg.length; i++) {
+    if (Number.isNaN(f.fromDeg[i])) continue;
+    let d = (f.fromDeg[i] - mean) % 360;
+    if (d > 180) d -= 360;
+    if (d < -180) d += 360;
+    offsets.push(d);
+  }
+  offsets.sort(function (a, b) { return a - b; });
+  const at = function (q) { return offsets[Math.min(offsets.length - 1, Math.floor(q * offsets.length))]; };
+  return {
+    meanFromDeg: mean,
+    p5: at(0.05),
+    p95: at(0.95),
+    spanDeg: at(0.95) - at(0.05),
+    fullSpanDeg: offsets[offsets.length - 1] - offsets[0]
+  };
+}
+
 function stats(values) {
   let min = Infinity;
   let max = -Infinity;
@@ -94,7 +137,8 @@ async function main() {
     radiusMiles: radiusMiles,
     targetResolutionM: targetResolutionM,
     level: args.level || field.DEFAULT_LEVEL,
-    shelter: args.shelter ? true : undefined
+    shelter: args.shelter ? true : undefined,
+    perCell: args["per-cell"] ? true : undefined
   };
 
   const started = Date.now();
@@ -120,8 +164,11 @@ async function main() {
       speedMps: Math.hypot(cold.reference.east, cold.reference.north),
       fromDeg: bearingFrom(cold.reference.east, cold.reference.north),
       heightAglM: cold.reference.heightAglM,
-      cellsAcross: cold.reference.cellsAcross
+      cellsAcross: cold.reference.cellsAcross,
+      perCell: cold.reference.perCell,
+      spread: cold.reference.spread
     },
+    direction: directionSpread(cold),
     terrain: cold.terrain,
     grid: { width: cold.width, height: cold.height, spacingM: cold.terrain.spacingM },
     elevationM: elevation,
@@ -163,6 +210,17 @@ async function main() {
     mph(speed.mean) + "; factor " + factor.min.toFixed(3) + " to " + factor.max.toFixed(3));
   console.log("at the centre  " + mph(centre.speedMps) + " mph from " + centre.fromDeg.toFixed(0) +
     "°, model says " + mph(report.reference.speedMps) + " mph");
+  if (report.direction) {
+    console.log("arrows         mean " + report.direction.meanFromDeg.toFixed(1) + "°, 90% within " +
+      report.direction.p5.toFixed(1) + "° to +" + report.direction.p95.toFixed(1) +
+      "° of it (span " + report.direction.spanDeg.toFixed(1) + "°, all " +
+      report.direction.fullSpanDeg.toFixed(1) + "°)");
+  }
+  if (cold.reference.spread) {
+    console.log("model per cell " + mph(cold.reference.spread.speedMinMps) + " to " +
+      mph(cold.reference.spread.speedMaxMps) + " mph, bearings spanning " +
+      cold.reference.spread.fromDegSpanDeg.toFixed(1) + "° — the model's own variation, not the ground's");
+  }
   console.log("undefined      " + (cold.stats.undefinedFraction * 100).toFixed(1) + "% of the read grid, " +
     (inside * 100).toFixed(1) + "% inside the box that was asked for");
   console.log("timing         " + coldMs + " ms cold, " + warmMs + " ms warm");

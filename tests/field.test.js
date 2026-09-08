@@ -251,6 +251,96 @@ describe("referenceWind", () => {
   });
 });
 
+describe("referenceGrid", () => {
+  // Ten kilometres of ground at 100 m, which is three and a bit HRRR cells
+  // across the fixture — a domain where the model genuinely has a gradient to
+  // give, rather than the two-mile box where it has one number.
+  const wide = gridAt(CENTRE, 100, 100, 100, function () { return 1800; });
+  const weights = downscale.terrainWeights(derive.derive(wide, { curvatureLengthM: 500 }),
+    { curvatureLengthM: 500 });
+
+  test("every cell is the model's own wind where that cell stands", () => {
+    // Graded against sampling the volume at every pixel directly, which is the
+    // thing the lattice is an optimisation of. The fixture's components are
+    // grid-relative, so this also grades the earth-relative rotation: a
+    // reference built without it would be out by the grid convergence and
+    // every value would still look like a wind.
+    expect(volume.grid.windComponentsRelativeToGrid).toBe(true);
+    const ref = field.referenceGrid(volume, weights);
+    let worst = 0;
+    for (let row = 0; row < weights.height; row += 7) {
+      for (let col = 0; col < weights.width; col += 7) {
+        const at = proj.toGeographic(
+          weights.crs,
+          weights.transform.originX + (col + 0.5) * weights.transform.scaleX,
+          weights.transform.originY + (row + 0.5) * weights.transform.scaleY
+        );
+        const direct = volumeModule.sampleWind(volume, at.lat, at.lon, "heightAboveGround:10");
+        const i = row * weights.width + col;
+        worst = Math.max(worst, Math.hypot(ref.east[i] - direct.east, ref.north[i] - direct.north));
+      }
+    }
+    expect(worst).toBeLessThan(0.01);
+  });
+
+  test("a coarser lattice is measurably worse, which is why the default is not coarser", () => {
+    // The constant is a claim about an approximation's cost, so the cost is
+    // measured. Eight samples per HRRR cell is out by ~0.09 m/s, larger than
+    // the spread of every terrain candidate ever ablated.
+    const coarse = field.referenceGrid(volume, weights, { referenceSampleM: 3000 / 8 });
+    const fine = field.referenceGrid(volume, weights);
+    let worst = 0;
+    for (let i = 0; i < fine.east.length; i++) {
+      worst = Math.max(worst, Math.hypot(coarse.east[i] - fine.east[i], coarse.north[i] - fine.north[i]));
+    }
+    expect(worst).toBeGreaterThan(0.05);
+  });
+
+  test("and the model really does vary over that domain, or the grading is of nothing", () => {
+    const ref = field.referenceGrid(volume, weights);
+    let min = Infinity;
+    let max = -Infinity;
+    for (let i = 0; i < ref.east.length; i++) {
+      const s = Math.hypot(ref.east[i], ref.north[i]);
+      if (s < min) min = s;
+      if (s > max) max = s;
+    }
+    expect(max - min).toBeGreaterThan(1);
+    expect(ref.cellsAcross).toBeGreaterThan(3);
+    expect(ref.heightAglM).toBe(10);
+    expect(ref.validTime).toBe(volume.validTime);
+  });
+
+  test("takes the level it is given, and refuses a sample spacing that is not one", () => {
+    const ten = field.referenceGrid(volume, weights);
+    const eighty = field.referenceGrid(volume, weights, { level: "heightAboveGround:80" });
+    expect(eighty.heightAglM).toBe(80);
+    expect(eighty.east[0]).not.toBeCloseTo(ten.east[0], 6);
+    expect(() => field.referenceGrid(volume, weights, { referenceSampleM: 0 }))
+      .toThrow(/must be positive/);
+  });
+
+  test("ground the model does not cover is a hole, not a failed solve", () => {
+    // The terrain grid is read wider than the box, and the model's subset is a
+    // rectangle in Lambert space, so a corner of a padded grid can fall off the
+    // end of a volume that covers the box itself. A live two-mile solve over
+    // Big Thompson did exactly that. The corner is outside what the caller
+    // asked for, so it is undefined rather than fatal.
+    const far = gridAt(
+      { lat: CENTRE.lat + 0.6, lon: CENTRE.lon },
+      100, 100, 100, function () { return 1800; }
+    );
+    const outsideWeights = downscale.terrainWeights(
+      derive.derive(far, { curvatureLengthM: 500 }), { curvatureLengthM: 500 });
+    const ref = field.referenceGrid(volume, outsideWeights);
+    expect(ref.samples.outsideVolume).toBeGreaterThan(0);
+    expect(Number.isNaN(ref.east[0])).toBe(true);
+    // And a grid the volume does cover reports no holes at all, so the count
+    // is a measurement rather than something that is always true.
+    expect(field.referenceGrid(volume, weights).samples.outsideVolume).toBe(0);
+  });
+});
+
 describe("modelElevation", () => {
   const box = boxAround(CENTRE, 0.01);
 
@@ -385,6 +475,91 @@ describe("assemble", () => {
       field.referenceWind(volume, spec.box)
     );
     expect(Array.from(built.east.slice(0, 200))).toEqual(Array.from(byHand.east.slice(0, 200)));
+  });
+});
+
+describe("assemble with a reference per cell", () => {
+  // A domain wide enough for the model to have something to say across it: at
+  // the two-mile box `perCell` changes almost nothing, which is itself the
+  // honest reason it is not the default there.
+  const spec = { box: boxAround(CENTRE, 0.03), curvatureLengthM: 500 };
+  const grid = hill(140, 140, 100);
+  const uniform = field.assemble({ spec: spec, grids: [grid], volume: volume });
+  const perCell = field.assemble({
+    spec: Object.assign({ perCell: true }, spec),
+    grids: [grid],
+    volume: volume
+  });
+
+  test("is off unless it is asked for, so today's answer is unchanged", () => {
+    expect(uniform.reference.perCell).toBe(false);
+    expect(uniform.reference.spread).toBeNull();
+    const direct = volumeModule.sampleWind(volume, CENTRE.lat, CENTRE.lon, "heightAboveGround:10");
+    expect(uniform.reference.east).toBeCloseTo(direct.east, 9);
+  });
+
+  test("carries the model's own gradient into the drawn field", () => {
+    expect(perCell.reference.perCell).toBe(true);
+    expect(perCell.reference.spread.speedMaxMps - perCell.reference.spread.speedMinMps)
+      .toBeGreaterThan(1);
+    expect(perCell.reference.spread.fromDegSpanDeg).toBeGreaterThan(20);
+
+    const spanOf = function (f) {
+      let min = Infinity;
+      let max = -Infinity;
+      for (let i = 0; i < f.speedMps.length; i++) {
+        if (Number.isNaN(f.speedMps[i])) continue;
+        if (f.speedMps[i] < min) min = f.speedMps[i];
+        if (f.speedMps[i] > max) max = f.speedMps[i];
+      }
+      return max - min;
+    };
+    expect(spanOf(perCell)).toBeGreaterThan(spanOf(uniform));
+  });
+
+  test("the terrain response is untouched: each cell is that cell's wind over this ground", () => {
+    // The separation, stated as the invariant it actually is. A terrain factor
+    // is a function of the ground *and* the bearing striking it — shelter and
+    // the aspect term both are — so per-cell factors are not expected to equal
+    // the uniform run's. What must hold is that no new terrain physics appears:
+    // a cell of the per-cell field is exactly the cell you get by putting that
+    // cell's model wind over the whole domain and reading it there.
+    const ref = field.referenceGrid(volume, perCell.weights, spec);
+    const probes = [];
+    for (let i = 0; i < perCell.factor.length; i += 3137) {
+      if (!Number.isNaN(perCell.factor[i])) probes.push(i);
+    }
+    expect(probes.length).toBeGreaterThan(3);
+    for (const i of probes) {
+      const asIfUniform = downscale.downscale(perCell.weights, {
+        east: ref.east[i],
+        north: ref.north[i]
+      });
+      expect(asIfUniform.factor[i]).toBeCloseTo(perCell.factor[i], 6);
+      expect(asIfUniform.divertDeg[i]).toBeCloseTo(perCell.divertDeg[i], 6);
+      expect(asIfUniform.speedMps[i]).toBeCloseTo(perCell.speedMps[i], 6);
+      expect(asIfUniform.fromDeg[i]).toBeCloseTo(perCell.fromDeg[i], 6);
+    }
+  });
+
+  test("each cell is that cell's model speed times that cell's terrain factor", () => {
+    const ref = field.referenceGrid(volume, perCell.weights, spec);
+    let worst = 0;
+    for (let i = 0; i < perCell.speedMps.length; i++) {
+      if (Number.isNaN(perCell.factor[i])) continue;
+      const want = perCell.factor[i] * Math.hypot(ref.east[i], ref.north[i]);
+      worst = Math.max(worst, Math.abs(perCell.speedMps[i] - want) / Math.max(want, 1e-6));
+    }
+    expect(worst).toBeLessThan(1e-6);
+  });
+
+  test("reports the provenance a single reference reports, and the sampling", () => {
+    expect(perCell.reference.validTime).toBe(volume.validTime);
+    expect(perCell.reference.heightAglM).toBe(10);
+    expect(perCell.reference.level).toBe("heightAboveGround:10");
+    expect(perCell.reference.sampledEveryM).toBeCloseTo(3000 / 32, 6);
+    expect(perCell.reference.speedMps).toBeGreaterThan(0);
+    expect(perCell.reference.fromDeg).toBeGreaterThanOrEqual(0);
   });
 });
 
@@ -536,6 +711,21 @@ describe("createFieldService", () => {
     const widthM = (asked.east - asked.west) * geo.metersPerDegLon(CENTRE.lat);
     expect(asked.north).toBeGreaterThan(got.domain.north);
     expect(widthM).toBeGreaterThan(2 * 3000);
+  });
+
+  test("a per-cell solve asks for the model over the padded grid, not just the box", async () => {
+    // The centre reference needs one point inside the box; a per-cell one needs
+    // the model everywhere the terrain grid reaches, and the grid is read wider
+    // than the box for the derivatives. Asking for the box alone leaves that
+    // margin as holes on a live solve.
+    const { service, calls } = fakes();
+    const spec = { lat: CENTRE.lat, lon: CENTRE.lon, radiusMiles: 0.1, curvatureLengthM: 200 };
+    await service.get(spec);
+    const centreBox = calls.lastAir.box;
+    await service.get(Object.assign({}, spec, { perCell: true }));
+    const perCellBox = calls.lastAir.box;
+    expect(perCellBox.north).toBeGreaterThan(centreBox.north);
+    expect(perCellBox.west).toBeLessThan(centreBox.west);
   });
 
   test("asks the model for its own surface height, so the offset can be reported", async () => {

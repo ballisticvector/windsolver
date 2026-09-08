@@ -194,6 +194,21 @@ on the map. It cannot fix the physics and it is not a substitute for step 4 — 
 the renderer being blamed for something upstream of it, and it is the one item in this
 note that could be done now without new observations.
 
+**Done, and off by default — measurement 17.** `field.js` will sample the model per
+terrain cell (`perCell`) instead of once at the centre, and the 90% arrow band over the
+same four domains widens from 1.2–11.8° to 19.2–43.6°. Three things to carry forward:
+
+- **The new spread is the model's, not the ground's.** The terrain factor for a cell is
+  unchanged when that cell's reference wind is, by construction and by test. Nothing about
+  step 4 has moved.
+- **Displaced model readings score worse, on both networks.** Reading HRRR half a mile,
+  one mile and two miles from a mast degrades speed and direction monotonically against
+  CoAgMet and against FEMS — while still beating the noise null, so the gradient is real
+  information about somewhere else. That is why the default stays at the centre sample.
+- **It is loudest where the model is weakest.** The largest per-cell direction spread of
+  the four, 84.8° at Boulder, sits on a 3.3 mph wind — the light-wind regime where
+  measurement 16 puts the model's own direction RMSE at 53–62°.
+
 ## Step 4: channelling, which is not a perturbation
 
 The diverting term is MicroMet's `-0.5·Ωs·sin(2(aspect − wind))`. It caps at 14.3° at the

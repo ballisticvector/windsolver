@@ -1434,6 +1434,91 @@ Artefacts: the registration, its digest and the analysis script were run outside
 repository against `verify.js`, `coagmet.js` and `tools/score-wind.js`; the station survey
 is reproducible with `--source coagmet --state CO --position 2000`.
 
+## Measurement 17: a reference wind per cell, and whether the model's own gradient is real
+
+Every field solved before this one asked HRRR for **one wind at the centre of the box** and
+handed that single vector to all 220,000 cells. So every difference between two arrows on
+the map was a terrain term, and the terrain terms are small by construction: the diverting
+angle caps at 14.3° and measurement 4 scored it at 0.3° of direction RMSE. That is why the
+arrows over 900 m of the Black Canyon sit inside an 8° band — an accurate drawing of a
+field that barely varies, not a renderer fault.
+
+`field.js` can now sample the model **per terrain cell** instead (`perCell`, off by
+default), on a lattice at 32 samples per HRRR cell, interpolated onto the terrain grid,
+earth-relative through `grib2.toEarthRelativeWind` like every other read. The downscaler
+takes a paired `east`/`north` grid as its reference and derives each cell's speed, bearing
+and shelter sector locally, so the atmospheric field and the terrain perturbation stay
+separable: the terrain factor for a cell is unchanged if that cell's reference wind is.
+
+### What it changes on the map
+
+Four domains, one mile of radius, 8 m ground, same hour and same terrain in both rows.
+
+```
+                relief   scalar: 90% of arrows   per-cell: 90% of arrows   the model's own
+                                                                           spread per cell
+Boulder          253 m      1.2° span             43.6°                   1.07-5.53 mph, 84.8°
+Black Canyon     862 m     11.8°                  19.3°                   6.96-8.84 mph, 25.5°
+Big Thompson     688 m      9.2°                  19.2°                   4.36-7.24 mph, 27.0°
+Raton            379 m      5.4°                  33.0°                   4.86-8.80 mph, 50.1°
+```
+
+**The variation is real HRRR structure, and that is exactly why it should not be read as
+terrain.** The right-hand column is the model's own field before the ground touches it, and
+the tool labels it that way on every run. Note where it is largest: Boulder, on a **3.3 mph**
+reference wind, spans 84.8° of bearing — a light-wind domain where a small vector gradient
+is a large angular one, and where measurement 16 put the model's direction RMSE at 53–62°.
+The map gets its most dramatic arrows precisely where the model knows least.
+
+### Whether the gradient improves anything, scored against anemometers
+
+`tools/model-gradient.js` asks the only question available without a second model: read
+HRRR **at** a station, then read it 0.5, 1 and 2 miles away in eight bearings, and score
+both against the same observation. If the model's spatial structure is information, the
+displaced readings should degrade *more slowly* than the model's own disagreement with
+itself implies; if it is smooth interpolation, they should degrade like noise.
+
+```
+                        CoAgMet, 32 stations, 3,062 pairs   FEMS RAWS, 30 stations, 2,876 pairs
+where the model is read  speed RMSE  debiased  direction     speed RMSE  debiased  direction
+at the station              1.571     1.539     60.3 deg        2.453     1.541     56.6 deg
+0.5 miles away              1.575     1.541     60.5            2.455     1.543     56.7
+1 mile away                 1.585     1.549     61.0            2.467     1.550     57.1
+2 miles away                1.613     1.568     62.4            2.492     1.571     58.2
+
+the null: what each row would score if the displacement were pure noise
+0.5 miles away              1.579                61.2           2.463                57.3
+1 mile away                 1.600                63.1           2.489                58.7
+2 miles away                1.664                67.4           2.561                62.5
+```
+
+**Every displaced row is worse than reading the model where the station stands**, on both
+networks, at every distance. But every displaced row also beats its own noise null, and by
+a widening margin: at two miles CoAgMet degrades 0.366 m/s of the 0.549 m/s the model moved,
+so roughly **half the speed gradient and about three quarters of the direction gradient
+behave like real structure** rather than like an independent draw. That is the honest
+reading — the gradient carries information, and it is still information about a *different
+place*, so moving toward it costs more than it pays at the station's own location.
+
+### What this settles
+
+- **The arrows will move now**, and the reason is the model, not the ground. Anyone who
+  quotes per-cell spread as evidence that the terrain downscaling works has misread it.
+- **It stays off by default.** Two networks say the displaced sample scores worse, and
+  nothing here says the interpolated per-cell field is better *at the pin the user clicked*.
+  What it is is the first thing in this project that puts genuine atmospheric structure on
+  the map, and the substrate the near-ground work in `docs/near-ground-wind.md` needs.
+- **Nothing moved.** No coefficient, no threshold, no default; the scalar path is
+  byte-for-byte the answer it was.
+
+*Caveats. Displaced samples are not independent observations, and a station is not a random
+point — it is sited for exposure, so "read it where the mast is" is a favourable hypothesis
+by construction. Four domains, one hour, for the spread table. The model-gradient run scores
+HRRR against masts with the same log law applied to both rows; it says nothing about 0–3 m.
+Interpolating a 3 km model at 8 m spacing draws detail the model does not have, and the
+lattice is an interpolation cost of its own: 32 samples per cell is 0.09 m/s better than
+8, which is why the constant is what it is.*
+
 ## The hypotheses, and how much weight each one carries
 
 Roughly in the order the evidence supports them.
