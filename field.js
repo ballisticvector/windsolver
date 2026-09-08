@@ -267,13 +267,26 @@ function heightOf(level) {
 }
 
 /**
+ * How finely the model is sampled when the reference is built per cell.
+ *
+ * The model is sampled on a lattice and interpolated onto the terrain grid,
+ * because a 10 m terrain grid is 300 pixels for every number a 3 km model
+ * holds and each pixel costs an inverse projection. What that approximation
+ * costs is measured rather than assumed: `tests/field.test.js` grades the
+ * lattice against sampling every pixel directly, and at 32 samples per model
+ * cell — 94 m for HRRR — the worst cell is out by under 0.01 m/s. Eight
+ * samples is out by 0.089, which is larger than the whole terrain ablation
+ * table, so this constant is not free to lower.
+ */
+const REFERENCE_SAMPLES_PER_CELL = 32;
+
+/**
  * The single model wind the whole domain is downscaled from.
  *
- * One wind, sampled at the domain's centre, because a 2-mile box is smaller
- * than one 3 km HRRR cell — there is no more information in the model to spend.
- * A domain large enough to span several cells needs a per-cell reference and
- * this function is where that would go; `cellsAcross` reports when that day has
- * arrived rather than leaving it to be discovered.
+ * One wind, sampled at the domain's centre, because a 2-mile box is about one
+ * 3 km HRRR cell. `cellsAcross` says how many it really is, and `referenceGrid`
+ * below is the other path: a wind per cell, for a domain wide enough that the
+ * model has something to say across it.
  */
 function referenceWind(volume, box, opts) {
   const o = opts || {};
@@ -295,7 +308,120 @@ function referenceWind(volume, box, opts) {
     at: centre,
     validTime: volume.validTime,
     source: volume.source,
-    cellsAcross: cellM ? spanM / cellM : null
+    cellsAcross: cellM ? spanM / cellM : null,
+    perCell: false,
+    spread: null
+  };
+}
+
+/**
+ * The model wind at every cell of the terrain grid, earth-relative.
+ *
+ * The alternative to one vector for the whole box. Each cell gets the model's
+ * own answer where it stands, so a domain spanning several HRRR cells carries
+ * the model's gradient instead of averaging it away at the centre.
+ *
+ * **This is not a terrain effect and must not be read as one.** The components
+ * are `volume.sampleWind`'s, which are already rotated out of the grid frame by
+ * `grib2.toEarthRelativeWind` when the volume is built; nothing here bends a
+ * wind. What the downscaling does to it stays in `factor` and `divertDeg`,
+ * which are functions of the ground and the local bearing alone — so a map that
+ * varies because this varies is HRRR's structure, drawn honestly, and is
+ * evidence for nothing about the terrain terms.
+ *
+ * The model is sampled on a lattice and interpolated onto the terrain grid,
+ * because there is no more in HRRR than the lattice holds; `referenceSampleM`
+ * overrides the spacing.
+ */
+function referenceGrid(volume, weights, opts) {
+  const o = opts || {};
+  const level = o.level || DEFAULT_LEVEL;
+  const width = weights.width;
+  const height = weights.height;
+  const scaleX = Math.abs(weights.transform.scaleX);
+  const scaleY = Math.abs(weights.transform.scaleY);
+  const cellM = volume.grid && volume.grid.dxMeters ? volume.grid.dxMeters : MODEL_CELL_M;
+  const stepM = o.referenceSampleM === undefined
+    ? cellM / REFERENCE_SAMPLES_PER_CELL
+    : o.referenceSampleM;
+  if (!(stepM > 0)) throw fail("bad-sample", "referenceSampleM must be positive");
+
+  const nx = Math.min(width, Math.max(2, Math.ceil((width * scaleX) / stepM) + 1));
+  const ny = Math.min(height, Math.max(2, Math.ceil((height * scaleY) / stepM) + 1));
+  const lastX = width > 1 ? width - 1 : 1;
+  const lastY = height > 1 ? height - 1 : 1;
+  const colOf = function (i) { return nx > 1 ? (i * lastX) / (nx - 1) : 0; };
+  const rowOf = function (j) { return ny > 1 ? (j * lastY) / (ny - 1) : 0; };
+
+  const latticeEast = new Float64Array(nx * ny);
+  const latticeNorth = new Float64Array(nx * ny);
+  let outside = 0;
+  for (let j = 0; j < ny; j++) {
+    for (let i = 0; i < nx; i++) {
+      const x = weights.transform.originX + (colOf(i) + 0.5) * weights.transform.scaleX;
+      const y = weights.transform.originY + (rowOf(j) + 0.5) * weights.transform.scaleY;
+      const ll = proj.toGeographic(weights.crs, x, y);
+      // The terrain grid is read wider than the box, and HRRR's subset is a
+      // rectangle in Lambert space rather than in latitude and longitude, so a
+      // corner of the padded grid can land off the end of the model even when
+      // the fetch covered the box with a cell to spare. That corner is outside
+      // the requested box by construction, so it becomes a hole — the same
+      // answer as a hole in the model's own bitmap — rather than failing a
+      // solve that is complete everywhere the caller asked about.
+      let wind = { east: NaN, north: NaN };
+      try {
+        wind = volumeModule.sampleWind(volume, ll.lat, ll.lon, level);
+      } catch (err) {
+        if (err.code !== "outside-volume") throw err;
+        outside++;
+      }
+      latticeEast[j * nx + i] = wind.east === null ? NaN : wind.east;
+      latticeNorth[j * nx + i] = wind.north === null ? NaN : wind.north;
+    }
+  }
+
+  const east = new Float32Array(width * height);
+  const north = new Float32Array(width * height);
+  for (let row = 0; row < height; row++) {
+    const v = ny > 1 ? (row / lastY) * (ny - 1) : 0;
+    const j0 = Math.min(ny - 2 < 0 ? 0 : ny - 2, Math.floor(v));
+    const fj = v - j0;
+    for (let col = 0; col < width; col++) {
+      const u = nx > 1 ? (col / lastX) * (nx - 1) : 0;
+      const i0 = Math.min(nx - 2 < 0 ? 0 : nx - 2, Math.floor(u));
+      const fi = u - i0;
+      const a = j0 * nx + i0;
+      const b = a + (nx > 1 ? 1 : 0);
+      const c = a + (ny > 1 ? nx : 0);
+      const d = c + (nx > 1 ? 1 : 0);
+      const at = row * width + col;
+      east[at] = (latticeEast[a] * (1 - fi) + latticeEast[b] * fi) * (1 - fj) +
+        (latticeEast[c] * (1 - fi) + latticeEast[d] * fi) * fj;
+      north[at] = (latticeNorth[a] * (1 - fi) + latticeNorth[b] * fi) * (1 - fj) +
+        (latticeNorth[c] * (1 - fi) + latticeNorth[d] * fi) * fj;
+    }
+  }
+
+  const spanM = Math.max(width * scaleX, height * scaleY);
+  const centre = proj.toGeographic(
+    weights.crs,
+    weights.transform.originX + (width / 2) * weights.transform.scaleX,
+    weights.transform.originY + (height / 2) * weights.transform.scaleY
+  );
+
+  return {
+    width: width,
+    height: height,
+    east: east,
+    north: north,
+    heightAglM: heightOf(level),
+    level: level,
+    at: centre,
+    validTime: volume.validTime,
+    source: volume.source,
+    cellsAcross: spanM / cellM,
+    sampledEveryM: stepM,
+    samples: { x: nx, y: ny, outsideVolume: outside }
   };
 }
 
@@ -328,10 +454,35 @@ function assemble(input) {
   const grid = input.grid || mosaic(input.grids, spec);
   const derived = input.derived || derive.derive(grid, spec);
   const weights = input.weights || downscale.terrainWeights(derived, spec);
-  const reference = referenceWind(input.volume, domain.box, spec);
+  // One vector for the box unless a per-cell reference is asked for. It is not
+  // the default: the arrows a per-cell run draws are more varied, and looking
+  // more like weather is not evidence that they are more right. Nothing has
+  // scored it against an anemometer yet.
+  const reference = spec.perCell
+    ? referenceGrid(input.volume, weights, spec)
+    : referenceWind(input.volume, domain.box, spec);
   const field = downscale.downscale(weights, reference, Object.assign({}, spec, {
     heightAglM: reference.heightAglM
   }));
+  // The model's spatial spread is the downscaler's to report, since it is the
+  // one that knows which cells were used; the provenance is this module's.
+  const referenceOut = spec.perCell
+    ? {
+      east: field.reference.east,
+      north: field.reference.north,
+      speedMps: field.reference.speedMps,
+      fromDeg: field.reference.fromDeg,
+      heightAglM: reference.heightAglM,
+      level: reference.level,
+      at: reference.at,
+      validTime: reference.validTime,
+      source: reference.source,
+      cellsAcross: reference.cellsAcross,
+      perCell: true,
+      sampledEveryM: reference.sampledEveryM,
+      spread: field.reference.spread
+    }
+    : reference;
 
   const modelZ = modelSurface(input.volume, domain.box, "HGT");
 
@@ -340,7 +491,7 @@ function assemble(input) {
     domain: domain.box,
     readBox: domain.readBox,
     paddingM: domain.paddingM,
-    reference: reference,
+    reference: referenceOut,
     validTime: input.volume.validTime,
     terrain: {
       dataset: input.dataset || null,
@@ -466,7 +617,14 @@ function createFieldService(opts) {
     const land = await terrain(s);
     const domain = land.domain;
     const air = Object.assign({}, s, {
-      box: geo.expand(domain.box, (s.modelCellM === undefined ? MODEL_CELL_M : s.modelCellM) / geo.METERS_PER_MILE),
+      // A centre-sampled reference needs one point; a per-cell one needs the
+      // model over the whole terrain grid, which is read wider than the box for
+      // the derivatives. Asking for the padded box keeps the model's coverage
+      // ahead of the grid's rather than leaving the margin to be holes.
+      box: geo.expand(
+        s.perCell ? domain.readBox : domain.box,
+        (s.modelCellM === undefined ? MODEL_CELL_M : s.modelCellM) / geo.METERS_PER_MILE
+      ),
       levels: s.levels || hrrr.DEFAULT_LEVEL_KEYS,
       variables: s.variables || DEFAULT_VARIABLES
     });
@@ -510,6 +668,7 @@ module.exports = {
   mosaic,
   heightOf,
   referenceWind,
+  referenceGrid,
   modelElevation,
   modelSurface,
   groundBytes,

@@ -85,6 +85,13 @@ npm run lint
 > - **The terrain downscaling is not yet known to help, and on ridges it measurably
 >   hurts.** `docs/downscaling.md` is the standing note: read it before changing anything
 >   in `downscale.js`, and add to it rather than starting a new one.
+> - **A per-cell field's spread is the model's own, not the ground's** — `perCell` samples
+>   HRRR per terrain cell instead of once at the box centre, and the arrows widen from a
+>   1.2-11.8 degree band to 19.2-43.6 over the same four domains without a single terrain
+>   coefficient changing. It is off by default because displaced model readings score
+>   *worse* against both CoAgMet and FEMS at every distance out to two miles
+>   (measurement 17). Do not quote that spread as evidence about terrain, and do not turn
+>   it on by default because a map looks better with it.
 > - **Three observation providers put three different timestamps on the same wind, and
 >   FEMS' is not off by a fixed amount.** For one RAWS report MADIS and Synoptic both say
 >   `12:54`; FEMS says `13:00`, because it labels the *nearest* whole hour and throws the

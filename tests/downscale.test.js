@@ -581,3 +581,202 @@ describe("what it refuses", () => {
     expect(field.stats.undefinedFraction).toBeGreaterThan(0);
   });
 });
+
+describe("a reference wind per cell", () => {
+  // The model term and the terrain term are separate claims about the same
+  // map, and until now only one of them could vary across a domain: the
+  // reference was one vector sampled at the centre, so every difference
+  // between two arrows was terrain. A domain wide enough to hold more than one
+  // model cell has model-native structure too, and drawing it as terrain would
+  // credit the downscaling with HRRR's own gradient.
+  const width = 41;
+  const height = 41;
+  const grid = syntheticGrid(width, height, function (east, north) {
+    return 2000 + 60 * Math.exp(-(((east - 200) / 90) ** 2 + ((north - 200) / 90) ** 2));
+  }, 10);
+  const derived = derive.derive(grid, { shelter: { sectors: 8, maxDistanceM: 150, stepM: 10 } });
+  const weights = downscale.terrainWeights(derived, { curvatureLengthM: 100 });
+  const n = width * height;
+
+  /** A reference grid holding the same wind in every cell. */
+  const uniformGrid = function (speedMps, fromDeg) {
+    const towards = toRad(fromDeg + 180);
+    return {
+      width: width,
+      height: height,
+      east: new Float32Array(n).fill(speedMps * Math.sin(towards)),
+      north: new Float32Array(n).fill(speedMps * Math.cos(towards))
+    };
+  };
+
+  /** A reference grid whose speed ramps west to east, direction held. */
+  const rampGrid = function (fromMps, toMps, fromDeg) {
+    const towards = toRad(fromDeg + 180);
+    const east = new Float32Array(n);
+    const north = new Float32Array(n);
+    for (let i = 0; i < n; i++) {
+      const s = fromMps + ((toMps - fromMps) * (i % width)) / (width - 1);
+      east[i] = s * Math.sin(towards);
+      north[i] = s * Math.cos(towards);
+    }
+    return { width: width, height: height, east: east, north: north };
+  };
+
+  test("a uniform grid is the single vector, cell for cell", () => {
+    // The invariant that makes this safe to turn on: where the model has
+    // nothing to say across the domain, per-cell must not invent anything.
+    const one = downscale.downscale(weights, { speedMps: 6, fromDeg: 245 });
+    const many = downscale.downscale(weights, uniformGrid(6, 245));
+    let checked = 0;
+    for (let i = 0; i < n; i++) {
+      if (Number.isNaN(one.speedMps[i])) {
+        expect(Number.isNaN(many.speedMps[i])).toBe(true);
+        continue;
+      }
+      expect(many.speedMps[i]).toBeCloseTo(one.speedMps[i], 4);
+      expect(many.fromDeg[i]).toBeCloseTo(one.fromDeg[i], 4);
+      expect(many.factor[i]).toBeCloseTo(one.factor[i], 6);
+      checked++;
+    }
+    expect(checked).toBeGreaterThan(100);
+  });
+
+  test("the model's gradient reaches the cells, and is not terrain", () => {
+    // Same ground, same directions, a reference that doubles across the box.
+    // The terrain factor is a property of the ground and the bearing, so it
+    // must come out identical; all of the difference belongs to the model.
+    const flat = downscale.downscale(weights, uniformGrid(4, 270));
+    const ramp = downscale.downscale(weights, rampGrid(4, 8, 270));
+    const row = Math.floor(height / 2);
+    const west = row * width + 6;
+    const east = row * width + width - 7;
+
+    expect(ramp.factor[west]).toBeCloseTo(flat.factor[west], 6);
+    expect(ramp.factor[east]).toBeCloseTo(flat.factor[east], 6);
+    // Cell by cell, the whole of the difference is the model's ramp.
+    let checked = 0;
+    for (let i = 0; i < n; i++) {
+      if (Number.isNaN(flat.speedMps[i])) continue;
+      const refAt = 4 + (4 * (i % width)) / (width - 1);
+      expect(ramp.speedMps[i] / flat.speedMps[i]).toBeCloseTo(refAt / 4, 4);
+      checked++;
+    }
+    expect(checked).toBeGreaterThan(100);
+    expect(ramp.speedMps[east]).toBeGreaterThan(ramp.speedMps[west]);
+  });
+
+  test("each cell is turned from its own bearing, not from the domain's", () => {
+    // A reference that veers 60 degrees across the box. The MicroMet turning
+    // is measured from the wind's own direction, so a cell whose model wind
+    // has veered must be diverted about that bearing and not about the mean.
+    const east = new Float32Array(n);
+    const north = new Float32Array(n);
+    for (let i = 0; i < n; i++) {
+      const from = 210 + (60 * (i % width)) / (width - 1);
+      const towards = toRad(from + 180);
+      east[i] = 5 * Math.sin(towards);
+      north[i] = 5 * Math.cos(towards);
+    }
+    const veer = downscale.downscale(weights, { width: width, height: height, east: east, north: north },
+      { divert: false, shelter: false });
+    const row = Math.floor(height / 2);
+    expect(veer.fromDeg[row * width + 6]).toBeCloseTo(210 + (60 * 6) / (width - 1), 3);
+    expect(veer.fromDeg[row * width + width - 7]).toBeCloseTo(210 + (60 * (width - 7)) / (width - 1), 3);
+    // And the diverting term, when it is on, is measured off that bearing.
+    const turned = downscale.downscale(weights, { width: width, height: height, east: east, north: north },
+      { shelter: false });
+    const i = row * width + 10;
+    expect(turned.fromDeg[i] - veer.fromDeg[i]).toBeCloseTo(turned.divertDeg[i], 6);
+  });
+
+  test("the sheltering sector is bracketed per cell as well", () => {
+    // Sx is a function of the direction the wind arrives from, so a per-cell
+    // reference has to re-bracket the sectors per cell. Bracketing once on the
+    // domain mean would shelter the wrong side of a hill wherever the model
+    // wind has veered away from it.
+    const east = new Float32Array(n);
+    const north = new Float32Array(n);
+    for (let i = 0; i < n; i++) {
+      const from = (i % width) < width / 2 ? 90 : 270;
+      const towards = toRad(from + 180);
+      east[i] = 5 * Math.sin(towards);
+      north[i] = 5 * Math.cos(towards);
+    }
+    const split = downscale.downscale(weights, { width: width, height: height, east: east, north: north },
+      { shelter: true, divert: false });
+    const west = downscale.downscale(weights, { speedMps: 5, fromDeg: 90 }, { shelter: true, divert: false });
+    const eastward = downscale.downscale(weights, { speedMps: 5, fromDeg: 270 }, { shelter: true, divert: false });
+    const row = Math.floor(height / 2);
+    const left = row * width + 8;
+    const right = row * width + width - 9;
+    expect(split.factor[left]).toBeCloseTo(west.factor[left], 9);
+    expect(split.factor[right]).toBeCloseTo(eastward.factor[right], 9);
+    // The two halves really do differ, or the assertion above is vacuous.
+    expect(Math.abs(west.factor[left] - eastward.factor[left])).toBeGreaterThan(1e-6);
+  });
+
+  test("a cell the model could not fill stays a hole", () => {
+    const ref = uniformGrid(5, 180);
+    const row = Math.floor(height / 2);
+    ref.east[row * width + 12] = NaN;
+    const field = downscale.downscale(weights, ref);
+    expect(Number.isNaN(field.speedMps[row * width + 12])).toBe(true);
+    expect(Number.isNaN(field.factor[row * width + 12])).toBe(true);
+    expect(Number.isNaN(field.speedMps[row * width + 13])).toBe(false);
+  });
+
+  test("the field says the reference varied, and by how much", () => {
+    const field = downscale.downscale(weights, rampGrid(4, 8, 270));
+    expect(field.reference.perCell).toBe(true);
+    // The vector mean over the cells that were used, so a consumer reading
+    // `reference.speedMps` gets the domain's model wind as before.
+    expect(field.reference.speedMps).toBeGreaterThan(4);
+    expect(field.reference.speedMps).toBeLessThan(8);
+    expect(field.reference.fromDeg).toBeCloseTo(270, 3);
+    // Over the cells that were used — the margin the curvature length costs is
+    // not in the field, so it is not in the spread either.
+    expect(field.reference.spread.speedMinMps).toBeGreaterThan(4);
+    expect(field.reference.spread.speedMaxMps).toBeLessThan(8);
+    expect(field.reference.spread.speedMaxMps - field.reference.spread.speedMinMps)
+      .toBeGreaterThan(2);
+    expect(field.reference.spread.fromDegSpanDeg).toBeCloseTo(0, 3);
+
+    const one = downscale.downscale(weights, { speedMps: 6, fromDeg: 270 });
+    expect(one.reference.perCell).toBe(false);
+    expect(one.reference.spread).toBeNull();
+  });
+
+  test("the bearing span is measured from a cell that has a bearing", () => {
+    // The span is a difference of bearings and needs a datum to be folded
+    // about, or a domain straddling north reports 359 degrees of veer. The
+    // datum has to be a cell the model filled: cell 0 is in the margin the
+    // curvature length costs, and on a real domain it is routinely a hole.
+    const east = new Float32Array(n);
+    const north = new Float32Array(n);
+    for (let i = 0; i < n; i++) {
+      const from = 350 + (20 * (i % width)) / (width - 1);
+      const towards = toRad(from + 180);
+      east[i] = 5 * Math.sin(towards);
+      north[i] = 5 * Math.cos(towards);
+    }
+    east[0] = NaN;
+    north[0] = NaN;
+    const field = downscale.downscale(weights, { width: width, height: height, east: east, north: north });
+    expect(Number.isNaN(field.reference.spread.fromDegSpanDeg)).toBe(false);
+    // Nineteen degrees of veer across the box, not the 359 that subtracting
+    // 350 from 10 gives.
+    expect(field.reference.spread.fromDegSpanDeg).toBeGreaterThan(15);
+    expect(field.reference.spread.fromDegSpanDeg).toBeLessThan(21);
+  });
+
+  test("what it refuses", () => {
+    expect(() => downscale.downscale(weights, { width: width, height: height, east: new Float32Array(n) }))
+      .toThrow(/east and north/);
+    expect(() => downscale.downscale(weights, {
+      width: width - 1, height: height, east: new Float32Array(n), north: new Float32Array(n)
+    })).toThrow(/same grid/);
+    expect(() => downscale.downscale(weights, {
+      width: width, height: height, east: new Float32Array(n - 1), north: new Float32Array(n)
+    })).toThrow(/width x height/);
+  });
+});

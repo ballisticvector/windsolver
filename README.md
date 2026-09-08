@@ -1082,6 +1082,12 @@ to reach the UI: a screen that says 1 m everywhere is lying wherever the lidar i
 reference wind is one HRRR sample at the domain centre, which is defensible at 1.07 cells
 across and is not for a map-sized domain.
 
+**`perCell` samples the model per terrain cell instead**, on a lattice at 32 samples per
+HRRR cell, and reports its own spread beside the field so the model's variation cannot be
+mistaken for the ground's. It is off by default: measurement 17 in `docs/downscaling.md`
+scores displaced model readings against CoAgMet and FEMS and they are worse at every
+distance, so a wider spread on the map is not yet a better answer at the pin.
+
 ### A line through it, live
 
 `node tools/slice-live.js --lat 40.0150 --lon -105.2705 --bearing 90 --range 1000` — a
