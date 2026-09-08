@@ -205,6 +205,19 @@ off a page), `-999` and a blank timestamp are absences and never calm, a zero sp
 a null direction rather than a north wind, and the service refuses an id in the wrong case
 with a bare `Invlid request` that is not JSON.
 
+**What those masts said when they were scored (measurement 16) does not transfer from the
+RAWS runs, in either direction.** Over 31 CoAgMet stations on four dates HRRR needs
+**x0.84–1.02**, and on the windy March day it is unbiased — where the same model on the
+same dates needs x0.60–0.70 against RAWS and is at its worst in March. The log law down to
+2 m accounts for a factor 0.79 of that and no more; the rest is network, land cover and
+siting, and this run cannot separate them. **So "HRRR runs 43–70% fast" is a statement
+about the RAWS sample, not about HRRR.** What is worse down there is direction: 34° RMSE on
+the windy day and 53–62° on the light ones, against 23–31° at the RAWS, and a clock term of
+only 17°. A 0–3 m map is a direction product before it is a speed one. The sheltering split
+also failed its third sample there, and failed its own leverage check while doing it — one
+station carries the sign — so **valley/ridge by landform class is finished as a candidate**
+unless something measures exposure rather than shape.
+
 **Score FEMS with `--tolerance 30`.** Dating a RAWS correctly does not move it closer to
 the model's whole hour; it makes the distance visible. At the 10-minute default, five of
 the first eleven calibrated stations have no observation inside the window at all — their

@@ -28,6 +28,8 @@ If you are picking this up cold: `downscale.js` is the module in question,
 - [Measurement 12: a second state, and a descriptor that works in one of them](#measurement-12-a-second-state-and-a-descriptor-that-works-in-one-of-them)
 - [Measurement 13: how much of every score was only the clock](#measurement-13-how-much-of-every-score-was-only-the-clock)
 - [Measurement 14: the valleys were there all along, at a radius nobody asked at](#measurement-14-the-valleys-were-there-all-along-at-a-radius-nobody-asked-at)
+- [Measurement 15: the first pre-registered run, and the sheltering signal does not travel](#measurement-15-the-first-pre-registered-run-and-the-sheltering-signal-does-not-travel)
+- [Measurement 16: the same question at 2 m, on the network that has hollows](#measurement-16-the-same-question-at-2-m-on-the-network-that-has-hollows)
 - [The hypotheses, and how much weight each one carries](#the-hypotheses-and-how-much-weight-each-one-carries)
 - [What would settle it](#what-would-settle-it)
 - [Things that would poison the answer](#things-that-would-poison-the-answer)
@@ -1317,6 +1319,121 @@ Artefacts: registration and scoring were run outside the repository against `ver
 and `tools/station-survey.js`; the New Mexico survey is reproducible with
 `--source fems --state NM --position 2000 --radius 2.5`.
 
+## Measurement 16: the same question at 2 m, on the network that has hollows
+
+Measurement 15 killed the sheltering split on RAWS. This asks it again with the instrument
+one storey lower: **CoAgMet's 2–3 m agricultural masts**, wired in as a scoring source in
+`coagmet.js`, over four archive dates. Registered the same way — the prediction, the
+station set, the classes and the grading rules written to a file and hashed
+(`sha256 93611a2b…`) **before any CoAgMet wind had been scored** — and the analysis script
+verifies that digest before it reads a pair.
+
+### What the network is, before any wind
+
+The agricultural catalogue is the mirror image of the fire-weather one, and it changes
+which statistic can be asked. Of 91 eligible stations surveyed at 2 km, **73 are flat, 12
+valley, 4 ridge**, where Colorado's 87 RAWS were 51 ridge and 15 valley. Farms sit on flat
+ground; fire lookouts sit on ridges. So valley-minus-*ridge*, the statistic measurements 14
+and 15 used, is four stations' worth here whatever it says, and the registration made
+**valley minus non-valley** the primary with valley-minus-ridge alongside it for
+comparability. Valley sites also skew to the taller mast — 7 of 12 at 3 m against mostly
+2 m elsewhere — so the registration fixed the same test inside each height in advance.
+
+32 stations were chosen from the eligible set and frozen. One, `drg01`, returned no
+observation on any of the four dates and fell below the registered 12-pair floor, leaving
+**31 stations and 11,859 pairs**.
+
+### The registered answer
+
+```
+CoAgMet, 2 km index, 31 stations, 4 dates, 11,859 pairs
+valley      n=11  4,181 pairs   mean scale 0.915
+non-valley  n=20                mean scale 0.940   (flat n=16 0.936, ridge n=4 0.956)
+
+PRIMARY    valley - non-valley  -0.025   se 0.057   t -0.44   one-sided p 0.332
+secondary  valley - ridge       -0.041   se 0.072                        p 0.291
+Spearman rho(index, scale)      +0.157                    (CO RAWS +0.228)
+held out   13/31 better   mean |err| 0.105 -> 0.110   closes -5.6%
+
+by mast height, as registered
+  2.01 m   n=22 (5 valley)   valley - non-valley  -0.087
+  2.99 m   n= 9 (6 valley)   valley - non-valley  +0.051
+```
+
+By the registered rules that is **`consistent`** — negative, not significant — and three
+things say not to read it as support.
+
+**The sign is one station.** Left-one-out on the primary statistic moves it to **+0.010
+when `ctz01` is removed**, a swing of 141% of the estimate. Cortez is a 2 m valley mast
+needing ×0.559, the most slowing in the set. By the rule `AGENTS.md` already carries for
+rankings — read the leverage before the number — this run has not produced a difference.
+
+**It reverses with mast height.** −0.087 inside the 2 m stations, +0.051 inside the 3 m
+ones. That is the confound the registration was written to expose: valley sites are the
+tall-mast sites, the model is brought down to each mast by a log law, and one metre of
+assumed profile is the same size as the effect being measured.
+
+**Held out, it is worse than not doing it.** Colorado's RAWS split closed 5.3% of a
+station's own scale; this one costs 5.6%.
+
+So sheltering-by-landform-class has now been asked of three samples — Colorado RAWS at
+6.1 m, New Mexico RAWS at 6.1 m, Colorado farms at 2–3 m — and only the first, the one
+where the split was chosen after seeing it, says anything. **It is not a correction, and
+this is the last run it gets on this design.**
+
+### The much larger thing the run found, which it was not asked
+
+The bias is not the RAWS bias. Over these 2–3 m farm masts:
+
+```
+date          observed mean   HRRR speed bias   debiased scale   dir RMSE
+14 March           5.83 m/s        -0.10 m/s        x1.017          34 deg
+31 August          1.72            +0.33            x0.838          62
+ 2 September       1.99            +0.28            x0.878          56
+ 4 September       2.17            +0.35            x0.861          53
+```
+
+Against RAWS the same model on the same dates needed **×0.60–0.70** and ran 43–70% fast,
+and March was its worst day at +2.21 m/s. Here **March is unbiased to within a tenth of a
+metre per second, and the whole four-date range is ×0.84–1.02.** Part of that is arithmetic
+— the log law moves the model ×0.723 to a 2 m mast against ×0.915 to a 6.1 m one, which is
+a factor 0.79 of it — and part is not: 0.79 does not turn 0.60 into 0.84. The remainder is
+network, land cover and siting, and it is not separable in this run.
+
+**Read the direction column instead, because it is the one that should worry us.** 34° on
+the windy day and 53–62° on the light ones, where the same model against RAWS scored 23–31°
+and the pairing clock here is worth 17°. At 2 m in light wind the model does not know which
+way the air is going, and a two-mile map at 0–3 m is a *direction* product before it is a
+speed one.
+
+One thing did improve, and it is the first time: CoAgMet's five-minute product pairs at a
+**mean offset of 5.0 minutes, maximum 8**, against FEMS' 12.6–14.3. Priced against
+measurement 13's curve over 5-minute means that is **0.68 m/s of speed, 1.07 m/s of vector
+and 17° of direction** — below the 7.5-minute median at which the wind stops being the same
+wind. Every earlier run in this note was pairing outside that.
+
+### What this settles
+
+- **The landform-class split does not survive a third sample**, and here it does not
+  survive its own leverage check either.
+- **A near-ground score exists now, and it is not a near-ground validation.** What was
+  graded is HRRR brought from 10 m to a 2 m mast by a log law nothing in this project has
+  tested below 6.1 m — a step worth ×0.723, larger than every terrain candidate ever
+  ablated put together. The debiased scale absorbs whatever that profile gets wrong, so
+  ×0.84 is a statement about model-plus-profile, not about either one.
+- **Nothing moved.** No default, no coefficient, no threshold; `downscale.js` untouched.
+
+*Caveats. These are irrigated agricultural sites: a land cover and a diurnal regime of
+their own, not simply hollows, and Cortez, Gunnison and Carbondale differ in more than
+their position index. Four ridge stations. Whether NCEP assimilates this network is
+unknown, so `f0` may be an analysis fit (the run prints UNKNOWN rather than borrowing the
+airports' answer). Scales are fitted in-sample except the held-out column. Four days, one
+state, one season and a half.*
+
+Artefacts: the registration, its digest and the analysis script were run outside the
+repository against `verify.js`, `coagmet.js` and `tools/score-wind.js`; the station survey
+is reproducible with `--source coagmet --state CO --position 2000`.
+
 ## The hypotheses, and how much weight each one carries
 
 Roughly in the order the evidence supports them.
@@ -1360,7 +1477,11 @@ Roughly in the order the evidence supports them.
    measurement 15 pre-registered that split and scored New Mexico, where it is −0.010 ±
    0.074 against Colorado's −0.157 with the Spearman sign reversed. **So the catalogue was
    not the obstacle and the axis still does not carry a correction.** Pooled over both
-   states the sheltering effect is −0.078 ± 0.054 of scale.
+   states the sheltering effect is −0.078 ± 0.054 of scale. Measurement 16 asked it a third
+   time on CoAgMet's 2–3 m farm masts, where the hollows are the network's own ground:
+   −0.025 ± 0.057, the sign carried by one station, and the difference reversing between
+   the 2 m and 3 m masts. **Three samples, one of them chosen after the fact; this
+   descriptor is done.**
 5. **The station factor is predictable from something, and elevation is the first
    descriptor that has looked like it — in one state.** Measurement 12: fitting the New
    Mexico scale on elevation beats a pooled scale in 12 of 12 held-out cells and closes

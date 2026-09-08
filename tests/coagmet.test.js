@@ -416,6 +416,59 @@ describe("the reader, against the fixtures", () => {
   });
 });
 
+/* A scoring run leaves a minute between one station's request and the next
+ * while it solves a domain, and CoAgMet drops the idle keep-alive connection
+ * inside it. The next request fails before it is sent. */
+describe("a request that never reached the service", () => {
+  function socketError() {
+    const err = new TypeError("fetch failed");
+    err.cause = { code: "UND_ERR_SOCKET" };
+    return err;
+  }
+
+  /** A fetch that throws for the first `failures` calls, then answers. */
+  function flaky(failures, body) {
+    let calls = 0;
+    const doFetch = async function () {
+      calls += 1;
+      if (calls <= failures) throw socketError();
+      return ok(body);
+    };
+    doFetch.calls = function () { return calls; };
+    return doFetch;
+  }
+
+  test("is sent again, and the answer is the one the caller gets", async () => {
+    const doFetch = flaky(1, METADATA);
+    const s = coagmet.createCoagmetSource({ fetch: doFetch, sleep: async function () {} });
+    const station = await s.station("gun01");
+    expect(station.id).toBe("gun01");
+    expect(doFetch.calls()).toBe(2);
+  });
+
+  test("is not retried for ever, and says how many times it was tried", async () => {
+    const doFetch = flaky(99, METADATA);
+    const s = coagmet.createCoagmetSource({
+      fetch: doFetch, retries: 2, sleep: async function () {} });
+    await expect(s.station("gun01"))
+      .rejects.toMatchObject({ code: "network" });
+    expect(doFetch.calls()).toBe(3);
+  });
+
+  test("a refusal is an answer, and is not tried again", async () => {
+    let calls = 0;
+    const doFetch = async function (url) {
+      calls += 1;
+      if (url.indexOf("metadata.json") >= 0) return ok(METADATA);
+      return bad(400, UNKNOWN);
+    };
+    const s = coagmet.createCoagmetSource({ fetch: doFetch, sleep: async function () {} });
+    await expect(s.observations("gun01", { start: 0, end: 60000 }))
+      .rejects.toMatchObject({ code: "unknown-station" });
+    expect(calls).toBe(2);
+  });
+});
+
 describe("what the instrument is allowed", () => {
   test("the worse of the two anemometers, because the reply does not say which answered", () => {
     expect(coagmet.COAGMET_INSTRUMENT.speedToleranceMps)
