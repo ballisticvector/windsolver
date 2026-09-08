@@ -13,10 +13,13 @@
  *
  * Options:
  *   --stations   comma-separated station ids (required)
- *   --source     nws (default), synoptic or fems; synoptic needs $SYNOPTIC_API_TOKEN,
- *                and fems needs --fems-map, the station map tools/fems-stations.js
- *                writes. FEMS is the one that reaches back years; read the header
- *                of fems.js before trusting a run older than Synoptic's window.
+ *   --source     nws (default), synoptic, fems or coagmet; synoptic needs
+ *                $SYNOPTIC_API_TOKEN, and fems needs --fems-map, the station map
+ *                tools/fems-stations.js writes. FEMS is the one that reaches back
+ *                years; read the header of fems.js before trusting a run older
+ *                than Synoptic's window. coagmet is Colorado only and is the only
+ *                source here measuring below 6.1 m — read the note on its height
+ *                in sourceFor() before reading a score from it.
  *   --fems-map   path to the FEMS station map (default data/fems-stations.json)
  *   --hours      how many whole hours back from --end (default 12)
  *   --end        the newest hour to score, ISO 8601 (default: three hours ago,
@@ -174,6 +177,7 @@ const observationsModule = require("../observations.js");
 const roughness = require("../roughness.js");
 const synoptic = require("../synoptic.js");
 const fems = require("../fems.js");
+const coagmet = require("../coagmet.js");
 const verify = require("../verify.js");
 
 const HOUR_MS = 3600 * 1000;
@@ -1008,9 +1012,7 @@ async function buildReport(options) {
         "NWS api.weather.gov station observations (ASOS/AWOS METAR)",
       model: o.archive ? "HRRR via the AWS Open Data archive" : "HRRR via NOMADS",
       terrain: "USGS 3DEP",
-      independence: forecastHour === 0
-        ? "NONE from HRRR: the analysis assimilates these stations. Downscaling is independent of them."
-        : "partial: an f" + forecastHour + " forecast has not seen the observations at its own valid hour."
+      independence: independenceOf(forecastHour, o.assimilated)
     },
     stations: stations,
     candidates: candidates.map(function (c) {
@@ -1182,6 +1184,7 @@ async function main() {
   const report = await buildReport({
     source: chosen.source,
     observationSource: chosen.label,
+    assimilated: chosen.assimilated,
     floor: chosen.floor,
     service: fieldModule.createFieldService(args.archive
       ? { nomads: archive.createArchiveSource({}) }
@@ -1215,6 +1218,43 @@ async function main() {
   process.stdout.write(summarise(report) + "\n");
   if (args.json) process.stdout.write(JSON.stringify(report, null, 2) + "\n");
 }
+
+/**
+ * How independent the score is of the observations it is scored against.
+ *
+ * At f0 an ASOS is inside the analysis that is being graded, which is the
+ * reason `--forecast 0` is not a verdict. It is not a fact about every network:
+ * whether HRRR assimilates a given mesonet is a question about NCEP's use list
+ * and its rejection list, and nobody here has read either for CoAgMet. An
+ * unknown says so rather than borrowing the airport's answer in the direction
+ * that flatters the score.
+ */
+function independenceOf(forecastHour, assimilated) {
+  if (forecastHour !== 0) {
+    return "partial: an f" + forecastHour +
+      " forecast has not seen the observations at its own valid hour.";
+  }
+  if (assimilated === false) {
+    return "these stations are not assimilated, so the analysis has not seen them.";
+  }
+  if (assimilated === null) {
+    return "UNKNOWN: nobody has read NCEP's use list for this network, so assume the " +
+      "analysis may have seen these stations. Downscaling is independent of them either way.";
+  }
+  return "NONE from HRRR: the analysis assimilates these stations. " +
+    "Downscaling is independent of them.";
+}
+
+/**
+ * Below this the log law is being extrapolated rather than applied.
+ *
+ * Every anemometer this project has scored against stands at 6.1 m or higher,
+ * so the surface-layer profile that moves a 10 m model wind down to a mast has
+ * only ever been used inside a factor of two. CoAgMet's 2 m masts are outside
+ * that, in the layer `docs/near-ground-wind.md` says is worth ±15% on its own,
+ * and a run there says so in its own summary.
+ */
+const NEAR_GROUND_CEILING_M = 3;
 
 /**
  * What a RAWS does to a wind before it is scored, as far as it is known.
@@ -1251,8 +1291,9 @@ function sourceFor(name, ids, args) {
       label: "NWS api.weather.gov station observations (ASOS/AWOS METAR), " +
         "2-minute means at 33 or 27 ft, ±2 kt, calm at or below 2 kt",
       // The empty object takes verify.js's ASOS defaults, which is the right
-      // instrument for this reader and the wrong one for the two below.
-      floor: {}
+      // instrument for this reader and the wrong one for the three below.
+      floor: {},
+      assimilated: true
     };
   }
   if (which === "synoptic") {
@@ -1261,7 +1302,10 @@ function sourceFor(name, ids, args) {
     return {
       source: synoptic.createSynopticSource({ token: token, stids: ids }),
       label: "Synoptic Data stations (RAWS and other mesonets), 1° directions, QC-flagged rows dropped",
-      floor: Object.assign({}, synoptic.RAWS_QUANTISATION, RAWS_INSTRUMENT)
+      floor: Object.assign({}, synoptic.RAWS_QUANTISATION, RAWS_INSTRUMENT),
+      // Conservative, not verified: RAWS reach NCEP through MADIS and the
+      // caveat that costs us something is the one to keep.
+      assimilated: true
     };
   }
   if (which === "fems") {
@@ -1297,10 +1341,34 @@ function sourceFor(name, ids, args) {
       source: fems.createFemsSource({ stations: map, stationIds: ids }),
       label: "USDA FEMS RAWS archive, 1 mph speeds and 1° directions, observation times " +
         "recovered from " + where,
-      floor: Object.assign({}, fems.RAWS_QUANTISATION, RAWS_INSTRUMENT)
+      floor: Object.assign({}, fems.RAWS_QUANTISATION, RAWS_INSTRUMENT),
+      assimilated: true
     };
   }
-  throw new Error("--source is nws, synoptic or fems, not " + JSON.stringify(name));
+  // CoAgMet is the first network here standing *inside* the layer the product
+  // is about, and that is also what makes a score from it easy to over-read:
+  // the model is brought from 10 m to 2 m by a profile no measurement in this
+  // project has ever tested below 6.1 m, and it is doing more work (x0.72 over
+  // short grass, x0.56 over scrub) than every terrain candidate combined. The
+  // instrument figures below are the network's, not the station's — the API
+  // names no anemometer per site, so the worse of the two cups CoAgMet
+  // documents is used, and a reported 0.0 is censored at the larger of the two
+  // starting thresholds rather than at either sensor's own.
+  //
+  // Whether the analysis has seen these masts is left unknown rather than
+  // assumed either way: an agricultural 2 m wind is the kind of observation a
+  // mesonet rejection list exists for, and nobody here has read NCEP's.
+  if (which === "coagmet") {
+    return {
+      source: coagmet.createCoagmetSource({}),
+      label: "CoAgMet Colorado mesonet, 5-minute or hourly means at a published " +
+        "2-3 m, timestamps ending the averaging interval, R.M. Young cups " +
+        "(±0.3-0.5 m/s, ±3-5°, starting at 0.5-1.0 m/s)",
+      floor: Object.assign({}, coagmet.COAGMET_QUANTISATION, coagmet.COAGMET_INSTRUMENT),
+      assimilated: null
+    };
+  }
+  throw new Error("--source is nws, synoptic, fems or coagmet, not " + JSON.stringify(name));
 }
 
 function line(label, score) {
@@ -1404,8 +1472,14 @@ function heights(report) {
       parts.push(group.ids.length +
         " publish no sensor height, scored at the model's own level");
     } else {
+      // A mast below 3 m is outside the range the log law has ever been
+      // checked against here, and the correction there is large: 10 m to 2 m
+      // over short grass is x0.72, and over scrub it is x0.56. Naming it is
+      // the whole difference between a score and a claim.
+      const extrapolated = h.sensorHeightM < NEAR_GROUND_CEILING_M
+        ? ", below anything this profile has been checked at" : "";
       parts.push(group.ids.length + " at " + h.sensorHeightM + " m AGL, model moved by x" +
-        fixed(h.factor, 3));
+        fixed(h.factor, 3) + extrapolated);
     }
   }
   if (!parts.length) return "measurement height: no stations scored";

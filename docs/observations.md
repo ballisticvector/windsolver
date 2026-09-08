@@ -23,6 +23,7 @@ from one anonymous GET.
 - [A one-minute record, and what the pairing window costs](#a-one-minute-record-and-what-the-pairing-window-costs)
 - [What an adapter has to refuse](#what-an-adapter-has-to-refuse)
 - [Using it: fems.js](#using-it-femsjs)
+- [Using it: coagmet.js](#using-it-coagmetjs)
 - [Recommendation](#recommendation)
 - [What is not known](#what-is-not-known)
 
@@ -174,6 +175,9 @@ Kremmling, Meeker, Ridgway, Granby, Cortez, Hayden, Cañon City, Gypsum, Durango
 Over a 500 m disc the same catalogue is 95 flat of 98, index −14.2 to +18.1 m, and **not
 one valley** — which is measurement 14's point again: a farm on the floor of the Gunnison
 valley is flat ground inside a hollow, and both readings are true.
+
+`coagmet.js` reads this network — see [Using it: coagmet.js](#using-it-coagmetjs), which
+asks for metric units and so sees the same heights in metres.
 
 That is a real answer to half the problem — **sub-3 m wind in western-slope valley
 bottoms, 5-minute, free, with per-station heights** — and a partial one to the other half:
@@ -338,6 +342,26 @@ meters, though some were positioned at 7.9 meters", and the Vaisala sonics that
 standardised the height at 10 m were fully adopted by 2010 — so a pre-2010 ASOS series has
 a sensor-height *and* a sensor-type change buried in it.
 
+### CoAgMet's cups, and why the figures are the network's rather than the station's
+
+CoAgMet documents two anemometers across the network and the API does not say which one
+answered:
+
+| | R.M. Young 05103 Wind Monitor | R.M. Young 03002 Wind Sentry |
+| --- | --- | --- |
+| Speed accuracy | ±0.3 m/s or 1% | ±0.5 m/s |
+| Direction accuracy | ±3° | ±5° |
+| Speed starting threshold | 1.0 m/s | 0.5 m/s |
+| Direction starting threshold | ~1.1 m/s | ~0.8 m/s |
+
+Nothing in `metadata.json` names the instrument at a site, so `coagmet.js` exports one
+conservative set rather than a per-station claim: **±0.5 m/s and ±5°** from the worse
+sensor, and a calm ceiling of **1.0 m/s** from the *higher* of the two starting
+thresholds, since a reported 0.0 could have come from either mast and the wider bound is
+the one that cannot be too small. `COAGMET_QUANTISATION` is separate and much finer —
+the archive stores 0.01 m/s and 0.1° — which is the same distinction the ASOS table
+draws: the rounding is not the tolerance, and the tolerance is seven to fifty times it.
+
 **A RAWS is not an ASOS, and none of this transfers to one.** No equivalent specification
 has been read for the RAWS network, so `tools/score-wind.js` passes the FEMS and Synoptic
 readers a null tolerance — "nobody has looked this up" — rather than borrowing ±2 kt and
@@ -458,6 +482,52 @@ would move the score and not the series.
 It grades **the reader, not the archive**: both services are downstream of the same WIMS
 feed, and Synoptic cannot reach the years FEMS is here for.
 
+## Using it: coagmet.js
+
+```bash
+node tools/station-survey.js --source coagmet --state CO --limit 6 --position 2000
+node tools/score-wind.js --source coagmet --stations gun01,alt01 --hours 3 --tolerance 30
+```
+
+No account, no token, and the same three methods `fems.js` and `synoptic.js` expose.
+What the reader has to know about the service, all of it measured against the live API
+and captured into `tests/fixtures/coagmet-*.json` by `tools/make-coagmet-fixtures.sh`:
+
+| | What the API does | What `coagmet.js` does about it |
+| --- | --- | --- |
+| Units | `units=us` by default — heights in **feet**, speeds in mph | Asks for `units=m` and **refuses a reply whose declared `units` is not `m`** rather than converting on trust |
+| Timestamp | `2026-08-01T21:00`, no offset in the string | Uses the reply's own `tzOffset`, never the runtime's zone |
+| Interval | The label **ends** the averaging interval | Keeps `intervalStartMs`/`intervalEndMs`/`averagingSeconds`, and scores at the **midpoint** |
+| Frequency | `/5min/` and `/hourly/`; a station has one native timestep | Reads `timestep` from the catalogue and asks for the product that station actually publishes |
+| Missing number | `-999` | Refused as absent — never rounded to 0 and never scored as calm |
+| Missing timestamp | empty string, with `-999` beside it | Refused as absent; a window of them is an empty series, not a calm hour |
+| Zero speed | `windSpeed 0.0` with `windDir 0.0` beside it | `calm: true`, **`fromDeg: null`** — a 0 direction under a 0 speed is not a north wind |
+| Unknown station | HTTP 400, `{"error": "Bad Request: Unknown station id zzz99"}` | A typed `unknown-station`, refused before any window is fetched |
+| Wrong case | `5min/GUN01.json` answers the bare string `Invlid request` — not JSON, no error field | Catalogue keyed lower-case, and the **catalogue's** id is what goes into the URL |
+| QC | defaults to the QC product and says so in `which` | Recorded as the source's own statement; no row-level QC is claimed on top of it |
+| Raw | the documented raw syntax is ambiguous, and the endpoint guessed at returned QC data | **Unsupported.** A product that cannot be confirmed is not offered |
+
+**The interval convention was proved from the data rather than read.** The hourly value
+labelled `21:00` equals the mean of the twelve five-minute values labelled `20:05` through
+`21:00` to within the archive's own 0.01 m/s quantisation — so both labels close their
+interval, and a reader that took them as interval *starts* would sit an hour and five
+minutes out at the hourly product. That comparison is a test, not a note.
+
+**Height is published per station and is not defaulted.** `anemometerHeight` comes back
+in the requested unit system — metres here, feet if anyone asks for `units=us` — and the
+three active stations that publish none get `sensorHeightM: null` rather than the 2 m the
+rest of the network would suggest. A station that will not say how high it is cannot have
+its model wind moved to it.
+
+**A score from it is not a validated near-ground field, and the summary now says so.**
+Bringing HRRR's 10 m wind down to a 2 m mast is a log-law extrapolation *below* every
+height this project has ever checked, and it moves the model by about **x0.72** — more
+than every terrain candidate ever ablated, combined. `tools/score-wind.js` prints
+"below anything this profile has been checked at" against any station under 3 m for
+exactly that reason. And whether the HRRR analysis assimilates these masts has not been
+established either way, so an f0 CoAgMet run reports its independence as **UNKNOWN**
+rather than borrowing the airports' answer.
+
 ## Recommendation
 
 **Do not buy anything yet.** Nothing currently open needs a paid tier:
@@ -470,10 +540,11 @@ feed, and Synoptic cannot reach the years FEMS is here for.
    suspicious series, and for reaching networks FEMS does not carry.
 3. **Keep the free Synoptic token** for live and recent-past work, which is what it is
    good at and where its account limit does not bite.
-4. **USCRN and CoAgMet for the near-ground layer, when there is one to score** — 1.5 m and
-   2 m respectively, 5-minute, no account, and the only instruments found that stand
-   inside the 0–3 m layer `docs/near-ground-wind.md` is about. Neither has an adapter and
-   neither should get one before there is a field worth grading against it.
+4. **CoAgMet, and USCRN when there is a near-ground field to score** — 2 m and 1.5 m
+   respectively, 5-minute, no account, and the only instruments found that stand inside
+   the 0–3 m layer `docs/near-ground-wind.md` is about. CoAgMet now has an adapter; what
+   it grades is the model brought *down* to 2 m by an untested profile, not a near-ground
+   field, because there is not one yet. USCRN should not get an adapter before there is.
 
 If a commercial source is wanted later, the question to ask a vendor is not coverage or
 price but **"is this an anemometer or a reanalysis, and what timestamp convention is on
@@ -516,9 +587,23 @@ pricing page.
   hour opened, and one hour is not the archive. Nothing was found in the file's variable
   attributes that states a sensor height either, so the conclusion "MADIS does not carry
   the height" rests on a single 383 MB sample.
-- **CoAgMet and USCRN QC semantics, terms of use and rate limits.** Neither was read
-  beyond the sensor height and the timestep; no adapter exists for either, and no run in
-  `docs/downscaling.md` has been scored against a mast below 6.1 m.
+- **What CoAgMet's QC actually checks.** The reply says `which: "qc"` and that is the
+  whole of what is documented: no per-row flag, no list of tests, no way to tell a value
+  that passed from one that was never examined. `coagmet.js` records the mode and claims
+  nothing more, which is the FEMS flag problem again in a different shape.
+- **CoAgMet's raw product.** The documented syntax for it is ambiguous and the endpoint
+  guessed at returned QC data, so the reader offers QC only. Any comparison of raw against
+  QC — the one measurement that would say what the QC does — is therefore not available.
+- **CoAgMet terms of use and rate limits.** None published, none provoked; the traffic
+  here was a handful of calls and a fixture capture.
+- **Which anemometer is at which CoAgMet station**, which is why one conservative
+  network-level tolerance is exported rather than a per-station one.
+- **USCRN**, still: read for sensor height and timestep only, no adapter.
+- **Whether HRRR assimilates CoAgMet.** NCEP's mesonet use and rejection lists have not
+  been read, so an f0 run against these masts is reported as UNKNOWN independence rather
+  than as an analysis fit or as a clean out-of-sample score.
+- No run in `docs/downscaling.md` has been scored against a mast below 6.1 m as evidence
+  about the downscaling; the CoAgMet smoke run exists to exercise the reader.
 - **What a CoAgMet 2 m mast on irrigated ground represents.** The metadata carries an
   `irrigation` field with `full`, `part` and `dry` in it, which is a statement about the
   surface and the stability directly under the anemometer. Nothing here has used it, and
