@@ -149,6 +149,70 @@ function strideFor(grid, targetArrows) {
   return Math.max(1, Math.ceil(Math.sqrt(cells / target)));
 }
 
+/**
+ * How long each arrow is drawn, given the speeds actually on screen.
+ *
+ * Until this existed every arrow was the same length and speed reached the eye
+ * only as the colour wash, so the one quantity that varies usefully across a
+ * two-mile box — ±15% at Boulder, ±25% at Big Thompson — was the one quantity
+ * nobody could see. Length is the channel the eye reads ratios in; colour is
+ * the channel it reads bands in. They now say the same thing twice.
+ *
+ * Three decisions worth keeping:
+ *
+ * **The full-length speed is a stop on the speed legend, not the field's own
+ * maximum.** Normalising to the maximum would rescale every arrow on the map
+ * each time the view moved over a gust, so an arrow's length would mean
+ * something different from one pan to the next while looking identical. Pinned
+ * to the legend it changes rarely, in visible steps, and the caption names it.
+ *
+ * **Below `floorMph` the length stops meaning anything.** A 0.5 mph arrow drawn
+ * to scale is a dot, which reads as "no data" — and no data is a hole, which
+ * this map refuses to fake. So short arrows clamp to a stub, and the caption
+ * says at what speed that starts, because an unstated floor is a lie about the
+ * bottom of the range.
+ *
+ * **A hole gets `null`, never the stub.** Same rule as `speedColor`: the caller
+ * has to decide what an unknown cell looks like and cannot do it by accident.
+ */
+function arrowScale(cells, opts) {
+  const o = opts || {};
+  const maxPx = Number.isFinite(o.maxPx) ? o.maxPx : 26;
+  const floorPx = Number.isFinite(o.floorPx) ? o.floorPx : Math.min(maxPx, 6);
+
+  let peak = 0;
+  for (const cell of cells || []) {
+    const speed = cell && Number.isFinite(cell.speedMph) ? cell.speedMph : null;
+    if (speed !== null && speed > peak) peak = speed;
+  }
+
+  // The lowest stop that covers what is on screen. Never the 0 stop: a legend
+  // whose full length is nought has no scale on it at all.
+  let fullMph = SPEED_STOPS[SPEED_STOPS.length - 1].mph;
+  for (let i = 1; i < SPEED_STOPS.length; i++) {
+    if (peak <= SPEED_STOPS[i].mph) { fullMph = SPEED_STOPS[i].mph; break; }
+  }
+
+  const floorMph = maxPx > 0 ? (fullMph * floorPx) / maxPx : 0;
+
+  function lengthFor(speedMph) {
+    if (!Number.isFinite(speedMph)) return null;
+    const px = (Math.max(0, speedMph) / fullMph) * maxPx;
+    return Math.min(maxPx, Math.max(floorPx, px));
+  }
+
+  return {
+    fullMph: fullMph,
+    floorMph: floorMph,
+    maxPx: maxPx,
+    floorPx: floorPx,
+    lengthFor: lengthFor,
+    caption: "Arrow length is speed: a full-length arrow is " + fullMph +
+      " mph. Below " + floorMph.toFixed(1) +
+      " mph they are all the same stub, and length stops meaning anything."
+  };
+}
+
 /** The lowest and highest ground in the grid, ignoring the holes. */
 function elevationRange(grid) {
   let min = null;
@@ -790,6 +854,7 @@ const api = {
   ratioColor: ratioColor,
   cellsOf: cellsOf,
   strideFor: strideFor,
+  arrowScale: arrowScale,
   elevationRange: elevationRange,
   centreWind: centreWind,
   compassOf: compassOf,

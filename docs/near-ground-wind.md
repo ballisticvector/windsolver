@@ -253,8 +253,14 @@ is refused, not smoothed.** For this product that means at least
 
 - the drawn height stated on the map, not implied — `heightAglM` is already in the
   contract and already refuses to quietly match a 6.1 m mast;
-- speed reaching the eye as arrow *length* and not only as a colour wash, since ±15–25%
-  of speed variation is already in the field and currently invisible;
+- speed reaching the eye as arrow *length* and not only as a colour wash — **done**:
+  `wind-map.arrowScale` lengths every arrow in proportion to its own speed, so the ±15–25%
+  already in the field is legible as a shape rather than as a band of colour. Two things
+  it deliberately does not do: it scales to a **stop on the speed legend** rather than to
+  the fastest cell on screen, because normalising to the maximum would silently rescale
+  every arrow each time the view moved over a gust; and it **clamps short arrows to a
+  stub** and says at what speed the clamp starts, because an arrow drawn to scale at
+  0.5 mph is a dot and a dot reads as no data, which on this map means a hole;
 - the near-ground factor shown as the range it is, not as a number;
 - and no near-ground layer at all over ground with no land cover behind it, in the same
   way `no-terrain` is an answer today.

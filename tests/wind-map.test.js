@@ -110,6 +110,51 @@ describe("strideFor", () => {
   });
 });
 
+describe("arrowScale: length carries the speed the wash was hiding", () => {
+  const cells = [{ speedMph: 2 }, { speedMph: 6 }, { speedMph: 11 }];
+
+  test("the longest arrow is a stop on the speed legend, not the field's own maximum", () => {
+    // Quantised so that panning the map does not silently rescale every arrow:
+    // 11 mph tops out at the 13 mph stop, and so does 12.9.
+    expect(lib.arrowScale(cells, { maxPx: 20 }).fullMph).toBe(13);
+    expect(lib.arrowScale([{ speedMph: 12.9 }], { maxPx: 20 }).fullMph).toBe(13);
+    expect(lib.arrowScale([{ speedMph: 3 }], { maxPx: 20 }).fullMph).toBe(4);
+  });
+
+  test("length is proportional to speed, so two arrows can be compared by eye", () => {
+    const scale = lib.arrowScale(cells, { maxPx: 26, floorPx: 0 });
+    expect(scale.lengthFor(6) / scale.lengthFor(2)).toBeCloseTo(3, 6);
+    expect(scale.lengthFor(13)).toBeCloseTo(26, 6);
+  });
+
+  test("below the floor every arrow is the same stub, and the scale says where that is", () => {
+    const scale = lib.arrowScale(cells, { maxPx: 20, floorPx: 5 });
+    expect(scale.floorMph).toBeCloseTo(13 * 5 / 20, 6);
+    expect(scale.lengthFor(0.1)).toBe(5);
+    expect(scale.lengthFor(0)).toBe(5);
+    expect(scale.caption).toMatch(/13 mph/);
+    expect(scale.caption).toMatch(/3\.3 mph/);
+  });
+
+  test("a hole has no length at all, and is not a calm stub", () => {
+    const scale = lib.arrowScale(cells, { maxPx: 20 });
+    expect(scale.lengthFor(null)).toBeNull();
+    expect(scale.lengthFor(NaN)).toBeNull();
+  });
+
+  test("a field with nothing in it still gives a usable scale", () => {
+    const scale = lib.arrowScale([{ speedMph: null }], { maxPx: 20 });
+    expect(scale.fullMph).toBe(lib.SPEED_STOPS[1].mph);
+    expect(scale.lengthFor(1)).toBeGreaterThan(0);
+  });
+
+  test("a wind past the top of the legend is drawn at full length, not off the end", () => {
+    const scale = lib.arrowScale([{ speedMph: 80 }], { maxPx: 20 });
+    expect(scale.fullMph).toBe(lib.SPEED_STOPS[lib.SPEED_STOPS.length - 1].mph);
+    expect(scale.lengthFor(200)).toBe(20);
+  });
+});
+
 describe("the ground", () => {
   test("elevationRange ignores the holes", () => {
     expect(lib.elevationRange(answer().grid)).toEqual({ minM: 1601, maxM: 1700 });
@@ -402,6 +447,25 @@ describe("the parts of the page a unit test cannot run", () => {
     // for it again. Measured by editing the latitude field, which recentres.
     expect(clear[1].indexOf("removeAttribute(\"src\")"))
       .toBeLessThan(clear[1].indexOf("revokeObjectURL"));
+  });
+
+  test("each arrow is drawn at its own cell's length, and a hole is skipped", () => {
+    const draw = /const scale = lib\.arrowScale\(([\s\S]*?)ctx\.globalAlpha = 1;/.exec(js);
+    expect(draw).not.toBeNull();
+    expect(draw[1]).toContain("scale.lengthFor(cell.speedMph)");
+    // A cell the scale will not measure is left undrawn rather than given the
+    // stub: a stub is a slow wind, and a hole is not a slow wind.
+    expect(draw[1]).toContain("if (length === null) continue;");
+  });
+
+  test("the scale the arrows were drawn at is the scale the caption states", () => {
+    // Written by the layer that drew them, because the thinning decides which
+    // cells the scale saw and the page cannot know that.
+    expect(js).toContain("fieldLayer.onScale = function (scale)");
+    expect(js).toContain("$(\"arrowScale\")");
+    expect(js).toContain("el.textContent = scale.caption");
+    const html = fs.readFileSync(path.join(__dirname, "..", "public", "index.html"), "utf8");
+    expect(html).toContain("id=\"arrowScale\"");
   });
 
   test("a refused wind does not silence the relief's own refusal", () => {
