@@ -319,6 +319,23 @@ describe("what the run asks for", () => {
     });
     expect(report.source.independence).toMatch(/assimilates these stations/);
   });
+
+  test("a network nobody has checked is reported unknown, not independent", async () => {
+    // The airport answer is a fact about NCEP's use of METARs, and reading it
+    // onto a 2 m agricultural mast would be the wrong half of the caveat: it
+    // would make a CoAgMet score look either freely usable or already
+    // discounted, and neither has been established.
+    const service = stubService(function () {
+      return stubField({ speedMps: 4, fromDeg: 270, referenceMps: 5 });
+    });
+    const report = await scoreWind.buildReport({
+      source: stubSource(), service: service, stations: ["KBDU"], hours: 1, endMs: END,
+      assimilated: null
+    });
+    expect(report.source.independence).toMatch(/^UNKNOWN/);
+    expect(scoreWind.sourceFor("coagmet", ["gun01"], {}).assimilated).toBeNull();
+    expect(scoreWind.sourceFor("nws", ["KBDU"], {}).assimilated).toBe(true);
+  });
 });
 
 describe("what the run scores", () => {
@@ -596,6 +613,41 @@ describe("the summary a person reads", () => {
     expect(text).toMatch(/KBDU flat/);
     // Nothing about a rifle reaches a general wind report.
     expect(text).not.toMatch(/azimuth|hold|bullet|shot/i);
+  });
+
+  test("a mast below 3 m says the profile carrying it has never been checked there", async () => {
+    // The correction from HRRR's 10 m to a CoAgMet 2 m mast is about x0.72 over
+    // short grass and x0.56 over scrub — larger than every terrain candidate
+    // ever ablated put together, and taken on a log law no observation in this
+    // project has ever tested below 6.1 m. The summary has to carry that, or a
+    // near-ground score reads as a measurement of the downscaling.
+    const near = await scoreWind.buildReport({
+      source: stubSource({
+        station: async function () {
+          return Object.assign({}, station, { sensorHeightM: 2 });
+        }
+      }),
+      service: stubService(function () {
+        return stubField({ speedMps: 4, fromDeg: 270, referenceMps: 9 });
+      }),
+      stations: ["KBDU"], hours: 4, endMs: END
+    });
+    expect(scoreWind.summarise(near))
+      .toMatch(/1 at 2 m AGL, model moved by x0\.72\d*, below anything this profile has been checked at/);
+
+    const raws = await scoreWind.buildReport({
+      source: stubSource({
+        station: async function () {
+          return Object.assign({}, station, { sensorHeightM: 6.1 });
+        }
+      }),
+      service: stubService(function () {
+        return stubField({ speedMps: 4, fromDeg: 270, referenceMps: 9 });
+      }),
+      stations: ["KBDU"], hours: 4, endMs: END
+    });
+    expect(scoreWind.summarise(raws)).toMatch(/1 at 6\.1 m AGL, model moved by x0\./);
+    expect(scoreWind.summarise(raws)).not.toMatch(/never been checked|has been checked at/);
   });
 
   test("the sensor's own tolerance is printed beside the errors it dwarfs", async () => {
@@ -1169,7 +1221,22 @@ describe("which observation service the run scores against", () => {
   });
 
   test("a service nobody implemented is named in the refusal", () => {
-    expect(() => scoreWind.sourceFor("madis", [], {})).toThrow(/nws, synoptic or fems/);
+    expect(() => scoreWind.sourceFor("madis", [], {}))
+      .toThrow(/nws, synoptic, fems or coagmet/);
+  });
+
+  test("CoAgMet carries its own cups, and not the airport's or the RAWS' null", () => {
+    const chosen = scoreWind.sourceFor("coagmet", ["gun01"], {});
+    const scored = verify.score([], chosen.floor);
+    // The network documents two anemometers and the reply never says which of
+    // them answered, so the worse of the two rides on every row.
+    expect(scored.instrument.speedToleranceMps).toBeCloseTo(0.5, 6);
+    expect(scored.instrument.dirToleranceDeg).toBe(5);
+    // And a reported 0.0 is censored at the larger starting threshold, which
+    // is 1.0 m/s — about half the observed mean of the samples scored so far.
+    expect(scored.calmCeilingMps).toBeCloseTo(1.0, 6);
+    expect(chosen.floor.speedStepMps).toBeCloseTo(0.01, 6);
+    expect(chosen.label).toMatch(/2-3 m/);
   });
 
   test("FEMS is scored at 1 mph, which is 0.447 m/s and not a rounding detail", () => {

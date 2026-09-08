@@ -76,6 +76,12 @@ npm run lint
 > - **An ASOS is not at 10 m either** — the guide says 33 ft or 27 ft "depending on local
 >   site-specific criteria", so the airport comparisons were never height-matched, and a
 >   pre-2010 series also has the Belfort-to-Vaisala change buried in it.
+> - **CoAgMet answers in feet and miles per hour unless asked otherwise, labels an
+>   average with the time it *ended*, and writes `-999` for a missing number** — three
+>   ways to be quietly wrong by 3.3x, by an hour, or by inventing a 999 m/s wind.
+>   `coagmet.js` asks for `units=m` and refuses a reply that does not declare it, keeps
+>   the interval and scores at its midpoint, and treats `-999` and a blank timestamp as
+>   absence rather than as calm. `docs/observations.md` has the table.
 > - **The terrain downscaling is not yet known to help, and on ridges it measurably
 >   hurts.** `docs/downscaling.md` is the standing note: read it before changing anything
 >   in `downscale.js`, and add to it rather than starting a new one.
@@ -186,8 +192,18 @@ a correction, because the sheltering it shows in Colorado does not survive New M
 below). `--position` and `--threshold` ride on every surveyed station for this reason, and
 the survey's footnote quotes the radius it ran at; never compare a count taken at one
 radius with a count taken at another.
-Below 3 m the RAWS network still has nothing — CoAgMet has 95 Colorado masts at 2–3 m and
-USCRN measures at 1.5 m (`docs/observations.md`), and neither is wired into a run.
+Below 3 m the RAWS network has nothing. CoAgMet does — 95 Colorado masts at 2–3 m, and
+`--source coagmet` now scores against them — and USCRN measures at 1.5 m and has no
+adapter (`docs/observations.md`). **A CoAgMet score is not a near-ground result.** What it
+grades is HRRR brought *down* from 10 m to a 2 m mast by a log law no measurement here has
+ever tested below 6.1 m, a step worth about **x0.72** — larger than every terrain candidate
+ever ablated put together — so the summary marks any station under 3 m "below anything this
+profile has been checked at", and whether NCEP assimilates these masts is unread, so an f0
+run reports its independence as UNKNOWN rather than borrowing the airports' answer. Its
+timestamps **end** the averaging interval (proved against the five-minute series, not read
+off a page), `-999` and a blank timestamp are absences and never calm, a zero speed carries
+a null direction rather than a north wind, and the service refuses an id in the wrong case
+with a bare `Invlid request` that is not JSON.
 
 **Score FEMS with `--tolerance 30`.** Dating a RAWS correctly does not move it closer to
 the model's whole hour; it makes the distance visible. At the 10-minute default, five of

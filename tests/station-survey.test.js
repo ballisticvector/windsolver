@@ -305,4 +305,18 @@ describe("the survey's command line", () => {
       .toThrow("unrecognised option --spred");
     expect(survey.parseArgs(["--spread", "30"])).toEqual({ spread: "30" });
   });
+
+  test("a Synoptic network number is not asked of a catalogue that names its networks", () => {
+    // The failure this prevents is silent: CoAgMet answers 101 Colorado
+    // stations, a network filter of 2 matches none of them, and the survey
+    // prints "101 stations listed, 0 read" as though the ground were
+    // unreadable rather than the query being wrong.
+    expect(survey.networkFor(undefined, undefined)).toBe(2);
+    expect(survey.networkFor("synoptic", undefined)).toBe(2);
+    expect(survey.networkFor("coagmet", undefined)).toBeUndefined();
+    expect(survey.networkFor("fems", undefined)).toBeUndefined();
+    // Asked for by hand, each catalogue gets it in its own vocabulary.
+    expect(survey.networkFor("coagmet", "Nrcs")).toBe("Nrcs");
+    expect(survey.networkFor("synoptic", "2")).toBe(2);
+  });
 });

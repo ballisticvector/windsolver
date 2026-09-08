@@ -7,9 +7,13 @@
  *   node tools/station-survey.js --source fems --state CO --limit 200 --spread 30
  *
  * Options:
- *   --source     synoptic (default) or fems, the catalogue the stations come from
+ *   --source     synoptic (default), fems or coagmet, the catalogue the stations
+ *                come from. coagmet is Colorado only, and is the only one of the
+ *                three whose masts are below 3 m.
  *   --state      comma-separated two-letter states (default CO)
- *   --network    Synoptic network id (default 2, RAWS)
+ *   --network    Synoptic network id (default 2, RAWS). Meaningless to the
+ *                other two catalogues, so it is not defaulted for them: a
+ *                Synoptic network number filters every CoAgMet station out.
  *   --limit      stop after this many stations have been read (default 60)
  *   --spread     also choose this many stations spaced evenly across the
  *                position index, and print them as a set
@@ -77,6 +81,7 @@ const derive = require("../derive.js");
 const field = require("../field.js");
 const synoptic = require("../synoptic.js");
 const fems = require("../fems.js");
+const coagmet = require("../coagmet.js");
 const verify = require("../verify.js");
 const cog = require("../cog.js");
 
@@ -360,6 +365,21 @@ function summarise(report, opts) {
   return lines.join("\n");
 }
 
+/**
+ * Which network to ask the catalogue for, which is not the same question twice.
+ *
+ * A network id is Synoptic's own vocabulary, and 2 means RAWS only there. FEMS
+ * is RAWS by construction and CoAgMet names its networks in words (`Coag`,
+ * `Nrcs`), so defaulting Synoptic's 2 onto either asks for a network that does
+ * not exist — and a filter nothing matches surveys nothing while reporting a
+ * full catalogue, which is what it did.
+ */
+function networkFor(source, asked) {
+  const which = source === undefined ? "synoptic" : String(source);
+  if (asked === undefined) return which === "synoptic" ? synoptic.RAWS_NETWORK_ID : undefined;
+  return which === "coagmet" ? String(asked) : Number(asked);
+}
+
 /** The catalogue the stations are listed from. */
 function sourceOf(name) {
   if (name === undefined || name === "synoptic") {
@@ -368,7 +388,10 @@ function sourceOf(name) {
     return synoptic.createSynopticSource({ token: token });
   }
   if (name === "fems") return fems.createFemsSource({});
-  throw new Error("unknown --source " + JSON.stringify(name) + "; use synoptic or fems");
+  // Colorado only, and the whole catalogue is one request, so `--state` filters
+  // it here rather than at the service.
+  if (name === "coagmet") return coagmet.createCoagmetSource({});
+  throw new Error("unknown --source " + JSON.stringify(name) + "; use synoptic, fems or coagmet");
 }
 
 async function main(argv) {
@@ -378,7 +401,7 @@ async function main(argv) {
     source: sourceOf(args.source === undefined ? undefined : String(args.source)),
     states: args.state ? String(args.state).toUpperCase() : "CO",
     spread: args.spread === undefined ? null : Number(args.spread),
-    network: args.network === undefined ? synoptic.RAWS_NETWORK_ID : Number(args.network),
+    network: networkFor(args.source, args.network),
     limit: args.limit === undefined ? DEFAULT_LIMIT : Number(args.limit),
     radiusMiles: args.radius === undefined ? 0.5 : Number(args.radius),
     resolutionM: args.resolution === undefined ? 30 : Number(args.resolution),
@@ -398,7 +421,7 @@ async function main(argv) {
   }) + "\n");
 }
 
-module.exports = { landformAt, survey, summarise, spread, inStates, parseArgs };
+module.exports = { landformAt, survey, summarise, spread, inStates, parseArgs, networkFor };
 
 if (require.main === module) {
   main(process.argv.slice(2)).catch(function (err) {
