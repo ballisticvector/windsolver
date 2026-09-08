@@ -92,6 +92,18 @@ npm run lint
 >   *worse* against both CoAgMet and FEMS at every distance out to two miles
 >   (measurement 17). Do not quote that spread as evidence about terrain, and do not turn
 >   it on by default because a map looks better with it.
+> - **The particle layer animates a snapshot, and animation is what hides that.** The
+>   moving trails on the map are `wind-map.particleField` advecting massless dots through
+>   the *same static field* the arrows draw — not air travelling over time, and not a
+>   mass-consistent flow solution: neighbouring cells in a downscaled field need not
+>   connect to each other, so a swirl in it can be two independent cells side by side.
+>   Three things keep it honest and none of them are decoration: a particle whose next
+>   step lands on a cell with no terrain read is killed rather than carried, so a trail
+>   can never cross a hole or fill one from its neighbours; a reseeded particle carries no
+>   previous point, so no line joins its two lives; and the caption states the
+>   exaggeration `motionScale` computes, because real-time motion over a two-mile box is a
+>   still image. Do not interpolate the sampling, do not turn it on by default, and do not
+>   let a trail outlive its coverage.
 > - **Three observation providers put three different timestamps on the same wind, and
 >   FEMS' is not off by a fixed amount.** For one RAWS report MADIS and Synoptic both say
 >   `12:54`; FEMS says `13:00`, because it labels the *nearest* whole hour and throws the
