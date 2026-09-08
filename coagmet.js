@@ -94,6 +94,9 @@
 /** Where the service lives. No account, no key, no rate limit published. */
 const COAGMET_ROOT = "https://coagmet.colostate.edu/data";
 
+/** How many times a request that never reached the service is sent again. */
+const DEFAULT_RETRIES = 2;
+
 /** The value CoAgMet writes where there is no measurement. */
 const MISSING = -999;
 
@@ -539,14 +542,46 @@ function createCoagmetSource(opts) {
   const o = opts || {};
   const doFetch = o.fetch || globalThis.fetch;
   const includeInactive = !!o.inactive;
+  const retries = o.retries === undefined ? DEFAULT_RETRIES : o.retries;
+  const sleep = o.sleep || function (ms) {
+    return new Promise(function (r) { setTimeout(r, ms); });
+  };
   let catalogue = null;
   const series = new Map();
+
+  /**
+   * The reply, or a refusal — never a dropped socket read as an empty station.
+   *
+   * A scoring run asks this service for one station, spends a minute solving
+   * that station's domain, and asks for the next. CoAgMet closes an idle
+   * keep-alive connection inside that minute and Node hands the closed socket
+   * to the next request, which fails as `UND_ERR_SOCKET` before a byte is
+   * sent. It killed a 32-station run at the third station. A request that
+   * never reached the service is retried, the way `archive.js` retries one;
+   * an answer, including a refusal, is not.
+   */
+  async function fetched(url, what) {
+    let attempt = 0;
+    for (;;) {
+      attempt += 1;
+      try {
+        return await doFetch(url, { headers: { accept: "application/json" } });
+      } catch (err) {
+        if (attempt > retries) {
+          throw fail("network", "no response from CoAgMet for " + what + " after " +
+            attempt + " attempt(s): " + (err && err.message ? err.message : String(err)),
+            { url: url, cause: err });
+        }
+        await sleep(500 * attempt);
+      }
+    }
+  }
 
   async function getJson(url, what) {
     if (typeof doFetch !== "function") {
       throw fail("no-fetch", "no fetch available to read " + what + " from CoAgMet");
     }
-    const res = await doFetch(url, { headers: { accept: "application/json" } });
+    const res = await fetched(url, what);
     const text = await res.text();
     if (!res.ok) {
       // The one absence this service states out loud, and the only reader here

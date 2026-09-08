@@ -158,6 +158,26 @@ the solved field directly against USCRN's 1.5 m and CoAgMet's 2 m masts skips th
 argument entirely: it grades the drawn layer against instruments standing in it, which is
 the first time that has been possible here.
 
+### That score has now been run, and it moves this step but does not close it
+
+Measurement 16 in `docs/downscaling.md`: 31 CoAgMet masts at 2–3 m, four archive dates,
+11,859 pairs. Three things in it belong to this note.
+
+- **The bias down there is not the bias up here.** HRRR needs ×0.84–1.02 over these masts
+  and is unbiased on the windy March day, against ×0.60–0.70 over RAWS at 6.1 m on the same
+  dates. The log law accounts for a factor 0.79 of the difference and no more. So the
+  headline "HRRR runs 43–70% fast", which this note's first bounding number came from, is a
+  property of the RAWS sample rather than of the model.
+- **Direction is the weak quantity in this layer, and this note had not said so.** 34° RMSE
+  on the windy day, 53–62° on the light ones, against a 17° clock term. Every step above is
+  written about speed. A wind arrow at 0–3 m is read for its direction first, and that is
+  where the model is worst.
+- **It is still not a validation of the drawn layer.** What was graded is HRRR moved to the
+  mast by the same untested profile this step is about, so the fitted scale absorbs whatever
+  the profile gets wrong. A score against a 2 m mast makes the profile *testable*; it does
+  not test it. Two heights on one mast, or a mast the profile was not used to reach, remain
+  the thing that would.
+
 ## Step 3: a reference wind per cell, not per box
 
 **Why third:** it is the reason a two-mile map looks uniform, and unlike steps 1, 2 and 4
