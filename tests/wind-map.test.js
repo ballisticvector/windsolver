@@ -982,3 +982,221 @@ describe("the station layer on the page", () => {
     expect(html).toMatch(/own height rather than the anemometer's 6\.1 m/);
   });
 });
+
+/**
+ * A 5 x 5 field with a hole in it, at a latitude where a degree of longitude is
+ * a convenient fraction of a degree of latitude. Every cell blows the same way
+ * unless `speeds`/`bearings` say otherwise, so a test that moves a particle is
+ * testing the advection and not the field.
+ */
+function flowField(overrides) {
+  const o = overrides || {};
+  const rows = 5;
+  const cols = 5;
+  const lats = [40.04, 40.03, 40.02, 40.01, 40.0];
+  const lons = [-105.04, -105.03, -105.02, -105.01, -105.0];
+  const speedMps = [];
+  const fromDeg = [];
+  for (let i = 0; i < rows * cols; i++) {
+    speedMps.push(o.speeds && i in o.speeds ? o.speeds[i] : 10);
+    fromDeg.push(o.bearings && i in o.bearings ? o.bearings[i] : 270);
+  }
+  for (const i of o.holes || []) {
+    speedMps[i] = NaN;
+    fromDeg[i] = null;
+  }
+  return { rows: rows, cols: cols, lats: lats, lons: lons, speedMps: speedMps, fromDeg: fromDeg };
+}
+
+describe("sampleField: what the air is doing at a point that is not a cell centre", () => {
+  test("a point inside a cell reads that cell, not the one it is nearest in index", () => {
+    const grid = flowField({ speeds: { 12: 4 } });
+    // 40.0203/-105.0198 is inside the centre cell, off its centre in both axes.
+    const cell = lib.sampleField(grid, 40.0203, -105.0198);
+    expect(cell.row).toBe(2);
+    expect(cell.col).toBe(2);
+    expect(cell.speedMps).toBe(4);
+  });
+
+  test("a hole is not a wind, and does not borrow one from next door", () => {
+    const grid = flowField({ holes: [12] });
+    expect(lib.sampleField(grid, 40.02, -105.02)).toBeNull();
+    expect(lib.sampleField(grid, 40.02, -105.01)).not.toBeNull();
+  });
+
+  test("off the grid is nothing, and the edge cell keeps its own half-width", () => {
+    const grid = flowField();
+    expect(lib.sampleField(grid, 40.044, -105.02)).not.toBeNull();
+    expect(lib.sampleField(grid, 40.06, -105.02)).toBeNull();
+    expect(lib.sampleField(grid, 40.02, -104.9)).toBeNull();
+  });
+});
+
+describe("stepParticle: a trail is cut rather than drawn across a hole", () => {
+  test("the particle goes the way the air is going, not the way it is from", () => {
+    const grid = flowField();               // from 270: a westerly, moving east
+    const moved = lib.stepParticle(grid, { lat: 40.02, lon: -105.02 }, 10);
+    expect(moved.lon).toBeGreaterThan(-105.02);
+    expect(moved.lat).toBeCloseTo(40.02, 9);
+    // 10 m/s for 10 s is 100 m east, which at 40°N is 0.001172° of longitude.
+    expect(moved.lon).toBeCloseTo(-105.02 + 0.0011722, 5);
+  });
+
+  test("a step that would land on a hole kills the particle instead of interpolating", () => {
+    // Cell 13 is the next one east of 12. A particle in 12 blown east into it
+    // must stop at the boundary: filling a hole from its neighbours is the one
+    // thing this map refuses to do, and an animation would do it invisibly.
+    const grid = flowField({ holes: [13] });
+    expect(lib.stepParticle(grid, { lat: 40.02, lon: -105.02 }, 60)).toBeNull();
+  });
+
+  test("a step off the edge of the field kills it too", () => {
+    const grid = flowField();
+    expect(lib.stepParticle(grid, { lat: 40.02, lon: -105.001 }, 60)).toBeNull();
+  });
+
+  test("a particle already standing on a hole is dead where it stands", () => {
+    const grid = flowField({ holes: [12] });
+    expect(lib.stepParticle(grid, { lat: 40.02, lon: -105.02 }, 1)).toBeNull();
+  });
+
+  test("calm air holds the particle still and alive: still is what calm looks like", () => {
+    const grid = flowField({ speeds: { 12: 0 } });
+    const still = lib.stepParticle(grid, { lat: 40.02, lon: -105.02, age: 3 }, 10);
+    expect(still.lat).toBeCloseTo(40.02, 12);
+    expect(still.lon).toBeCloseTo(-105.02, 12);
+    expect(still.age).toBe(4);
+  });
+});
+
+describe("particleField: the field keeps its own particles, and reseeds them", () => {
+  /** A rand() that walks a fixed list, so a seeded field is reproducible. */
+  function cycle(values) {
+    let i = 0;
+    return function () { return values[i++ % values.length]; };
+  }
+
+  test("particles are only ever seeded on covered ground", () => {
+    const grid = flowField({ holes: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9] });
+    const field = lib.particleField(grid, { count: 40, rand: Math.random });
+    expect(field.particles).toHaveLength(40);
+    for (const p of field.particles) {
+      expect(lib.sampleField(grid, p.lat, p.lon)).not.toBeNull();
+    }
+  });
+
+  test("a reseeded particle carries no previous point, so no line joins its two lives", () => {
+    // The renderer draws a segment only when `from` is set. Without that a
+    // respawn draws a streak clean across the map that no wind produced.
+    const grid = flowField({ holes: [13, 14] });
+    const field = lib.particleField(grid, {
+      count: 1, life: 100, rand: cycle([0.5]),
+      seed: [{ lat: 40.02, lon: -105.02 }]
+    });
+    expect(field.particles[0].from).toBeNull();
+    field.advance(60);
+    expect(field.particles[0].from).toBeNull();
+    expect(lib.sampleField(grid, field.particles[0].lat, field.particles[0].lon)).not.toBeNull();
+  });
+
+  test("a live step carries the point it came from, so the segment is the wind", () => {
+    const grid = flowField();
+    const field = lib.particleField(grid, {
+      count: 1, life: 100, rand: cycle([0.5]),
+      seed: [{ lat: 40.02, lon: -105.03 }]
+    });
+    field.advance(10);
+    const p = field.particles[0];
+    expect(p.from).not.toBeNull();
+    expect(p.from.lon).toBeCloseTo(-105.03, 9);
+    expect(p.lon).toBeGreaterThan(p.from.lon);
+  });
+
+  test("a particle does not live for ever, or the field settles into a few streamlines", () => {
+    const grid = flowField();
+    const field = lib.particleField(grid, {
+      count: 1, life: 2, rand: cycle([0.5]),
+      seed: [{ lat: 40.02, lon: -105.03 }]
+    });
+    field.advance(1);
+    field.advance(1);
+    expect(field.particles[0].from).toBeNull();
+    expect(field.particles[0].age).toBe(0);
+  });
+
+  test("a field with no covered cell has no particles at all, and does not throw", () => {
+    const grid = flowField({ holes: Array.from({ length: 25 }, (_, i) => i) });
+    const field = lib.particleField(grid, { count: 10, rand: Math.random });
+    expect(field.particles).toHaveLength(0);
+    expect(function () { field.advance(1); }).not.toThrow();
+  });
+});
+
+describe("motionScale: how much faster than the air the drawing is", () => {
+  test("the exaggeration is the drawn speed over the real one, and is stated", () => {
+    // 8 mph full scale is 3.576 m/s; 40 px/s over 20 m/px is 800 m/s drawn.
+    const scale = lib.motionScale(8, 20, { pxPerSecond: 40 });
+    expect(scale.drawnMps).toBeCloseTo(800, 6);
+    expect(scale.speedup).toBeCloseTo(800 / (8 / lib.MPS_TO_MPH), 6);
+    expect(scale.caption).toMatch(/faster than the air/);
+    expect(scale.caption).toMatch(/not air travelling over time/);
+  });
+
+  test("the simulated seconds per drawn second is the exaggeration itself", () => {
+    const scale = lib.motionScale(13, 12, { pxPerSecond: 30 });
+    expect(scale.secondsPerSecond).toBeCloseTo(scale.speedup, 9);
+  });
+
+  test("a scale with no wind in it does not divide by nothing", () => {
+    const scale = lib.motionScale(0, 20, { pxPerSecond: 40 });
+    expect(scale.speedup).toBeNull();
+    expect(scale.caption).toMatch(/not air travelling over time/);
+  });
+});
+
+describe("the particle layer on the page", () => {
+  const fs = require("fs");
+  const path = require("path");
+  const js = fs.readFileSync(path.join(__dirname, "..", "public", "map.js"), "utf8");
+  const html = fs.readFileSync(path.join(__dirname, "..", "public", "index.html"), "utf8");
+
+  test("it is a toggle, and it is off until somebody asks for it", () => {
+    expect(html).toMatch(/<input id="particles" type="checkbox">/);
+    expect(html).not.toMatch(/<input id="particles" type="checkbox" checked>/);
+    expect(js).toContain("$(\"particles\").addEventListener(\"change\"");
+  });
+
+  test("the drawing skips a particle with nowhere to come from", () => {
+    // The reseed contract only holds if the renderer honours it.
+    const frame = /_frame: function \(now\) \{([\s\S]*?)\n {4}\}/.exec(js);
+    expect(frame).not.toBeNull();
+    expect(frame[1]).toContain("if (!p.from) continue;");
+  });
+
+  test("the caption is written by the layer that draws them, and cleared with it", () => {
+    expect(html).toContain("id=\"particleNote\"");
+    expect(js).toContain("particleLayer.onScale");
+    const reset = /_reset: function \(\) \{([\s\S]*?)\n {4}\}/g;
+    const bodies = js.match(reset) || [];
+    expect(bodies.some(function (b) { return b.includes("this.onScale(null)"); })).toBe(true);
+  });
+
+  test("the wind and its particles are taken off the map together", () => {
+    const clear = /function clearWind\(\) \{([\s\S]*?)\n {2}\}/.exec(js);
+    expect(clear[1]).toContain("particleLayer.clear()");
+    expect(js).toContain("particleLayer.setField(body)");
+  });
+
+  test("the particles sit above the wash and below the anemometers", () => {
+    // A measurement under an animation is the wrong way round on this map.
+    const particles = /getPane\("particles"\)\.style\.zIndex = (\d+)/.exec(js);
+    const stations = /getPane\("stations"\)\.style\.zIndex = (\d+)/.exec(js);
+    expect(Number(particles[1])).toBeGreaterThan(400);
+    expect(Number(particles[1])).toBeLessThan(Number(stations[1]));
+  });
+
+  test("nothing animates in a background tab", () => {
+    expect(js).toContain("visibilitychange");
+    expect(js).toContain("document.hidden");
+  });
+});

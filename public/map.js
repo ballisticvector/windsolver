@@ -213,6 +213,171 @@
   fieldLayer.addTo(map);
 
   /**
+   * The particles: the same solved field, traced by dots that move.
+   *
+   * Motion is the channel the eye reads a flow in — it is why nullschool reads
+   * as weather and a grid of stubs reads as a diagram — and none of it needs a
+   * better model than the one already solved. What it needs is three refusals,
+   * because an animation asserts far more than an arrow does and each of these
+   * is something it would otherwise assert for free:
+   *
+   * **A trail stops at a hole rather than crossing it.** `stepParticle` kills a
+   * particle whose next step lands on ground with no terrain read, so the
+   * uncovered part of a domain stays as empty as it is under the arrows. A
+   * particle drifting through it would fill a hole from its neighbours, which
+   * is the one thing this map has refused everywhere else.
+   *
+   * **A respawn draws no line.** A reseeded particle carries `from: null`, so
+   * there is nothing to join its old track to its new one — otherwise every
+   * respawn paints a streak across the map that no wind produced.
+   *
+   * **It says it is not air moving over time.** The field is one snapshot and
+   * it is a diagnostic, not a mass-consistent flow solution: neighbouring cells
+   * need not connect to each other, and the drawing is exaggerated hundreds of
+   * times over besides, or a parcel would take a quarter of an hour to cross
+   * the box. `motionScale` states the exaggeration and the caption states the
+   * rest, because the prettiest layer on a map is the one that gets over-trusted.
+   */
+  map.createPane("particles");
+  map.getPane("particles").style.zIndex = 410;
+  map.getPane("particles").style.pointerEvents = "none";
+
+  const ParticleLayer = L.Layer.extend({
+    onAdd: function (m) {
+      this._map = m;
+      this._canvas = L.DomUtil.create("canvas", "leaflet-zoom-animated");
+      this._canvas.style.pointerEvents = "none";
+      m.getPane("particles").appendChild(this._canvas);
+      m.on("moveend zoomend resize", this._reset, this);
+      this._reset();
+    },
+    onRemove: function (m) {
+      this._stop();
+      m.off("moveend zoomend resize", this._reset, this);
+      L.DomUtil.remove(this._canvas);
+    },
+    setField: function (body) {
+      this._body = body;
+      this._reset();
+    },
+    clear: function () {
+      this._body = null;
+      this._reset();
+    },
+    setEnabled: function (on) {
+      this._on = !!on;
+      this._reset();
+    },
+    _reset: function () {
+      if (!this._map) return;
+      const size = this._map.getSize();
+      L.DomUtil.setPosition(this._canvas, this._map.containerPointToLayerPoint([0, 0]));
+      this._canvas.width = size.x;
+      this._canvas.height = size.y;
+      this._canvas.style.width = size.x + "px";
+      this._canvas.style.height = size.y + "px";
+      this._stop();
+      this._field = null;
+      if (this._on && this._body) this._start();
+      else if (typeof this.onScale === "function") this.onScale(null);
+    },
+    _start: function () {
+      const grid = this._body.grid;
+      const m = this._map;
+
+      // Metres on the ground per pixel on the screen, measured on the grid's
+      // own spacing rather than assumed from the zoom.
+      const a = m.latLngToContainerPoint([grid.lats[0], grid.lons[0]]);
+      const b = m.latLngToContainerPoint([
+        grid.lats[Math.min(1, grid.rows - 1)],
+        grid.lons[Math.min(1, grid.cols - 1)]
+      ]);
+      const stepDeg = Math.abs(grid.lons[Math.min(1, grid.cols - 1)] - grid.lons[0]) || 1e-4;
+      const cellPx = Math.max(1, Math.abs(b.x - a.x));
+      const metresPerPixel = (stepDeg * 111320 * Math.cos((grid.lats[0] * Math.PI) / 180)) / cellPx;
+
+      // Calmer rather than absent under reduced motion: a still map says calm,
+      // which would be a claim about the wind rather than about the reader.
+      const calm = window.matchMedia &&
+        window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+      const full = lib.arrowScale(lib.cellsOf(grid, { stride: lib.strideFor(grid, 320) }));
+      this._scale = lib.motionScale(full.fullMph, metresPerPixel, {
+        pxPerSecond: calm ? 12 : 55
+      });
+      this._field = lib.particleField(grid, { count: 1200, life: 120 });
+      this._last = null;
+      if (typeof this.onScale === "function") this.onScale(this._scale, calm);
+
+      const self = this;
+      const frame = function (now) {
+        self._raf = window.requestAnimationFrame(frame);
+        self._frame(now);
+      };
+      this._raf = window.requestAnimationFrame(frame);
+    },
+    _stop: function () {
+      if (this._raf) window.cancelAnimationFrame(this._raf);
+      this._raf = null;
+      if (this._canvas) {
+        this._canvas.getContext("2d").clearRect(0, 0, this._canvas.width, this._canvas.height);
+      }
+    },
+    _frame: function (now) {
+      const ctx = this._canvas.getContext("2d");
+      const elapsed = this._last === null ? 0 : Math.min(0.1, (now - this._last) / 1000);
+      this._last = now;
+      if (!elapsed) return;
+
+      // The previous frame, faded rather than cleared: the fading tail is what
+      // carries direction, and erasing by alpha keeps the basemap underneath.
+      ctx.globalCompositeOperation = "destination-out";
+      ctx.fillStyle = "rgba(0,0,0,0.12)";
+      ctx.fillRect(0, 0, this._canvas.width, this._canvas.height);
+      ctx.globalCompositeOperation = "source-over";
+
+      const m = this._map;
+      const grid = this._body.grid;
+      this._field.advance(elapsed * this._scale.secondsPerSecond);
+      ctx.lineWidth = 1.2;
+      ctx.lineCap = "round";
+      for (const p of this._field.particles) {
+        if (!p.from) continue;                       // born this frame: no line
+        const cell = lib.sampleField(grid, p.lat, p.lon);
+        if (!cell) continue;
+        const from = m.latLngToContainerPoint([p.from.lat, p.from.lon]);
+        const to = m.latLngToContainerPoint([p.lat, p.lon]);
+        // The speed ramp rather than white: the trail has to read over both a
+        // pale basemap and a dark hillshade, and it is the same quantity the
+        // wash and the legend already carry.
+        ctx.strokeStyle = lib.speedColor(cell.speedMps);
+        ctx.beginPath();
+        ctx.moveTo(from.x, from.y);
+        ctx.lineTo(to.x, to.y);
+        ctx.stroke();
+      }
+    }
+  });
+
+  const particleLayer = new ParticleLayer();
+  particleLayer.onScale = function (scale, calm) {
+    const el = $("particleNote");
+    if (!el) return;
+    el.textContent = scale
+      ? scale.caption + (calm ? " Slowed, because this browser asks for reduced motion." : "")
+      : "";
+  };
+  particleLayer.addTo(map);
+  particleLayer.setEnabled($("particles").checked);
+  $("particles").addEventListener("change", function () {
+    particleLayer.setEnabled($("particles").checked);
+  });
+  // A page in a background tab is animating nothing anybody can see.
+  document.addEventListener("visibilitychange", function () {
+    particleLayer.setEnabled(!document.hidden && $("particles").checked);
+  });
+
+  /**
    * The shaded relief: one PNG from `/v1/hillshade`, placed on the bounds the
    * service reports rather than on the box that was asked for.
    *
@@ -600,6 +765,7 @@
     $("notice").textContent = summary.notice || "";
 
     fieldLayer.setField(body);
+    particleLayer.setField(body);
     lastField = body;
 
     clearDomain();
@@ -643,6 +809,7 @@
   function clearWind() {
     if (inFlight) inFlight.abort();
     fieldLayer.clear();
+    particleLayer.clear();
     lastField = null;
     clearDomain();
     // The arrow scale describes arrows that are no longer on the map. Hiding

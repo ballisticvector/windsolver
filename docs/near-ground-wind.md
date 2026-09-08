@@ -261,6 +261,18 @@ is refused, not smoothed.** For this product that means at least
   every arrow each time the view moved over a gust; and it **clamps short arrows to a
   stub** and says at what speed the clamp starts, because an arrow drawn to scale at
   0.5 mph is a dot and a dot reads as no data, which on this map means a hole;
+- an animated layer, if there is one, saying that it is a rendering rather than a
+  trajectory — **done, and it is the caveat rather than the layer that took the work**:
+  `wind-map.particleField` traces the solved field with moving particles, which is the
+  channel the eye reads a flow in, and it is off by default with three refusals wired
+  into it. A particle whose next step lands on a cell with no terrain read is **killed
+  rather than carried**, so a trail can never cross a hole or fill one from its
+  neighbours; a reseeded particle carries **no previous point**, so no line joins its two
+  lives; and the caption states both the exaggeration — a parcel really needs about a
+  quarter of an hour to cross a two-mile box, so honest motion is a still image — and the
+  larger point, that the field is one diagnostic snapshot rather than a mass-consistent
+  flow solution. Neighbouring cells in it need not connect to each other, and animation
+  is precisely what makes that invisible;
 - the near-ground factor shown as the range it is, not as a number;
 - and no near-ground layer at all over ground with no land cover behind it, in the same
   way `no-terrain` is an answer today.

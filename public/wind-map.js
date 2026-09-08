@@ -213,6 +213,185 @@ function arrowScale(cells, opts) {
   };
 }
 
+// A degree of latitude, in metres. Spherical: over a two-mile box the WGS84
+// difference is centimetres, and this number moves a dot on a screen.
+const M_PER_DEG_LAT = 111320;
+
+/**
+ * The index of the grid line nearest `value`, or `null` if the point is
+ * outside the grid.
+ *
+ * A cell has extent, so the outermost half-cell still belongs to the edge cell
+ * — "outside" starts half a cell beyond the last line, not at it.
+ */
+function gridIndex(values, value) {
+  if (!Array.isArray(values) || values.length === 0) return null;
+  if (values.length === 1) return values[0] === value ? 0 : null;
+  const step = values[1] - values[0];
+  if (step === 0) return null;
+  const i = Math.round((value - values[0]) / step);
+  return i < 0 || i >= values.length ? null : i;
+}
+
+/**
+ * The wind at an arbitrary point in the grid, or `null` where there is none.
+ *
+ * Nearest cell rather than an interpolation, and that is the whole point: an
+ * interpolated sample beside a hole is a wind invented out of its neighbours,
+ * which is exactly what the rest of this codebase refuses to do. The particle
+ * layer asks this question thousands of times a second and every `null` it
+ * gets back is a trail that stops rather than a trail that guesses.
+ */
+function sampleField(grid, lat, lon) {
+  if (!grid || !Array.isArray(grid.lats) || !Array.isArray(grid.lons)) return null;
+  const r = gridIndex(grid.lats, lat);
+  const c = gridIndex(grid.lons, lon);
+  if (r === null || c === null) return null;
+  const i = r * grid.cols + c;
+  const speedMps = grid.speedMps ? grid.speedMps[i] : null;
+  if (!Number.isFinite(speedMps)) return null;
+  return {
+    row: r,
+    col: c,
+    lat: grid.lats[r],
+    lon: grid.lons[c],
+    speedMps: speedMps,
+    fromDeg: grid.fromDeg[i]
+  };
+}
+
+/**
+ * One particle, one step: where the air at its feet would carry it.
+ *
+ * Returns `null` when the particle dies, which happens for exactly two reasons
+ * and both of them are refusals rather than bookkeeping. It is standing on a
+ * hole, or the step would put it on one — including off the edge of the field.
+ * A particle that survived either would draw a streak over ground this service
+ * never read, and a moving streak reads as knowledge far more strongly than a
+ * static arrow does.
+ *
+ * Calm is a step of zero length, not a death: a particle standing still is
+ * what calm looks like, and it is true.
+ */
+function stepParticle(grid, particle, seconds) {
+  const here = sampleField(grid, particle.lat, particle.lon);
+  if (!here) return null;
+
+  const towardRad = (((here.fromDeg + 180) % 360) * Math.PI) / 180;
+  const eastM = Math.sin(towardRad) * here.speedMps * seconds;
+  const northM = Math.cos(towardRad) * here.speedMps * seconds;
+  const cosLat = Math.max(1e-6, Math.cos((particle.lat * Math.PI) / 180));
+  const lat = particle.lat + northM / M_PER_DEG_LAT;
+  const lon = particle.lon + eastM / (M_PER_DEG_LAT * cosLat);
+
+  if (!sampleField(grid, lat, lon)) return null;
+  return {
+    lat: lat,
+    lon: lon,
+    age: (particle.age || 0) + 1,
+    from: { lat: particle.lat, lon: particle.lon }
+  };
+}
+
+/**
+ * A cloud of particles over one solved field, and the rule for replacing them.
+ *
+ * Two things here are honesty rather than animation. A reseeded particle has
+ * `from: null`, so the renderer has nothing to draw a line from — without it a
+ * respawn paints a streak clean across the map that no wind produced. And a
+ * particle has a finite `life` even if nothing kills it, because a field left
+ * running collapses onto a handful of streamlines and the map stops describing
+ * anywhere the streamlines do not go.
+ *
+ * `rand` and `seed` are injectable so this is testable as a pure thing.
+ */
+function particleField(grid, opts) {
+  const o = opts || {};
+  const rand = typeof o.rand === "function" ? o.rand : Math.random;
+  const count = Number.isFinite(o.count) ? o.count : 900;
+  const life = Number.isFinite(o.life) ? o.life : 90;
+
+  // Every covered cell, as a place a particle may be born. Read off the grid
+  // rather than through `cellsOf`, which would build a quarter of a million
+  // objects to answer "which of these is not a hole".
+  const homes = [];
+  for (let r = 0; r < grid.rows; r++) {
+    for (let c = 0; c < grid.cols; c++) {
+      if (!Number.isFinite(grid.speedMps[r * grid.cols + c])) continue;
+      homes.push({ lat: grid.lats[r], lon: grid.lons[c] });
+    }
+  }
+
+  function born(index, first) {
+    if (homes.length === 0) return null;
+    const seeded = first && o.seed && o.seed[index];
+    const home = seeded || homes[Math.floor(rand() * homes.length) % homes.length];
+    return {
+      lat: home.lat,
+      lon: home.lon,
+      age: 0,
+      // Staggered, so the whole cloud does not blink out together.
+      life: seeded ? life : 1 + Math.floor(rand() * life),
+      from: null
+    };
+  }
+
+  const particles = [];
+  for (let i = 0; i < count; i++) {
+    const p = born(i, true);
+    if (p) particles.push(p);
+  }
+
+  function advance(seconds) {
+    for (let i = 0; i < particles.length; i++) {
+      const moved = stepParticle(grid, particles[i], seconds);
+      if (moved && moved.age < particles[i].life) {
+        moved.life = particles[i].life;
+        particles[i] = moved;
+      } else {
+        const fresh = born(i, false);
+        if (fresh) particles[i] = fresh;
+      }
+    }
+    return particles;
+  }
+
+  return { particles: particles, advance: advance, homes: homes.length };
+}
+
+/**
+ * How much faster than the real air the particles are drawn, and the sentence
+ * that says so.
+ *
+ * They have to be exaggerated to be a picture at all: at 5 m/s a parcel takes
+ * a quarter of an hour to cross a two-mile box, so a truthful animation is a
+ * still image. Exaggeration is fine; an unstated exaggeration is not, which is
+ * why this returns the factor rather than hiding it in a constant. The rest of
+ * the sentence is the more important half — the field is one snapshot, so a
+ * particle is tracing a static map, not air travelling from one place to
+ * another over time.
+ */
+function motionScale(fullMph, metresPerPixel, opts) {
+  const o = opts || {};
+  const pxPerSecond = Number.isFinite(o.pxPerSecond) ? o.pxPerSecond : 40;
+  const fullMps = fullMph / MPS_TO_MPH;
+  const drawnMps = pxPerSecond * metresPerPixel;
+  const speedup = fullMps > 0 && Number.isFinite(drawnMps) ? drawnMps / fullMps : null;
+  const rounded = speedup === null
+    ? null
+    : Number(speedup.toPrecision(2)).toLocaleString("en-US");
+  return {
+    pxPerSecond: pxPerSecond,
+    drawnMps: drawnMps,
+    speedup: speedup,
+    secondsPerSecond: speedup,
+    caption: "Particles trace the same static field the arrows do" +
+      (rounded === null ? "" : ", drawn about " + rounded + "× faster than the air") +
+      ". They are a rendering of one snapshot, not air travelling over time, and " +
+      "a trail stops at ground with no terrain under it rather than crossing it."
+  };
+}
+
 /** The lowest and highest ground in the grid, ignoring the holes. */
 function elevationRange(grid) {
   let min = null;
@@ -855,6 +1034,10 @@ const api = {
   cellsOf: cellsOf,
   strideFor: strideFor,
   arrowScale: arrowScale,
+  sampleField: sampleField,
+  stepParticle: stepParticle,
+  particleField: particleField,
+  motionScale: motionScale,
   elevationRange: elevationRange,
   centreWind: centreWind,
   compassOf: compassOf,

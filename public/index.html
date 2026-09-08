@@ -51,7 +51,8 @@
   .check.under { margin-left:24px; }
   .check.off label { color:var(--dim); }
   .check label { margin:0; color:#e6e6e6; font-size:13px; }
-  #reliefNote, #stationNote { font-size:12px; color:var(--dim); margin:-4px 0 12px; min-height:16px; }
+  #reliefNote, #stationNote, #particleNote { font-size:12px; color:var(--dim);
+                                             margin:-4px 0 12px; min-height:16px; }
   #compareKey { margin:-6px 0 12px; }
   #compareKey p { margin:6px 0 0; }
   /* The marker is an SVG in a div overlay: Leaflet gives that a white box by
@@ -114,6 +115,11 @@
       <label for="relief">Shaded relief under the wind</label>
     </div>
     <p id="reliefNote"></p>
+    <div class="check">
+      <input id="particles" type="checkbox">
+      <label for="particles">Trace the wind with moving particles</label>
+    </div>
+    <p id="particleNote"></p>
     <div class="check">
       <input id="stations" type="checkbox" checked>
       <label for="stations">Measured wind at RAWS stations</label>
