@@ -468,6 +468,15 @@ describe("the parts of the page a unit test cannot run", () => {
     expect(html).toContain("id=\"arrowScale\"");
   });
 
+  test("a cleared wind takes its arrow scale with it", () => {
+    // `_draw` returns before `onScale` when there is no field, so nothing
+    // rewrites this caption on the way out. Hiding `#result` covers it today;
+    // the explicit clear is what stops that from being load-bearing.
+    const clear = /function clearWind\(\) \{([\s\S]*?)\n {2}\}/.exec(js);
+    expect(clear).not.toBeNull();
+    expect(clear[1]).toContain("$(\"arrowScale\").textContent = \"\"");
+  });
+
   test("a refused wind does not silence the relief's own refusal", () => {
     // Measured at Paris, where both routes 502 no-terrain: clearing the relief
     // on a field refusal aborts the hillshade mid-flight, so its request ends

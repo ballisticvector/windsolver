@@ -645,6 +645,11 @@
     fieldLayer.clear();
     lastField = null;
     clearDomain();
+    // The arrow scale describes arrows that are no longer on the map. Hiding
+    // `#result` conceals it today, so this is belt and braces — but it is the
+    // one caption written by the layer rather than by `render()`, so nothing
+    // else would overwrite it if it were ever moved out of that panel.
+    $("arrowScale").textContent = "";
     $("result").hidden = true;
   }
 
