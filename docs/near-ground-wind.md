@@ -186,10 +186,13 @@ This is the step that would actually make the map worth zooming into, and the bl
 it has changed. It was "the catalogue has no hollows in it"; measurement 14 shows that was
 a statement about a 500 m disc, and at the 2 km scale a two-mile map is actually about,
 15 of the 87 Colorado RAWS readable at both radii are valleys, and the already-scored
-pairs restratify to ten valley stations instead of two. Pooled over those ten, HRRR needs slowing by about 20% more than
-over the exposed ones (t ≈ 2) — sheltering is visible for the first time. Per station the
-landform still predicts almost nothing of it (5.3% held out, 20 of 36), so a channelling
-term fitted today would be fitted to a group mean. CoAgMet adds 14 more valley-bottom
+pairs restratify to ten valley stations instead of two. Pooled over those ten, HRRR needs
+slowing by about 20% more than over the exposed ones (t ≈ 2) — sheltering was visible for
+the first time. **It did not survive New Mexico**: pre-registered and scored there,
+the same split is −0.010 ± 0.074 against Colorado's −0.157, and the held-out line is worse
+than a pooled scale (measurement 15). Per station the landform predicts almost nothing of
+it in either state, so a channelling term fitted today would be fitted to a group mean
+that only exists in one of them. CoAgMet adds 14 more valley-bottom
 sites at 2 m if the term needs testing near the ground rather than at 6.1 m. Fitting one
 on ridge stations would still be curve-fitting with a physical-sounding name, which is the
 failure mode measurements 6, 10 and 11 were each caught by.
