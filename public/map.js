@@ -154,17 +154,25 @@
         ctx.fillRect(p.x - cellW / 2, p.y - cellH / 2, cellW + 1, cellH + 1);
       }
 
-      // The arrows, thinned to a count the eye can read.
+      // The arrows, thinned to a count the eye can read, and lengthed by speed
+      // so the variation that was only ever in the colour wash is legible as a
+      // shape. The scale comes from the drawn cells rather than from the whole
+      // grid, so it describes what is actually on the screen.
       ctx.globalAlpha = 0.95;
       const stride = lib.strideFor(grid, 320);
-      const length = Math.min(26, Math.max(9, Math.min(cellW, cellH) * stride * 0.8));
+      const drawn = lib.cellsOf(grid, { stride: stride });
+      const maxPx = Math.min(26, Math.max(9, Math.min(cellW, cellH) * stride * 0.8));
+      const scale = lib.arrowScale(drawn, { maxPx: maxPx, floorPx: maxPx * 0.3 });
       ctx.lineWidth = 1.4;
       ctx.strokeStyle = "rgba(12,16,22,0.85)";
-      for (const cell of lib.cellsOf(grid, { stride: stride })) {
+      for (const cell of drawn) {
         if (!cell.covered) continue;
+        const length = scale.lengthFor(cell.speedMph);
+        if (length === null) continue;
         this._arrow(ctx, point(cell.lat, cell.lon), cell, length);
       }
       ctx.globalAlpha = 1;
+      if (typeof this.onScale === "function") this.onScale(scale);
     },
     /** One arrow, pointing the way the air is going, not the way it is from. */
     _arrow: function (ctx, p, cell, length) {
@@ -196,6 +204,12 @@
   });
 
   const fieldLayer = new FieldLayer();
+  // The arrow scale is decided at draw time, from the cells that survived the
+  // thinning, so the caption is written by the layer that drew them.
+  fieldLayer.onScale = function (scale) {
+    const el = $("arrowScale");
+    if (el) el.textContent = scale.caption;
+  };
   fieldLayer.addTo(map);
 
   /**
@@ -631,6 +645,11 @@
     fieldLayer.clear();
     lastField = null;
     clearDomain();
+    // The arrow scale describes arrows that are no longer on the map. Hiding
+    // `#result` conceals it today, so this is belt and braces — but it is the
+    // one caption written by the layer rather than by `render()`, so nothing
+    // else would overwrite it if it were ever moved out of that panel.
+    $("arrowScale").textContent = "";
     $("result").hidden = true;
   }
 
