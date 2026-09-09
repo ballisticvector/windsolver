@@ -272,6 +272,9 @@ function sampleField(grid, lat, lon) {
  *
  * Calm is a step of zero length, not a death: a particle standing still is
  * what calm looks like, and it is true.
+ *
+ * `age` counts the seconds it has been advanced by rather than the number of
+ * times, so a life is a distance over the ground however the drawing is paced.
  */
 function stepParticle(grid, particle, seconds) {
   const here = sampleField(grid, particle.lat, particle.lon);
@@ -288,9 +291,29 @@ function stepParticle(grid, particle, seconds) {
   return {
     lat: lat,
     lon: lon,
-    age: (particle.age || 0) + 1,
+    age: (particle.age || 0) + seconds,
     from: { lat: particle.lat, lon: particle.lon }
   };
+}
+
+/**
+ * How many particles a map of this size can carry before the streaks merge.
+ *
+ * A fixed count is a density, and the same count that reads as separate trails
+ * on a desktop covers a phone's map several times over — which is a grey haze
+ * with no direction in it, not an animation. Density is the thing to hold
+ * still, so the count follows the drawn area and is bounded at both ends.
+ */
+function particleCount(widthPx, heightPx, opts) {
+  const o = opts || {};
+  const perParticlePx = Number.isFinite(o.perParticlePx) && o.perParticlePx > 0
+    ? o.perParticlePx
+    : 900;
+  const min = Number.isFinite(o.min) ? o.min : 90;
+  const max = Number.isFinite(o.max) ? o.max : 1200;
+  const w = Number.isFinite(widthPx) ? Math.max(0, widthPx) : 0;
+  const h = Number.isFinite(heightPx) ? Math.max(0, heightPx) : 0;
+  return Math.max(min, Math.min(max, Math.round((w * h) / perParticlePx)));
 }
 
 /**
@@ -330,8 +353,10 @@ function particleField(grid, opts) {
       lat: home.lat,
       lon: home.lon,
       age: 0,
-      // Staggered, so the whole cloud does not blink out together.
-      life: seeded ? life : 1 + Math.floor(rand() * life),
+      // Staggered, so the whole cloud does not blink out together, but never
+      // shorter than a trail: a particle that dies before it has drawn one is
+      // a dot, which is what reduced motion used to turn the whole map into.
+      life: seeded ? life : life * (0.35 + 0.65 * rand()),
       from: null
     };
   }
@@ -389,6 +414,54 @@ function motionScale(fullMph, metresPerPixel, opts) {
       (rounded === null ? "" : ", drawn about " + rounded + "× faster than the air") +
       ". They are a rendering of one snapshot, not air travelling over time, and " +
       "a trail stops at ground with no terrain under it rather than crossing it."
+  };
+}
+
+/**
+ * How long a particle lives, expressed as the distance on screen it is allowed
+ * to cover, in the model seconds `advance` is given.
+ *
+ * A life counted in frames is a distance that changes with the drawing speed:
+ * at the reduced-motion 12 px/s the old fixed 120 frames was about 24 px of
+ * travel, so a particle died at roughly the length of the trail it was meant
+ * to be drawing and the map became a field of dots. A distance is the thing
+ * that should be held still — long enough to draw a trail, short enough that
+ * the cloud does not collapse onto a few streamlines.
+ */
+function particleLife(scale, opts) {
+  const o = opts || {};
+  const travelPx = Number.isFinite(o.travelPx) && o.travelPx > 0 ? o.travelPx : 200;
+  const px = scale && Number.isFinite(scale.pxPerSecond) ? scale.pxPerSecond : 0;
+  const secs = scale && Number.isFinite(scale.secondsPerSecond) ? scale.secondsPerSecond : 0;
+  if (px <= 0 || secs <= 0) return 0;
+  return (travelPx / px) * secs;
+}
+
+/**
+ * The shape of a trail: how far apart to keep the positions behind a particle,
+ * and how many of them, so that a trail is a length in pixels.
+ *
+ * The usual way to draw one is to fade the previous frame by a fixed alpha
+ * instead of clearing it, and it is wrong twice here. The length it produces
+ * is the product of the drawing speed and the frame rate, and both of those
+ * move — 12 px/s under reduced motion leaves a three-pixel dot, and a phone at
+ * 30 fps leaves twice the trail a desktop does. And the fade is multiplicative
+ * on an eight-bit alpha, so it stops making progress once the rounding does:
+ * the map keeps a permanent low-alpha smear of every trail ever drawn over it,
+ * which is what buried these trails in their own haze.
+ *
+ * Keeping the positions instead is exact, and sampling them by distance rather
+ * than per frame is what makes the cost of one independent of how fast it is
+ * drawn or how fast the phone can draw it.
+ */
+function trailPath(opts) {
+  const o = opts || {};
+  const trailPx = Number.isFinite(o.trailPx) && o.trailPx > 0 ? o.trailPx : 26;
+  const stepPx = Number.isFinite(o.stepPx) && o.stepPx > 0 ? o.stepPx : 2;
+  const max = Number.isFinite(o.max) ? o.max : 64;
+  return {
+    stepPx: stepPx,
+    points: Math.max(2, Math.min(max, Math.round(trailPx / stepPx) + 1))
   };
 }
 
@@ -1037,7 +1110,10 @@ const api = {
   sampleField: sampleField,
   stepParticle: stepParticle,
   particleField: particleField,
+  particleCount: particleCount,
   motionScale: motionScale,
+  particleLife: particleLife,
+  trailPath: trailPath,
   elevationRange: elevationRange,
   centreWind: centreWind,
   compassOf: compassOf,
