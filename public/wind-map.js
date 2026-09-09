@@ -294,6 +294,26 @@ function stepParticle(grid, particle, seconds) {
 }
 
 /**
+ * How many particles a map of this size can carry before the streaks merge.
+ *
+ * A fixed count is a density, and the same count that reads as separate trails
+ * on a desktop covers a phone's map several times over — which is a grey haze
+ * with no direction in it, not an animation. Density is the thing to hold
+ * still, so the count follows the drawn area and is bounded at both ends.
+ */
+function particleCount(widthPx, heightPx, opts) {
+  const o = opts || {};
+  const perParticlePx = Number.isFinite(o.perParticlePx) && o.perParticlePx > 0
+    ? o.perParticlePx
+    : 900;
+  const min = Number.isFinite(o.min) ? o.min : 90;
+  const max = Number.isFinite(o.max) ? o.max : 1200;
+  const w = Number.isFinite(widthPx) ? Math.max(0, widthPx) : 0;
+  const h = Number.isFinite(heightPx) ? Math.max(0, heightPx) : 0;
+  return Math.max(min, Math.min(max, Math.round((w * h) / perParticlePx)));
+}
+
+/**
  * A cloud of particles over one solved field, and the rule for replacing them.
  *
  * Two things here are honesty rather than animation. A reseeded particle has
@@ -389,6 +409,34 @@ function motionScale(fullMph, metresPerPixel, opts) {
       (rounded === null ? "" : ", drawn about " + rounded + "× faster than the air") +
       ". They are a rendering of one snapshot, not air travelling over time, and " +
       "a trail stops at ground with no terrain under it rather than crossing it."
+  };
+}
+
+/**
+ * The shape of a trail: how far apart to keep the positions behind a particle,
+ * and how many of them, so that a trail is a length in pixels.
+ *
+ * The usual way to draw one is to fade the previous frame by a fixed alpha
+ * instead of clearing it, and it is wrong twice here. The length it produces
+ * is the product of the drawing speed and the frame rate, and both of those
+ * move — 12 px/s under reduced motion leaves a three-pixel dot, and a phone at
+ * 30 fps leaves twice the trail a desktop does. And the fade is multiplicative
+ * on an eight-bit alpha, so it stops making progress once the rounding does:
+ * the map keeps a permanent low-alpha smear of every trail ever drawn over it,
+ * which is what buried these trails in their own haze.
+ *
+ * Keeping the positions instead is exact, and sampling them by distance rather
+ * than per frame is what makes the cost of one independent of how fast it is
+ * drawn or how fast the phone can draw it.
+ */
+function trailPath(opts) {
+  const o = opts || {};
+  const trailPx = Number.isFinite(o.trailPx) && o.trailPx > 0 ? o.trailPx : 26;
+  const stepPx = Number.isFinite(o.stepPx) && o.stepPx > 0 ? o.stepPx : 2;
+  const max = Number.isFinite(o.max) ? o.max : 64;
+  return {
+    stepPx: stepPx,
+    points: Math.max(2, Math.min(max, Math.round(trailPx / stepPx) + 1))
   };
 }
 
@@ -1037,7 +1085,9 @@ const api = {
   sampleField: sampleField,
   stepParticle: stepParticle,
   particleField: particleField,
+  particleCount: particleCount,
   motionScale: motionScale,
+  trailPath: trailPath,
   elevationRange: elevationRange,
   centreWind: centreWind,
   compassOf: compassOf,

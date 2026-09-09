@@ -271,13 +271,23 @@
     _reset: function () {
       if (!this._map) return;
       const size = this._map.getSize();
+      // A backing store in device pixels, not CSS ones. A phone draws three
+      // device pixels for every CSS pixel, so a CSS-sized canvas has a hairline
+      // trail smeared over three of them and loses most of its contrast against
+      // a wash it already shares a colour ramp with — which is why the layer
+      // read as empty on an iPhone while the same code was legible on a desktop.
+      const ratio = Math.min(3, Math.max(1, window.devicePixelRatio || 1));
+      this._ratio = ratio;
+      this._size = size;
       L.DomUtil.setPosition(this._canvas, this._map.containerPointToLayerPoint([0, 0]));
-      this._canvas.width = size.x;
-      this._canvas.height = size.y;
+      this._canvas.width = Math.round(size.x * ratio);
+      this._canvas.height = Math.round(size.y * ratio);
       this._canvas.style.width = size.x + "px";
       this._canvas.style.height = size.y + "px";
+      this._canvas.getContext("2d").setTransform(ratio, 0, 0, ratio, 0, 0);
       this._stop();
       this._field = null;
+      this._trails = null;
       if (this._on && this._body) this._start();
       else if (typeof this.onScale === "function") this.onScale(null);
     },
@@ -305,7 +315,13 @@
       this._scale = lib.motionScale(full.fullMph, metresPerPixel, {
         pxPerSecond: calm ? 12 : 55
       });
-      this._field = lib.particleField(grid, { count: 1200, life: 120 });
+      const size = this._map.getSize();
+      this._field = lib.particleField(grid, {
+        count: lib.particleCount(size.x, size.y),
+        life: 120
+      });
+      // One trail per particle, in the same order, holding where it has been.
+      this._trails = this._field.particles.map(function () { return []; });
       this._last = null;
       if (typeof this.onScale === "function") this.onScale(this._scale, calm);
 
@@ -320,7 +336,11 @@
       if (this._raf) window.cancelAnimationFrame(this._raf);
       this._raf = null;
       if (this._canvas) {
-        this._canvas.getContext("2d").clearRect(0, 0, this._canvas.width, this._canvas.height);
+        const ctx = this._canvas.getContext("2d");
+        ctx.save();
+        ctx.setTransform(1, 0, 0, 1, 0, 0);
+        ctx.clearRect(0, 0, this._canvas.width, this._canvas.height);
+        ctx.restore();
       }
     },
     _frame: function (now) {
@@ -329,32 +349,58 @@
       this._last = now;
       if (!elapsed) return;
 
-      // The previous frame, faded rather than cleared: the fading tail is what
-      // carries direction, and erasing by alpha keeps the basemap underneath.
-      ctx.globalCompositeOperation = "destination-out";
-      ctx.fillStyle = "rgba(0,0,0,0.12)";
-      ctx.fillRect(0, 0, this._canvas.width, this._canvas.height);
-      ctx.globalCompositeOperation = "source-over";
+      ctx.clearRect(0, 0, this._size.x, this._size.y);
 
       const m = this._map;
       const grid = this._body.grid;
-      this._field.advance(elapsed * this._scale.secondsPerSecond);
-      ctx.lineWidth = 1.2;
+      const path = lib.trailPath();
+      const particles = this._field.advance(elapsed * this._scale.secondsPerSecond);
+      const trails = this._trails;
       ctx.lineCap = "round";
-      for (const p of this._field.particles) {
-        if (!p.from) continue;                       // born this frame: no line
+      ctx.lineJoin = "round";
+      for (let i = 0; i < particles.length; i++) {
+        const p = particles[i];
+        const trail = trails[i] || (trails[i] = []);
+        if (!p.from) trail.length = 0;               // reseeded: no line back
         const cell = lib.sampleField(grid, p.lat, p.lon);
-        if (!cell) continue;
-        const from = m.latLngToContainerPoint([p.from.lat, p.from.lon]);
-        const to = m.latLngToContainerPoint([p.lat, p.lon]);
-        // The speed ramp rather than white: the trail has to read over both a
-        // pale basemap and a dark hillshade, and it is the same quantity the
-        // wash and the legend already carry.
-        ctx.strokeStyle = lib.speedColor(cell.speedMps);
+        if (!cell) {
+          trail.length = 0;
+          continue;
+        }
+        const at = m.latLngToContainerPoint([p.lat, p.lon]);
+        const n = trail.length;
+        const moved = n === 0 ||
+          Math.abs(at.x - trail[n - 2]) + Math.abs(at.y - trail[n - 1]) >= path.stepPx;
+        if (moved) trail.push(at.x, at.y);
+        while (trail.length > path.points * 2) trail.splice(0, 2);
+        if (trail.length < 4) continue;
+
         ctx.beginPath();
-        ctx.moveTo(from.x, from.y);
-        ctx.lineTo(to.x, to.y);
+        ctx.moveTo(trail[0], trail[1]);
+        for (let k = 2; k < trail.length; k += 2) ctx.lineTo(trail[k], trail[k + 1]);
+        if (!moved) ctx.lineTo(at.x, at.y);
+        // A dark casing under the trail, then the speed ramp over it. The ramp
+        // is the same quantity the wash and the legend carry, which is also why
+        // a trail sits on a wash of its own colour and disappears into it; the
+        // casing is what separates them without changing what the colour means.
+        ctx.lineWidth = 3.2;
+        ctx.strokeStyle = "rgba(12,16,22,0.55)";
         ctx.stroke();
+        ctx.lineWidth = 1.5;
+        ctx.strokeStyle = lib.speedColor(cell.speedMps);
+        ctx.stroke();
+        // A head, with a white core. A trail with no bright end reads as
+        // texture rather than as something moving, and white is the only thing
+        // that separates from the wash at every speed — the ramp cannot, since
+        // a trail is by construction the same colour as the ground beneath it.
+        ctx.beginPath();
+        ctx.arc(at.x, at.y, 2.4, 0, Math.PI * 2);
+        ctx.fillStyle = "rgba(12,16,22,0.65)";
+        ctx.fill();
+        ctx.beginPath();
+        ctx.arc(at.x, at.y, 1.3, 0, Math.PI * 2);
+        ctx.fillStyle = "rgba(255,255,255,0.95)";
+        ctx.fill();
       }
     }
   });

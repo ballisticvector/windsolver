@@ -1154,6 +1154,50 @@ describe("motionScale: how much faster than the air the drawing is", () => {
   });
 });
 
+describe("particleCount: a density, held still across screen sizes", () => {
+  test("a phone carries fewer than a desktop, in proportion to its map", () => {
+    const desktop = lib.particleCount(940, 900);
+    const phone = lib.particleCount(390, 464);
+    expect(phone).toBeLessThan(desktop);
+    expect(desktop / phone).toBeCloseTo((940 * 900) / (390 * 464), 1);
+  });
+
+  test("a tiny map still gets enough particles to show a direction", () => {
+    expect(lib.particleCount(120, 90)).toBe(90);
+  });
+
+  test("a very large map is bounded, so a laptop is not asked to draw thousands", () => {
+    expect(lib.particleCount(4000, 3000)).toBe(1200);
+  });
+
+  test("a map with no size yet does not ask for a negative cloud", () => {
+    expect(lib.particleCount(0, 0)).toBe(90);
+    expect(lib.particleCount(NaN, NaN)).toBe(90);
+  });
+});
+
+describe("trailPath: a trail is a length in pixels, not a number of frames", () => {
+  test("the points span the target length at the sampling step", () => {
+    const path = lib.trailPath({ trailPx: 26, stepPx: 2 });
+    expect((path.points - 1) * path.stepPx).toBe(26);
+  });
+
+  test("a longer target keeps more of the past", () => {
+    expect(lib.trailPath({ trailPx: 52 }).points)
+      .toBeGreaterThan(lib.trailPath({ trailPx: 26 }).points);
+  });
+
+  test("a fine step is bounded, so one trail cannot cost hundreds of points", () => {
+    expect(lib.trailPath({ trailPx: 26, stepPx: 0.05 }).points).toBe(64);
+  });
+
+  test("a line needs two points however short the trail is asked to be", () => {
+    expect(lib.trailPath({ trailPx: 0.5, stepPx: 2 }).points).toBe(2);
+    expect(lib.trailPath({ trailPx: 0, stepPx: 0 }).points)
+      .toBe(lib.trailPath().points);
+  });
+});
+
 describe("the particle layer on the page", () => {
   const fs = require("fs");
   const path = require("path");
@@ -1166,11 +1210,11 @@ describe("the particle layer on the page", () => {
     expect(js).toContain("$(\"particles\").addEventListener(\"change\"");
   });
 
-  test("the drawing skips a particle with nowhere to come from", () => {
+  test("a reseeded particle starts a new trail instead of joining the old one", () => {
     // The reseed contract only holds if the renderer honours it.
     const frame = /_frame: function \(now\) \{([\s\S]*?)\n {4}\}/.exec(js);
     expect(frame).not.toBeNull();
-    expect(frame[1]).toContain("if (!p.from) continue;");
+    expect(frame[1]).toContain("if (!p.from) trail.length = 0;");
   });
 
   test("the caption is written by the layer that draws them, and cleared with it", () => {
@@ -1193,6 +1237,26 @@ describe("the particle layer on the page", () => {
     const stations = /getPane\("stations"\)\.style\.zIndex = (\d+)/.exec(js);
     expect(Number(particles[1])).toBeGreaterThan(400);
     expect(Number(particles[1])).toBeLessThan(Number(stations[1]));
+  });
+
+  test("the canvas is sized in device pixels, not CSS ones", () => {
+    // A hairline trail on a 3x phone is smeared over three device pixels and
+    // loses the contrast it needs against a wash of its own colour ramp.
+    const reset = /_reset: function \(\) \{([\s\S]*?)\n {4}\}/g;
+    const bodies = js.match(reset) || [];
+    const particles = bodies.find(function (b) { return b.includes("this._ratio"); });
+    expect(particles).toBeDefined();
+    expect(particles).toContain("window.devicePixelRatio");
+    expect(particles).toMatch(/this\._canvas\.width = Math\.round\(size\.x \* ratio\)/);
+    expect(particles).toMatch(/style\.width = size\.x \+ "px"/);
+    expect(particles).toContain("setTransform(ratio, 0, 0, ratio, 0, 0)");
+  });
+
+  test("a trail is cased so it reads over a wash of its own colour", () => {
+    const frame = /_frame: function \(now\) \{([\s\S]*?)\n {4}\}/.exec(js);
+    expect(frame[1]).toContain("rgba(12,16,22,0.55)");
+    expect(frame[1]).toContain("lib.speedColor(cell.speedMps)");
+    expect(frame[1]).toContain("lib.trailPath(");
   });
 
   test("nothing animates in a background tab", () => {
