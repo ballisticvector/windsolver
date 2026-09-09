@@ -255,6 +255,106 @@ Check `source`, `validTime`, `terrain.resolutionM`/`dataset`, `reference.resolut
 (null renders as `Confidence: unstated`). The amber "Modelled, not measured" notice must
 be visible without hunting.
 
+## Arrow length and the `#arrowScale` caption
+
+The field arrows are lengthed by their own speed by `arrowScale(cells, {maxPx, floorPx})`
+in `public/wind-map.js`, and the caption it produces is written into
+`<p id="arrowScale">` under the "Speed, mph" legend. Two properties make this testable
+without guessing:
+
+- `fullMph` is **quantised to the lowest non-zero `SPEED_STOPS` entry** (4, 8, 13, 19, 25,
+  32, 39) that covers the fastest *drawn* cell — not the on-screen maximum. So the caption
+  should step, never track the peak continuously, and it must never claim a full length
+  below the fastest cell.
+- `floorMph = fullMph * floorPx / maxPx`, and `map.js` calls it with `floorPx = maxPx*0.3`,
+  so the stub threshold is always **30% of the full-length speed** (4→1.2, 8→2.4, 32→9.6).
+
+Predict the caption before opening the page, so the browser check is a comparison rather
+than an observation. The layer thins with `strideFor(grid, 320)` (stride 3 on a 48x48
+grid), so take the peak of the *same subsample*:
+
+```bash
+curl -s "http://127.0.0.1:8123/v1/field?lat=40.2549&lon=-105.6151&radiusMiles=4" > /tmp/f.json
+node -e 'const g=JSON.parse(require("fs").readFileSync("/tmp/f.json")).grid;
+  // NB: grid.speedMps/fromDeg/elevationM are FLAT arrays of rows*cols, indexed
+  // r*cols + c — not nested rows. g.speedMps[r][c] silently yields undefined,
+  // which reads as "every cell is a hole" and quietly gives a peak of 0.
+  const s=Math.max(1,Math.ceil(Math.sqrt(g.rows*g.cols/320)));let p=0;
+  for(let r=0;r<g.rows;r+=s)for(let c=0;c<g.cols;c+=s){const v=g.speedMps[r*g.cols+c];
+    if(Number.isFinite(v))p=Math.max(p,v*2.2369362920544);}
+  const stops=[4,8,13,19,25,32,39];const full=stops.find(x=>p<=x);
+  console.log({peakMph:p.toFixed(2),full,floor:(full*0.3).toFixed(1)});'
+```
+
+Domains that gave a different stop each, so the quantisation step is visible (values move
+with the weather — recompute, do not trust these numbers):
+40.0150,-105.2705 r=1 was a genuinely calm 4/1.2; 40.4136,-105.3540 r=1 was 8/2.4;
+40.2549,-105.6151 r=4 (Rocky Mountain ridge) was 32/9.6 and is the one worth recording,
+because it spans teal stubs and long arrows in a single frame.
+
+Other things worth knowing:
+
+- **`lengthFor` returns `null`, not the floor, for a null/NaN speed**, and the caller skips
+  it. The negative check is a partial-coverage domain (33.9700,-118.5600 r=2, ~72% no
+  terrain): the uncovered region must carry no wash *and* no stub arrows at all.
+- **The caption cannot go stale, because it lives inside `#result`.** `_draw()` returns
+  before calling `onScale` when the body is null and nothing resets `#arrowScale`, which
+  looks like a stale-caption bug on a code read — but `clearWind()` sets
+  `$("result").hidden = true`, which hides the caption with the rest of the panel. Verify
+  it in the browser rather than reporting the code read: a pin move, a radius change and a
+  no-terrain refusal all hide the whole panel.
+- **Zooming re-runs the scale over a different thinned set** but the quantisation should
+  hold the caption steady; a caption that changes on a bare zoom is the failure mode.
+- **The per-cell reference is not reachable from the page.** `fieldQuery` sends only
+  lat/lon/radiusMiles/cols/resolutionM, so there is no `perCell` control to exercise even
+  though `field.js` supports the option. Report that rather than calling the API directly
+  and presenting it as something the page drew.
+
+## The particle layer (`#particles`, `#particleNote`)
+
+Off by default behind `#particles`; the caption is `#particleNote`; the canvas is
+`.leaflet-particles-pane canvas` (pane zIndex 410, `pointer-events:none`, between the
+overlay pane 400 and the stations pane 620). Nothing draws until a field is solved *and*
+the box is ticked, and `clearWind()` empties both canvas and caption, so a pin move, a
+radius change or a refusal should leave zero lit pixels and a zero-length caption.
+
+Measure it, do not eyeball it — the useful probes, all runnable from the console:
+
+- **Is it animating / is it empty?** count pixels with `alpha > 10` in
+  `getImageData` on the particle canvas, twice a second apart. Zero = empty layer;
+  unchanging = frozen.
+- **Which way is it moving?** cross-correlate two frames of the canvas over small (dx,dy)
+  shifts and convert the best shift to a bearing; compare with the arrow direction in the
+  panel. A 1-second gap is too long at high `motionScale` — use ~150-300 ms.
+- **Does a trail cross a coverage hole?** build a boolean mask of the *wash* (overlay
+  pane) pixels, dilate it ~3 px for antialiasing, and assert no lit particle pixel falls
+  outside it. Always run a control with the mask deliberately shifted ~60 px: it should
+  report tens of percent outside, otherwise your mask is meaningless.
+- **False respawn streaks?** monkey-patch `ctx.moveTo`/`ctx.lineTo` on the particle canvas
+  for a few seconds and record the longest segment. Healthy values are a couple of pixels;
+  a streak bug shows up as a segment hundreds of pixels long.
+- **Background-tab pause.** Same lineTo instrumentation bucketed per second, then
+  `ctrl+t` for ~30 s and `ctrl+1` back (never navigate the map tab away). Expect zero
+  segments for the whole hidden window and a normal, non-spiking first second on return.
+  Corroborate with renderer CPU from the shell: sum `utime+stime` from `/proc/<pid>/stat`
+  over all `pgrep -f "type=renderer"` pids before and during the hidden window (~28% → ~0.15%
+  here). Note timers are throttled while hidden, so a `setTimeout` that ends an
+  instrumentation window will fire late — read the result after you return.
+- **Endurance.** A rAF loop for 180 s recording frame count, frames over 100 ms and
+  `performance.memory.usedJSHeapSize` is a cheap responsiveness check (59.4 fps, 0 long
+  frames, 22 MB here).
+
+Caption checks: it must name a finite multiplier and both caveats ("not air travelling
+over time", "stops at ground with no terrain under it"). The multiplier is computed from
+metres-per-pixel, so it **must** change on zoom (93×→48× at higher zoom, 72×→220×→320× as
+the view zooms out here). A fixed number across zooms is the failure mode.
+
+A genuinely calm (0 mph) domain often does not exist in the live HRRR cycle — the listed
+"calm" coordinates can come back at 3-7 mph. When that happens, say so rather than
+claiming the calm case passed, and corroborate at the library level instead:
+`WindMapLib.stepParticle(zeroSpeedGrid, p, 10)` must return a particle at the *same*
+lat/lon (not `null`), and `WindMapLib.particleField` must still seed the requested count.
+
 ## Traps
 
 - **Mobile layout is the thing to measure, not reason about.** Historically `#app` used
@@ -268,6 +368,11 @@ be visible without hunting.
   0,0,0,500,900` works; 390 is silently ignored). For 390/360 px, maximise the window and
   use the DevTools device toolbar (`F12`, then `Ctrl+Shift+M`) and type the width into the
   Dimensions box.
+  If DevTools opens *undocked* (its own window, as it did once here), the device toolbar is
+  more trouble than it is worth. A cleaner way to reach a sub-500 px CSS viewport with a
+  legible screenshot: size the real window to 500 px and press `Ctrl+=` twice — page zoom
+  shrinks the CSS viewport (500 → 400 CSS px at 125%), and `Ctrl+0` restores it. Confirm
+  with `innerWidth` in the console.
 - **In-flight responses must be invalidated when the user changes the query.** As of
   `48135eb` `clearField()` starts with `if (inFlight) inFlight.abort();`, which covers all
   four invalidators (pin drag, radius, grid, refusal); the abort lands in `solve()`'s catch
