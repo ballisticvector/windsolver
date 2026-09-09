@@ -355,6 +355,65 @@ claiming the calm case passed, and corroborate at the library level instead:
 `WindMapLib.stepParticle(zeroSpeedGrid, p, 10)` must return a particle at the *same*
 lat/lon (not `null`), and `WindMapLib.particleField` must still seed the requested count.
 
+### Trail rendering, DPR and reduced motion
+
+Since the trail renderer stopped fading the previous frame (`trailFade` gone) and started
+`clearRect`-ing each frame and redrawing a stored polyline per particle (`trailPath()`,
+defaults `trailPx 26`, `stepPx 2`, ≤64 points), the checks that matter are different:
+
+- **Haze regression.** The old `destination-out` fade left a permanent low-alpha residue.
+  Test it by counting canvas pixels with `0 < alpha < 20` at t≈5 s and again at t≈45-90 s;
+  a healthy renderer keeps that count flat, and unticking `#particles` must leave *exactly*
+  zero lit pixels. On mobile it presented as "no moving particles on iPhone" because the
+  particles were lost in the haze, so a pixel count alone is not the assertion — take a
+  zoomed screenshot and check the streaks are separable from the wash.
+- **DPR.** `_reset` sizes the backing store by `min(3, devicePixelRatio)` while CSS size is
+  unchanged; assert `canvas.width === cssWidth * ratio` (1170 × 1392 for a 390 × 464 map on
+  an emulated iPhone 12 Pro). Everything else (`clearRect`, trail points, mask tests) is in
+  CSS pixels because of the `setTransform(ratio,…)`.
+- **prefers-reduced-motion.** Emulate it from the DevTools command menu, then **untick and
+  re-tick `#particles`** — the flag is read in `_start`, so an already-running layer keeps
+  the old speed and the caption keeps/loses the "Slowed, because this browser asks for
+  reduced motion." sentence only after a restart.
+- **Trail length: measure it, do not assume it.** Monkey-patch `moveTo`/`lineTo`, accumulate
+  per-path length between `moveTo`s, and report median / p90 / max / fraction under 5 px.
+  History worth knowing: when `life` was counted in *frames* (a fixed 120 ≈ 2 s at 60 fps),
+  reduced motion (`pxPerSecond` 12 instead of 55) killed a particle before its trail reached
+  the 26 px cap — median drawn path 5.8 CSS px against 20.7 px at full speed, ~47% of paths
+  under 5 px, i.e. dots. Since `lib.particleLife(scale, {travelPx: 200})` (life =
+  `(travelPx / pxPerSecond) * secondsPerSecond`, and `stepParticle` ages by the *seconds*
+  advanced, not by 1 per call) a life is a distance over the ground, so it is invariant to
+  the drawing speed: measured at 79a0c4a, reduced motion median 21.3 px against 22.8 px
+  normal, 5.2% under 5 px in both. Expect roughly the same numbers in both modes; a large
+  gap between them is the regression to look for.
+  Also note `if (trail.length < 4) continue` means a particle with fewer than two sampled
+  points draws *nothing at all* — so a slow field can look sparse as well as short.
+- **The lifetime lever has two failure modes on the other side**, and neither shows up in a
+  short look: too long a life collapses the cloud onto a few streamlines, and a stationary
+  particle accrues no distance so it can only die on a field change. Test both with pixels
+  rather than eyes: (a) split the particle canvas into a 16 × 16 grid and compare the count
+  of occupied cells at t ≈ 10 s and t ≈ 115 s (95 → 90 of 256 on a 4-mile box at 79a0c4a —
+  a real collapse drops it hard); (b) count pixels lit in *all* of 5 frames sampled 2-3 s
+  apart — 0 on a strong field, a flat ~1.2% of lit pixels on a 1.3-2.4 mph field. The number
+  growing between an early and a late window is the stuck-dot lattice; a flat one is not.
+- **Counting drawn particles per frame:** patch `clearRect` (one call per frame) and
+  `moveTo` (one per drawn trail) and take the ratio; compare with
+  `WindMapLib.particleCount(mapWidthCss, mapHeightCss)` (density `perParticlePx` 900,
+  min 90, max 1200 — 201 particles for a 390 × 464 phone map).
+- **The terrain mask must be built in the *wash* canvas's own pixels.** The overlay-pane
+  canvas is CSS-sized (390 × 464) while the particle canvas is DPR-scaled (1170 × 1392);
+  comparing them index-for-index silently reports ~96% of trail pixels "outside coverage"
+  and a shifted control that agrees with it, which is the tell. Scale the lookup
+  (`wash[floor(y/3)*ww + floor(x/3)]`) and dilate in wash pixels. Correct result on the
+  Santa Monica box: 56 of 697,281 lit trail pixels outside, control shifted 40 wash px 19.3%.
+- **Known console noise:** revoked hillshade blob URLs log `GET blob:… ERR_FILE_NOT_FOUND`,
+  and any `getImageData` instrumentation you add triggers the Canvas2D
+  `willReadFrequently` warning. Neither is a renderer defect.
+- **Panning to find the box wastes time**: screen coordinates are scaled relative to CSS
+  pixels (1600 × 1200 display shown as 1024 × 768), so a drag moves ~1.6× further than it
+  looks and the solved box disappears fast. Re-solving does *not* recentre the map — reload
+  the page, set lat/lon (bubbling `change`), solve, and the box lands centred.
+
 ## Traps
 
 - **Mobile layout is the thing to measure, not reason about.** Historically `#app` used
