@@ -1600,6 +1600,123 @@ and is recorded as a gap rather than dropped silently. And the whole table sits 
 ±2 kt-class instrument floor: these differences are tenths of the sensor's own tolerance,
 which is why the leverage block is the part worth reading.*
 
+## Measurement 19: a second near-ground network, at 1.5 m, and it agrees with the first
+
+Measurement 16 produced the first score against masts inside the layer the product is
+about, and its most surprising line was not the sheltering result but the bias: over
+CoAgMet's 2–3 m masts HRRR needs **×0.84–1.02**, where the same model on the same dates
+needs ×0.60–0.70 against RAWS at 6.1 m. One network cannot tell you whether that is the
+height, the land cover, or Colorado irrigated farmland. **USCRN is the control**: a
+different agency, a different instrument, a different siting policy, national rather than
+one state — and 1.5 m, half a metre lower again. `uscrn.js` reads it and
+`tools/score-wind.js --source uscrn` scores against it.
+
+Nine stations across Colorado and New Mexico, the **same four archive dates as
+measurement 16**, 12 hours from 12Z, paired at ±5 minutes because a five-minute record
+does not need thirty:
+
+```
+USCRN 1.5 m, 8 stations, 4 dates, 768 pairs / 384 model hours
+date         obs mean   HRRR bias   HRRR rmse   down bias   down rmse   scale HRRR needs
+2026-03-14      4.03       +0.26        1.81       +0.38       1.90          0.940
+2026-08-31      1.95       +0.06        1.58       +0.12       1.63          0.971
+2026-09-02      2.58       +0.55        1.55       +0.64       1.65          0.825
+2026-09-04      2.20       +0.47        1.57       +0.56       1.65          0.824
+pooled          2.69       +0.33        1.63       +0.42       1.71
+pooled, each candidate debiased on its own pairs   1.485       1.513
+```
+
+**The 2 m result reproduces at 1.5 m, on a different network, in two states.** CoAgMet's
+four-date range was ×0.84–1.02; USCRN's is ×0.82–0.97, on the same days. Neither is
+anywhere near the ×0.60–0.70 the RAWS sample demands. That is now two independent
+near-ground networks saying the same thing, which retires the reading that "HRRR runs
+43–70% fast" is a property of HRRR: **it is a property of the RAWS sample**, and this note
+should be read accordingly wherever that figure appears above.
+
+**The downscaling loses on every date, raw and debiased, and the ranking survives leaving
+any station out.** 0.08 m/s worse pooled before debiasing and 0.028 after, with
+`leverage.stable` true and `model` winning with each of the eight stations held out in all
+four runs. This is the cleanest negative result the terrain terms have had: previous ones
+were one state, one day, or one mast away from flipping.
+
+**What it is not is a smaller unknown than measurement 16 — it is a bigger one.** The log
+law moves HRRR's 10 m field **×0.673** to reach 1.5 m, against ×0.723 to a 2 m mast and
+×0.915 to 6.1 m. It is the largest single multiplier applied anywhere in this project, it
+is applied below anything any measurement here has tested, and the debiased scale absorbs
+whatever it gets wrong. ×0.82 is a statement about model-plus-profile.
+
+**And the spread between stations is five times the spread between dates.** Observed mean
+over modelled mean, pooled across all four days, 96 pairs each:
+
+```
+id     station                          class   obs    model   scale
+03063  USDA Comanche National Grassland flat    3.12   2.24    ×1.39
+03048  Sevilleta NWR (LTER)             flat    2.13   1.95    ×1.09
+03060  Black Canyon (Vernal Mesa)       flat    3.31   3.26    ×1.01
+94082  Dinosaur National Monument       slope   2.87   3.26    ×0.88
+94074  Central Plains Experimental Rge  flat    3.11   3.53    ×0.88
+03062  Valles Caldera                   slope   2.09   2.50    ×0.84
+03061  Mesa Verde (Far View)            ridge   1.79   2.50    ×0.72
+94075  Boulder 14 W (Mountain Res. Stn) ridge   3.07   4.90    ×0.63
+```
+
+×0.63 to ×1.39 — the model runs **59% fast** at a 3,000 m subalpine ridge and **28% slow**
+on the shortgrass plains, on masts a metre and a half off the ground, where the whole
+four-date spread is 0.15 of scale. That is measurement 10's "it is not one bias" again,
+one storey lower, and it is the shape of the problem a 2-mile map has to solve. Both ridge
+stations are the fast ones and both are the largest errors in the set, which is the same
+sign the ridge penalty has shown throughout — on eight stations, which is not a
+correlation, only a consistency.
+
+**The run says nothing at all about direction, and that is the column that matters down
+there.** USCRN publishes no bearing: `WIND_1_5` is a speed and the sub-hourly product has
+no vane field. So this is a speed score, and measurement 16's genuinely alarming
+finding — 34–62° of direction RMSE at 2 m against 23–31° at RAWS height — is untouched by
+it. The scoring tool now prints a dash in the direction and vector columns and says in
+words that the network has no vane, because the vector RMSE it would otherwise print is an
+RMS over the eight calms (the only observations with a defined observed vector) sitting in
+the same column as an RMS over 768.
+
+### The gap that would have scored as a station
+
+One of the nine, **WBAN 03074, Las Cruces 20 N at the Jornada Experimental Range,
+contributed nothing**: every one of its 528 rows in the four windows is either missing or
+carries `WIND_FLAG=3`, "erroneous". Its whole 2026 file is — 72,324 rows, 16,968 missing
+and the other 55,356 flagged, not one valid — and so is 2024 and 2025. **The flagged values
+look completely ordinary**: mean 2.02 m/s, peak 15.26, 3,019 calms, a plausible diurnal
+shape. Nothing but the flag distinguishes a dead station from a quiet
+one, and read without it this run would have been nine stations and 960 pairs with an
+eighth of the sample coming from an instrument the network says is wrong. The reader
+rejects flag 3 by default and counts what it rejected, so the station appears in the table
+with `obs 0` rather than not appearing at all.
+
+Coverage otherwise was complete: **4,752 five-minute rows in the four windows, 4,224
+kept**, all 528 rejections from that one station, no missing values anywhere else.
+
+### What this settles
+
+- **The near-ground bias is not a CoAgMet artefact.** Two networks, two agencies, two
+  instruments, two states, 1.5 m and 2–3 m: ×0.82–0.97 and ×0.84–1.02 on the same four
+  days. The RAWS figure is the outlier.
+- **The terrain downscaling is worse than raw HRRR at 1.5 m**, on every date, before and
+  after debiasing, with the ranking stable to leaving any station out.
+- **A directionless network cannot grade a direction product.** Half of what a 0–3 m wind
+  map has to get right is not observable in USCRN at all.
+- **Nothing moved.** No default, no coefficient, no threshold; `downscale.js` untouched,
+  and USCRN stays a validation source — 158 stations nationally could not be an input
+  field.
+
+*Caveats. Eight stations and four dates, two states, 12 hours each: two seasons, not a
+climatology. USCRN is sparse enough that the eight are not a sample of anything — they are
+the stations that exist. The model is read at 10 m and moved to 1.5 m by an untested log
+law with a fixed z0 of 0.03 m, which is wrong at 3,000 m on Niwot Ridge and wrong on
+shortgrass in a different direction. Whether NCEP assimilates USCRN has not been read, so
+independence is reported UNKNOWN, and an f0 run may be grading an analysis fit. Eight of the
+768 observations are reported calm, which the Met One's 0.447 m/s starting threshold
+censors rather than measures, and nothing subtracts the bound that puts on the bias. The whole table sits under the cup's own ±0.67 m/s tolerance —
+the pooled difference between the two candidates is a twentieth of it, which is why the
+leverage block rather than the third decimal is the part worth reading.*
+
 ## The hypotheses, and how much weight each one carries
 
 Roughly in the order the evidence supports them.

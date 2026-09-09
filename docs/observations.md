@@ -213,6 +213,33 @@ so it is a **validation set and could never be an input field**. That is the rig
 for the question here: it is the only way to score a drawn near-ground wind against an
 instrument standing in it.
 
+#### What the adapter has to get right
+
+`uscrn.js` reads it behind the same `search` / `station` / `observations` interface as
+`synoptic.js`, `fems.js` and `coagmet.js`, and `tools/score-wind.js --source uscrn` scores
+against it. The product is plain text from
+`https://www.ncei.noaa.gov/pub/data/uscrn/products/subhourly01/`, one file per
+station-year, no account and no key. Five things in it are traps:
+
+- **There is no direction.** `WIND_1_5` is a speed and the sub-hourly product has no
+  bearing field at all, so a normalized record carries `fromDeg: null` rather than a
+  fabricated one — and a run against USCRN is a **speed score**, which the summary now
+  says in words rather than leaving three empty columns to be read as a good result.
+- **Missing is `-99.00`, and the flag does not mark it.** In one Boulder station-year 24
+  rows carry the sentinel with `WIND_FLAG=0`, so missingness has to be tested on the value
+  independently of the flag. It is an absence, never a calm.
+- **`WIND_FLAG=3` is "erroneous", and the number beside it still looks like a wind.**
+  Las Cruces 20 N (WBAN 03074) has *every* row of 2026 either missing or flagged, and the
+  flagged values average 2.02 m/s with peaks to 15 m/s — an ordinary-looking record that
+  the network says is wrong. Read without the flag it would have scored as a healthy
+  station. The reader rejects flag 3 by default (`keepFlagged` opts back in) and counts
+  what it rejected, so a station that contributes nothing shows up as a gap.
+- **A timestamp ends a five-minute interval**, as in CoAgMet. Both bounds are kept and the
+  scoring time is the midpoint.
+- **The catalogue's `ELEVATION` is feet**, as above. `station()` converts it, and
+  `{ refine: true }` replaces the catalogue's 0.01° coordinates with HOMR's 0.0001° ones
+  when the two agree, recording which was used.
+
 ### Nothing found measures two heights on one mast
 
 Neither CoAgMet nor USCRN nor any provider reachable through MADIS publishes a second
@@ -361,6 +388,27 @@ thresholds, since a reported 0.0 could have come from either mast and the wider 
 the one that cannot be too small. `COAGMET_QUANTISATION` is separate and much finer —
 the archive stores 0.01 m/s and 0.1° — which is the same distinction the ASOS table
 draws: the rounding is not the tolerance, and the tolerance is seven to fifty times it.
+
+### USCRN's cup, and a tolerance read off the worse half of one line
+
+USCRN documents a single instrument — the **Met One 014A cup anemometer** — in
+`documentation/site/sensors/wind/Descriptions/Anemometer.pdf`, so unlike CoAgMet there is
+no ambiguity about which sensor answered:
+
+| | Met One 014A, as specified |
+| --- | --- |
+| Speed accuracy | "±0.25 mph or 1.5% FS" on a 100 mph range — **0.11 m/s or 0.67 m/s** |
+| Starting threshold | 1.0 mph (**0.447 m/s**) |
+| Distance constant | 15 ft |
+| Direction | none: there is no vane in the sub-hourly product |
+
+`uscrn.js` exports the **larger** of the two accuracy figures, 0.67 m/s, on the same
+principle as CoAgMet's worse cup: a wider tolerance makes a candidate harder to call
+significant, not easier. The calm ceiling is the starting threshold, **0.447 m/s** — and
+on a 1.5 m mast that is not a corner case but the regime, which is why `verify.js` prints
+what the calms could have contributed to the bias and subtracts none of it.
+`dirToleranceDeg` is null because there is nothing to be wrong about, and a run against
+this network prints a dash in the direction and vector columns rather than a number.
 
 **A RAWS is not an ASOS, and none of this transfers to one.** No equivalent specification
 has been read for the RAWS network, so `tools/score-wind.js` passes the FEMS and Synoptic
@@ -540,11 +588,12 @@ rather than borrowing the airports' answer.
    suspicious series, and for reaching networks FEMS does not carry.
 3. **Keep the free Synoptic token** for live and recent-past work, which is what it is
    good at and where its account limit does not bite.
-4. **CoAgMet, and USCRN when there is a near-ground field to score** — 2 m and 1.5 m
-   respectively, 5-minute, no account, and the only instruments found that stand inside
-   the 0–3 m layer `docs/near-ground-wind.md` is about. CoAgMet now has an adapter; what
-   it grades is the model brought *down* to 2 m by an untested profile, not a near-ground
-   field, because there is not one yet. USCRN should not get an adapter before there is.
+4. **CoAgMet and USCRN** — 2 m and 1.5 m respectively, 5-minute, no account, and the only
+   instruments found that stand inside the 0–3 m layer `docs/near-ground-wind.md` is
+   about. Both now have adapters. What either one grades is the model brought *down* to
+   the mast by an untested profile, not a near-ground field, because there is not one
+   yet — and USCRN, being national and directionless, is a **second independent check on
+   the same bias** rather than a second input.
 
 If a commercial source is wanted later, the question to ask a vendor is not coverage or
 price but **"is this an anemometer or a reanalysis, and what timestamp convention is on
@@ -598,7 +647,14 @@ pricing page.
   here was a handful of calls and a fixture capture.
 - **Which anemometer is at which CoAgMet station**, which is why one conservative
   network-level tolerance is exported rather than a per-station one.
-- **USCRN**, still: read for sensor height and timestep only, no adapter.
+- **Which Met One 014A is at which USCRN mast, and when it was last calibrated** — the
+  network documents one anemometer, so the exported tolerance is the specification's
+  larger figure (±1.5% of a 100 mph full scale = ±0.67 m/s, not the ±0.25 mph line), and
+  no per-station claim is made.
+- **Why WBAN 03074 has been flagged wholesale since 2024** — the flag is honoured, the
+  cause is unread.
+- **Whether HRRR assimilates USCRN.** As with CoAgMet, NCEP's use list has not been read,
+  so an f0 run reports UNKNOWN independence.
 - **Whether HRRR assimilates CoAgMet.** NCEP's mesonet use and rejection lists have not
   been read, so an f0 run against these masts is reported as UNKNOWN independence rather
   than as an analysis fit or as a clean out-of-sample score.

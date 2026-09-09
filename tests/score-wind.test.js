@@ -692,6 +692,44 @@ describe("the summary a person reads", () => {
     expect(scoreWind.summarise(report)).toMatch(/at most [\d.]+ m\/s of every speed bias/);
   });
 
+  test("a network with no vane scores speed, and says the empty columns are the network", async () => {
+    // USCRN publishes a 1.5 m speed and no bearing at all. Three of the four
+    // columns to the right of the speed then have nothing in them, and the one
+    // thing that must not happen is the vector column filling itself from the
+    // calms — whose observed vector is the zero one — so that an RMS over two
+    // observations prints in the same place as an RMS over two hundred.
+    const service = stubService(function () {
+      return stubField({ speedMps: 4, fromDeg: 270, referenceMps: 9 });
+    });
+    const bearingless = read.records.map(function (r) {
+      return Object.assign({}, r, { fromDeg: null });
+    });
+    const report = await scoreWind.buildReport({
+      source: stubSource({
+        observations: async function () {
+          return Object.assign({}, read, { records: bearingless });
+        }
+      }),
+      service: service, stations: ["KBDU"], hours: 4, endMs: END
+    });
+    const scored = report.overall.downscaled;
+
+    expect(scored.n).toBeGreaterThan(0);
+    expect(scored.direction.n).toBe(0);
+    expect(scored.direction.rmseDeg).toBeNull();
+    // The calms still have a vector, so the RMS is not null — it is just not
+    // over the sample, and the count is what says so.
+    expect(scored.vectorN).toBe(scored.excluded.calm);
+    expect(scored.vectorN).toBeLessThan(scored.n);
+
+    const text = scoreWind.summarise(report);
+    expect(text).toMatch(/no observation in this run carried a direction/);
+    expect(text).toMatch(/not because the model got it right/);
+    // And the number itself is not printed in the overall row.
+    const row = text.split("\n").find(function (l) { return l.startsWith("downscaled"); });
+    expect(row.trimEnd().endsWith("—")).toBe(true);
+  });
+
   test("it shows the model hours behind the observations, not just the count", async () => {
     // A station reporting every five minutes pairs several observations to one
     // model hour, so a row reading n = 135 over a day is 24 independent
@@ -1222,7 +1260,18 @@ describe("which observation service the run scores against", () => {
 
   test("a service nobody implemented is named in the refusal", () => {
     expect(() => scoreWind.sourceFor("madis", [], {}))
-      .toThrow(/nws, synoptic, fems or coagmet/);
+      .toThrow(/nws, synoptic, fems, coagmet or uscrn/);
+  });
+
+  test("USCRN carries the Met One's own tolerance, and no direction tolerance at all", () => {
+    const chosen = scoreWind.sourceFor("uscrn", ["94075"], {});
+    const scored = verify.score([], chosen.floor);
+    expect(scored.instrument.speedToleranceMps).toBeCloseTo(0.6706, 4);
+    // There is no wind vane on the mast, so there is no vane tolerance to
+    // quote — a null rather than an airport's number on the wrong network.
+    expect(scored.instrument.dirToleranceDeg).toBeNull();
+    // A reported 0.00 is censored at the anemometer's starting threshold.
+    expect(scored.calmCeilingMps).toBeCloseTo(0.4470, 4);
   });
 
   test("CoAgMet carries its own cups, and not the airport's or the RAWS' null", () => {

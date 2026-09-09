@@ -13,13 +13,14 @@
  *
  * Options:
  *   --stations   comma-separated station ids (required)
- *   --source     nws (default), synoptic, fems or coagmet; synoptic needs
+ *   --source     nws (default), synoptic, fems, coagmet or uscrn; synoptic needs
  *                $SYNOPTIC_API_TOKEN, and fems needs --fems-map, the station map
  *                tools/fems-stations.js writes. FEMS is the one that reaches back
  *                years; read the header of fems.js before trusting a run older
- *                than Synoptic's window. coagmet is Colorado only and is the only
- *                source here measuring below 6.1 m — read the note on its height
- *                in sourceFor() before reading a score from it.
+ *                than Synoptic's window. coagmet is Colorado only and measures at
+ *                2-3 m; uscrn is national, measures at a documented 1.5 m and has
+ *                no direction at all, so a score against it is a speed score —
+ *                read the notes in sourceFor() before reading either one.
  *   --fems-map   path to the FEMS station map (default data/fems-stations.json)
  *   --hours      how many whole hours back from --end (default 12)
  *   --end        the newest hour to score, ISO 8601 (default: three hours ago,
@@ -178,6 +179,7 @@ const roughness = require("../roughness.js");
 const synoptic = require("../synoptic.js");
 const fems = require("../fems.js");
 const coagmet = require("../coagmet.js");
+const uscrn = require("../uscrn.js");
 const verify = require("../verify.js");
 
 const HOUR_MS = 3600 * 1000;
@@ -531,6 +533,7 @@ function tidy(score) {
       within30Deg: round(score.direction.within30Deg, 3)
     },
     vectorRmseMps: round(score.vectorRmseMps, 3),
+    vectorN: score.vectorN,
     scale: round(score.scale, 4),
     excluded: score.excluded,
     // What a calm was worth at most, and how far the calms in this sample could
@@ -1368,7 +1371,52 @@ function sourceFor(name, ids, args) {
       assimilated: null
     };
   }
-  throw new Error("--source is nws, synoptic, fems or coagmet, not " + JSON.stringify(name));
+  // USCRN is the only instrument in this project inside the 0-3 m layer the
+  // product is about, and the only one whose height is a specification rather
+  // than a survey: `WIND_1_5` is documented as a 5-minute mean at 1.5 m.
+  //
+  // Two things about a score from it. **It has no direction**, so `verify.js`
+  // returns speed only and the direction and vector columns are empty — and
+  // measurement 16 put HRRR's direction RMSE at 2 m at 53-62 degrees, so the
+  // quantity most in doubt down there is the one this network cannot grade.
+  // **And the profile step is bigger here than anywhere else**: bringing the
+  // model from 10 m to 1.5 m over short grass is x0.673, against x0.723 to a
+  // 2 m mast and x0.915 to a 6.1 m one, so more of the answer is the log law
+  // and less of it is HRRR than in any earlier run.
+  //
+  // Whether NCEP assimilates USCRN is not known here, so independence is
+  // reported UNKNOWN rather than assumed either way.
+  if (which === "uscrn") {
+    return {
+      source: uscrn.createUscrnSource({ refine: true }),
+      label: "USCRN sub-hourly, 5-minute mean speed at a documented 1.5 m, no " +
+        "direction in the product, timestamps ending the averaging interval, " +
+        "Met One 014A cups (±0.25 mph or 1.5% FS, starting at 1.0 mph), " +
+        "positions refined from HOMR where they agree with the catalogue",
+      floor: Object.assign({}, uscrn.USCRN_QUANTISATION, uscrn.USCRN_INSTRUMENT),
+      assimilated: null
+    };
+  }
+  throw new Error("--source is nws, synoptic, fems, coagmet or uscrn, not " +
+    JSON.stringify(name));
+}
+
+/**
+ * The vector error, or a dash where it would not be over the sample.
+ *
+ * A pair only has a vector error if the observation has a bearing, and USCRN
+ * publishes none at all — so the only pairs contributing one there are the
+ * calms, whose observed vector is the zero one. Printed unqualified in a column
+ * beside `n`, an RMS over one calm out of 192 observations reads exactly like
+ * an RMS over all 192, which is why a network with no vane gets a dash here
+ * however many calms it reported. Where the network does measure a bearing the
+ * number is a real subsample and stays, with `bearingNote` saying how much of
+ * the run it covers.
+ */
+function vectorCell(score) {
+  if (!score.vectorN) return fixed(null, 2).padStart(9);
+  if (!score.direction || !score.direction.n) return fixed(null, 2).padStart(9);
+  return fixed(score.vectorRmseMps, 2).padStart(9);
 }
 
 function line(label, score) {
@@ -1380,7 +1428,7 @@ function line(label, score) {
     fixed(score.speed.rmseMps, 2).padStart(9),
     fixed(score.direction.biasDeg, 1).padStart(9),
     fixed(score.direction.rmseDeg, 1).padStart(9),
-    fixed(score.vectorRmseMps, 2).padStart(9)
+    vectorCell(score)
   ].join(" ");
 }
 
@@ -1425,6 +1473,29 @@ function instrumentNote(report) {
   return "the sensor is allowed ±" + fixed(inst.speedToleranceMps, 2) + " m/s and ±" +
     fixed(inst.dirToleranceDeg, 0) + "° by its own specification: a difference smaller " +
     "than that is not evidence about the model";
+}
+
+/**
+ * Which of the scored observations had a bearing at all.
+ *
+ * Three of the four columns to the right of the speed need one, and a source
+ * can simply not have it: USCRN's sub-hourly product publishes a 1.5 m speed
+ * and no direction, so a run against it is a speed run with three empty
+ * columns, and the emptiness is the finding rather than a formatting accident.
+ * Measurement 16 put HRRR's direction RMSE at 2 m at 53-62°, which is the
+ * quantity a direction-less network leaves ungraded.
+ */
+function bearingNote(report) {
+  const s = report.overall.downscaled || {};
+  const withBearing = (s.direction && s.direction.n) || 0;
+  if (withBearing === s.n) return null;
+  if (!withBearing) {
+    return "no observation in this run carried a direction, so this is a speed score: " +
+      "the direction and vector columns are empty because the network does not " +
+      "measure a bearing, not because the model got it right";
+  }
+  return withBearing + " of " + s.n + " observations carried a direction; the " +
+    "direction and vector columns are over those and the speed columns are over all of them";
 }
 
 /**
@@ -1566,10 +1637,11 @@ function summarise(report) {
     "obs is observations scored; hrs is the model hours behind them — a station " +
       "reporting every five minutes contributes several obs to one sample",
     instrumentNote(report),
-    censoringNote(report),
-    heights(report),
-    ""
+    censoringNote(report)
   );
+  const bearing = bearingNote(report);
+  if (bearing) out.push(bearing);
+  out.push(heights(report), "");
   for (const row of surfaces(report)) out.push(row);
 
   // What each term did, as distinct from whether it helped. A candidate that

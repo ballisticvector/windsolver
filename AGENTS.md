@@ -219,23 +219,36 @@ a correction, because the sheltering it shows in Colorado does not survive New M
 below). `--position` and `--threshold` ride on every surveyed station for this reason, and
 the survey's footnote quotes the radius it ran at; never compare a count taken at one
 radius with a count taken at another.
-Below 3 m the RAWS network has nothing. CoAgMet does — 95 Colorado masts at 2–3 m, and
-`--source coagmet` now scores against them — and USCRN measures at 1.5 m and has no
-adapter (`docs/observations.md`). **A CoAgMet score is not a near-ground result.** What it
-grades is HRRR brought *down* from 10 m to a 2 m mast by a log law no measurement here has
-ever tested below 6.1 m, a step worth about **x0.72** — larger than every terrain candidate
-ever ablated put together — so the summary marks any station under 3 m "below anything this
-profile has been checked at", and whether NCEP assimilates these masts is unread, so an f0
-run reports its independence as UNKNOWN rather than borrowing the airports' answer. Its
-timestamps **end** the averaging interval (proved against the five-minute series, not read
-off a page), `-999` and a blank timestamp are absences and never calm, a zero speed carries
-a null direction rather than a north wind, and the service refuses an id in the wrong case
-with a bare `Invlid request` that is not JSON.
+Below 3 m the RAWS network has nothing. Two other networks do, and both now have
+adapters: **CoAgMet**, 95 Colorado masts at 2–3 m, `--source coagmet`; and **USCRN**,
+1.5 m nationally, `--source uscrn` (`docs/observations.md`). **Neither one's score is a
+near-ground result.** What they grade is HRRR brought *down* from 10 m to the mast by a log
+law no measurement here has ever tested below 6.1 m — a step worth about **x0.72** to 2 m
+and **x0.67** to 1.5 m, larger than every terrain candidate ever ablated put together — so
+the summary marks any station under 3 m "below anything this profile has been checked at",
+and whether NCEP assimilates these masts is unread, so an f0 run reports its independence
+as UNKNOWN rather than borrowing the airports' answer.
 
-**What those masts said when they were scored (measurement 16) does not transfer from the
-RAWS runs, in either direction.** Over 31 CoAgMet stations on four dates HRRR needs
+CoAgMet's timestamps **end** the averaging interval (proved against the five-minute series,
+not read off a page), `-999` and a blank timestamp are absences and never calm, a zero
+speed carries a null direction rather than a north wind, and the service refuses an id in
+the wrong case with a bare `Invlid request` that is not JSON. USCRN ends its five-minute
+interval the same way, and has three traps of its own: **it has no direction at all**, so a
+run against it is a speed score and `tools/score-wind.js` prints a dash rather than a
+vector RMSE taken over the handful of calms; **missing is `-99.00` and the flag does not
+mark it**, so missingness is tested on the value; and **`WIND_FLAG=3` is "erroneous" while
+the number beside it looks like an ordinary wind** — WBAN 03074 has been flagged wholesale
+since 2024 at a plausible 2.02 m/s mean, and read without the flag it scores as a healthy
+station. `uscrn.js` rejects flag 3 by default and counts the rejections so the gap is
+visible. The catalogue's `ELEVATION` is **feet**, unlabelled, beside degrees.
+
+**What those masts said when they were scored (measurements 16 and 19) does not transfer
+from the RAWS runs, in either direction.** Over 31 CoAgMet stations on four dates HRRR needs
 **x0.84–1.02**, and on the windy March day it is unbiased — where the same model on the
-same dates needs x0.60–0.70 against RAWS and is at its worst in March. The log law down to
+same dates needs x0.60–0.70 against RAWS and is at its worst in March. **USCRN reproduces
+that on a different network**: x0.82–0.97 over 8 stations at 1.5 m on the same four dates,
+768 pairs, two states, with the terrain downscaling losing to raw HRRR on every date and
+the ranking surviving every station held out. The log law down to
 2 m accounts for a factor 0.79 of that and no more; the rest is network, land cover and
 siting, and this run cannot separate them. **So "HRRR runs 43–70% fast" is a statement
 about the RAWS sample, not about HRRR.** What is worse down there is direction: 34° RMSE on

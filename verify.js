@@ -407,6 +407,12 @@ function score(pairs, opts) {
         : null
     },
     vectorRmseMps: rms(vectorErrors),
+    // How many pairs that RMS is over. It is not `n`: a pair whose observation
+    // carries no bearing contributes a speed error and no vector, and USCRN
+    // carries no bearing at all — so without this count a vector error taken
+    // over the one calm observation in a sample reads exactly like a vector
+    // error taken over all of it.
+    vectorN: vectorErrors.length,
     excluded: {
       missingSample: missingSample,
       calm: calm,
