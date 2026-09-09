@@ -33,6 +33,7 @@ Everything below is an attempt to move one of these.
 |---|---|---|
 | HRRR's speed bias over the RAWS sample | **+43% to +70%** | measurements 7, 12 |
 | What the pairing clock costs, at the offsets actually used | **0.85 m/s speed, 23° direction** | the ASOS one-minute run |
+| What removing most of it actually recovered, scored | **0.05 m/s of 2.27** | measurement 18 |
 | The whole spread of every terrain candidate ever ablated | **0.06 m/s** | measurement 2 onward |
 | What the diverting term does to direction | **0.3°** | measurement 4 |
 
@@ -56,14 +57,27 @@ fixing it and one is not:
   m/s). Sub-hourly variability is not in an hourly series to be recovered, so this is
   worth doing and is not the answer.
 - **Ten-minute pre-averaging on both sides recovers about 30%.** It needs an observation
-  source that publishes sub-hourly rows; FEMS does not, and MADIS does.
-- **Unknown: whether a sub-hourly model helps.** HRRR sub-hourly output exists at 15
-  minutes. Nobody here has read it, and it would halve the remaining offset if the
-  transmit slots stay where `data/fems-stations.json` says they are.
+  source that publishes sub-hourly rows; FEMS does not, and MADIS and CoAgMet do.
+- **A sub-hourly model does not help. This has now been measured and the answer is no.**
+  HRRR's archived 15-minute product cuts the mean pairing offset from 14.7 minutes to 4.2
+  and makes the score **worse**, by 0.037–0.063 m/s of vector RMSE with the sign holding
+  under every station left out, because the :15/:30/:45 fields are forecasts and a
+  forecast lead costs 0.23 m/s an hour against the analysis it replaces. Measurement 18.
+
+**This step has now been run, and it moves less than it was expected to.** Averaging the
+measured side over ±5 minutes — the half of the recipe that is available, since HRRR
+publishes no hour-long sub-hourly mean — is worth 0.044–0.074 m/s of vector RMSE against
+the hourly baseline, about 3%. That is a real gain, stable under leave-one-out, and it is
+not the 0.85 m/s the ASOS decorrelation curve prices the clock at. The difference is that
+the curve measures what the *wind* does in ten minutes, and the score measures what pairing
+does to a model that is already 2.3 m/s out: the clock is inside the residual, not on top
+of it.
 
 **Falsifiable by:** rescoring a completed archive day with pre-averaged pairs. If the
 debiased spread between candidates does not grow relative to the residual, the clock was
-not what was hiding them.
+not what was hiding them. Measurement 18 does the first half of this on CoAgMet and the
+spread does not grow, which is evidence that step 1 was not the thing standing in front of
+the terrain question — the remaining 2.27 m/s is.
 
 ## Step 2: observe the layer, or stop claiming it
 

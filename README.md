@@ -324,6 +324,32 @@ selecting nothing is indistinguishable from a field that is absent from the cycl
 This is a research and backfill path, not the live one: `nomads.js` remains what the
 service calls. Retries are the same narrow set — transport failures and 429/500/502/503/504.
 
+**The sub-hourly product needs a minute, and refuses to guess one.** HRRR also archives
+`wrfsubhf`, which holds every field at four instants inside one hour — and, for the wind,
+four five-minute averages beside them. Eight index lines say `UGRD:10 m above ground`, so
+matching on parameter and level alone returns a real wind at the wrong minute, which is
+weather rather than an error:
+
+```js
+const got = await fetchArchiveRecords({
+  cycle: { year: 2025, month: 9, day: 1, hour: 12 },
+  product: "wrfsubhf",
+  forecastMinutes: 45,          // required for this product; 0, 15, 30, 45, 60, …
+  wanted: [{ parameter: "UGRD", level: "10 m above ground" }]
+});
+```
+
+`forecastMinutes` resolves to the object (`wrfsubhf01` for anything in the first hour) and
+to the sidecar's own wording for the instant (`45 min fcst`), which is then matched
+verbatim like everything else. A `wrfsubhf` request without it is refused, so is a minute
+the model does not produce, so is giving both `forecastMinutes` and `forecastHour`. The
+five-minute averages are left alone: they are product definition template 4.8 and
+`grib2.js` decodes template 4.0 only, so an averaging message fails loudly as
+`unsupported-product` rather than being scored as an instant.
+
+Measurement 18 in `docs/downscaling.md` is what this was built for, and its answer is that
+a quarter-hourly field scores *worse* than the hourly one it replaces.
+
 ### The volume and its cache
 
 ```js
@@ -1472,6 +1498,21 @@ reaches ASOS's ±2 kt after a median 7.5 minutes, and the FEMS runs' offsets cos
 a noise floor under every score in `docs/downscaling.md`, and fourteen times the 0.06 m/s
 that separates the terrain candidates. That is measurement 13; the parsing decisions
 behind it are in `docs/observations.md`.
+
+**The obvious fix for that clock is a faster model, and it does not work.**
+`tools/subhourly-clock.js` reads HRRR's archived 15-minute product against CoAgMet's 2-3 m
+masts, which report every five minutes, and scores the same pairs four ways:
+
+```
+node tools/subhourly-clock.js --stations gun01,krm01,rgw01,ctr01,bnv01 \
+  --date 2026-08-31,2026-09-04 --start 12 --hours 12 --out clock.json
+```
+
+Reading the model at the nearest quarter hour cuts the mean offset from 14.7 minutes to
+4.2 and makes the score *worse*, because :15, :30 and :45 are forecasts and an hour of
+lead costs 0.23 m/s. Averaging the *measured* side over ±5 minutes is what pays. Every arm
+is reported with its own leave-one-station-out spread, and a station-day with no
+observations is recorded as a gap rather than quietly dropped. Measurement 18.
 
 **`docs/history.md` is the note that argues out what to build on top of it** — why a
 matched past day must never be served as the current conditions, why an analog correction
