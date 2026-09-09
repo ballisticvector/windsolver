@@ -7,9 +7,10 @@
  *   node tools/station-survey.js --source fems --state CO --limit 200 --spread 30
  *
  * Options:
- *   --source     synoptic (default), fems or coagmet, the catalogue the stations
- *                come from. coagmet is Colorado only, and is the only one of the
- *                three whose masts are below 3 m.
+ *   --source     synoptic (default), fems, coagmet or uscrn, the catalogue the
+ *                stations come from. coagmet is Colorado only and its masts are
+ *                at 2-3 m; uscrn is national and every mast in it is at a
+ *                documented 1.5 m.
  *   --state      comma-separated two-letter states (default CO)
  *   --network    Synoptic network id (default 2, RAWS). Meaningless to the
  *                other two catalogues, so it is not defaulted for them: a
@@ -82,6 +83,7 @@ const field = require("../field.js");
 const synoptic = require("../synoptic.js");
 const fems = require("../fems.js");
 const coagmet = require("../coagmet.js");
+const uscrn = require("../uscrn.js");
 const verify = require("../verify.js");
 const cog = require("../cog.js");
 
@@ -377,7 +379,7 @@ function summarise(report, opts) {
 function networkFor(source, asked) {
   const which = source === undefined ? "synoptic" : String(source);
   if (asked === undefined) return which === "synoptic" ? synoptic.RAWS_NETWORK_ID : undefined;
-  return which === "coagmet" ? String(asked) : Number(asked);
+  return which === "coagmet" || which === "uscrn" ? String(asked) : Number(asked);
 }
 
 /** The catalogue the stations are listed from. */
@@ -391,7 +393,12 @@ function sourceOf(name) {
   // Colorado only, and the whole catalogue is one request, so `--state` filters
   // it here rather than at the service.
   if (name === "coagmet") return coagmet.createCoagmetSource({});
-  throw new Error("unknown --source " + JSON.stringify(name) + "; use synoptic, fems or coagmet");
+  // The whole USCRN catalogue is one 37 KB file too, and its published position
+  // is two decimal places — up to about 700 m — so the survey asks for HOMR's
+  // four-decimal position before it reads 3DEP under a station.
+  if (name === "uscrn") return uscrn.createUscrnSource({ refine: true });
+  throw new Error("unknown --source " + JSON.stringify(name) +
+    "; use synoptic, fems, coagmet or uscrn");
 }
 
 async function main(argv) {

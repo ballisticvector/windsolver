@@ -192,6 +192,15 @@ Measurement 16 in `docs/downscaling.md`: 31 CoAgMet masts at 2–3 m, four archi
   not test it. Two heights on one mast, or a mast the profile was not used to reach, remain
   the thing that would.
 
+**And it now has a control.** Measurement 19 repeats it on USCRN's 1.5 m masts — a
+different agency, a different cup, national siting, eight stations across two states, the
+same four dates. HRRR needs **×0.82–0.97** there against CoAgMet's ×0.84–1.02, so the first
+bullet above is confirmed by a second, independent near-ground network rather than resting
+on one. The third bullet is confirmed too, and worse: the log law has to move the model
+**×0.673** to reach 1.5 m, the largest multiplier applied anywhere in this project and
+still untested. And the second bullet is untouched, because USCRN has no vane at all — a
+1.5 m network can grade the speed of this layer and cannot grade its direction.
+
 ## Step 3: a reference wind per cell, not per box
 
 **Why third:** it is the reason a two-mile map looks uniform, and unlike steps 1, 2 and 4

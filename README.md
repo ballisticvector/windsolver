@@ -52,6 +52,7 @@ why a `forShot=` parameter is the way it dies.
 | `synoptic.js` | The same records from Synoptic Data's mesonet API — RAWS and the rest — for stations that are not at airports. Needs a token, and its free tier stops at about six days |
 | `fems.js` | The same records again from USDA FEMS, the RAWS system of record: bulk CSV back to 2005 with no account, with each station's observation time reconstructed from the GOES transmit minute FEMS throws away |
 | `coagmet.js` | The same records again from CoAgMet, Colorado's agricultural mesonet: five-minute or hourly means at a **published 2–3 m**, no account, asked for in metric and refused if the reply does not say it is, with the timestamp read as the end of the averaging interval and `-999` kept as absence rather than calm |
+| `uscrn.js` | The same records again from NOAA's Climate Reference Network: a five-minute mean at a documented **1.5 m**, national, no account, read out of NCEI's fixed-width station-year files — **speed only, because the product has no vane** — with `-99.00` kept as absence rather than calm and the network's own "erroneous" flag honoured rather than read past |
 | `stations.js` | The stations inside a box and the last wind each of them reported, behind a provider-neutral boundary: the directory cached and served retained-and-dated if it cannot be refreshed, a missing observation kept as a station that measured nothing rather than as a calm |
 | `verify.js` | Pairs an observation with a model time and scores the difference — circular direction arithmetic, vector error, and the quantisation floor of the instrument. Pure arithmetic, no network |
 | `hillshade.js` | Shaded relief off the same derived slope and aspect the downscaling uses, lit GDAL's way, and resampled onto a geographic raster. Holes stay holes. Pure arithmetic, no network |
@@ -1513,6 +1514,37 @@ Reading the model at the nearest quarter hour cuts the mean offset from 14.7 min
 lead costs 0.23 m/s. Averaging the *measured* side over ±5 minutes is what pays. Every arm
 is reported with its own leave-one-station-out spread, and a station-day with no
 observations is recorded as a gap rather than quietly dropped. Measurement 18.
+
+### Scoring against an instrument standing in the layer
+
+`--source uscrn` grades the solved wind against NOAA's Climate Reference Network:
+`WIND_1_5`, a five-minute mean at a documented **1.5 m**, 158 stations nationally, free
+and unauthenticated out of NCEI's plain-text station-year files.
+
+```bash
+node tools/score-wind.js --source uscrn --archive --tolerance 5 --hours 12 \
+  --end 2026-09-02T23:00:00Z --stations 03048,03060,03061,03062,03063,94074,94075,94082
+```
+
+It is the lowest instrument this project can reach, and three of its properties change how
+a run is read rather than how it is written:
+
+- **There is no vane.** The sub-hourly product publishes a speed and nothing else, so a
+  USCRN run is a speed score. The summary prints a dash in the direction and vector
+  columns and a sentence saying the network has no bearing — because the vector RMSE it
+  would otherwise print is an RMS over the handful of calms, which are the only rows with
+  a defined observed vector, and it would sit in the same column as an RMS over hundreds.
+- **The network's own quality flag is the only thing distinguishing a dead station from a
+  quiet one.** WBAN 03074 has been flagged `3` — "erroneous" — wholesale since 2024, with
+  a plausible-looking 2.02 m/s mean underneath. Flag 3 is rejected by default and counted,
+  so the station shows up as a gap rather than as data.
+- **Missing is `-99.00`, and the flag does not mark it.** Missingness is tested on the
+  value, and an absence never becomes a calm.
+
+Measurement 19 is what it said: HRRR needs ×0.82–0.97 over eight of these masts on four
+dates, which reproduces the CoAgMet result on a second, independent near-ground network —
+and the terrain downscaling loses to raw HRRR on every date, with the ranking surviving
+every station held out.
 
 **`docs/history.md` is the note that argues out what to build on top of it** — why a
 matched past day must never be served as the current conditions, why an analog correction

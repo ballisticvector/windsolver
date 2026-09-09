@@ -1,0 +1,65 @@
+{
+ "stationCollection": {
+  "stations": [
+   {
+    "ncdcStnId": "30014599",
+    "location": {
+     "ncdcstnId": "30014599",
+     "latitudes": [
+      {
+       "latitude_dec": "40.0354",
+       "precision": "DDdddd"
+      }
+     ],
+     "longitudes": [
+      {
+       "longitude_dec": "-105.5409",
+       "precision": "DDdddd"
+      }
+     ],
+     "latLonPairs": [
+      {
+       "latitude_rptd": "40.0354",
+       "longitude_rptd": "-105.5409",
+       "latitude_dec": "40.0354",
+       "longitude_dec": "-105.5409",
+       "latitude_dms": "40,02,07,N",
+       "longitude_dms": "105,32,27,W",
+       "precision": "DDdddd"
+      }
+     ],
+     "elevations": [
+      {
+       "elevationType": "GROUND",
+       "elevationFeet": "9828",
+       "elevationMeters": "2995.6"
+      }
+     ],
+     "geoInfo": {
+      "ncdcstnId": "30014599",
+      "countries": [
+       {
+        "country": "UNITED STATES"
+       }
+      ],
+      "stateProvinces": [
+       {
+        "stateProvince": "CO"
+       }
+      ],
+      "counties": [
+       {
+        "county": "BOULDER"
+       }
+      ],
+      "utcOffsets": [
+       {
+        "utcOffset": "-7"
+       }
+      ]
+     }
+    }
+   }
+  ]
+ }
+}
