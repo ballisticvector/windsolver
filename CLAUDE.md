@@ -85,6 +85,14 @@ npm run lint
 > - **The terrain downscaling is not yet known to help, and on ridges it measurably
 >   hurts.** `docs/downscaling.md` is the standing note: read it before changing anything
 >   in `downscale.js`, and add to it rather than starting a new one.
+> - **The sub-hourly HRRR file publishes one field eight times, and seven of them are the
+>   wrong answer** — `wrfsubhf` holds the wind at :15, :30, :45 and :60 plus a five-minute
+>   average beside each, all spelled `UGRD:10 m above ground`. Matching on parameter and
+>   level returns a real wind at the wrong minute, which reads as weather. `archive.js`
+>   therefore *requires* `forecastMinutes` for that product and selects on the sidecar's own
+>   forecast text; the averages are template 4.8 and `grib2.js` refuses them by name. The
+>   research answer is in measurement 18 and it is negative: reading the model four times an
+>   hour scores **worse** than hourly, because those instants are forecasts.
 > - **A per-cell field's spread is the model's own, not the ground's** — `perCell` samples
 >   HRRR per terrain cell instead of once at the box centre, and the arrows widen from a
 >   1.2-11.8 degree band to 19.2-43.6 over the same four domains without a single terrain
@@ -254,6 +262,16 @@ so narrowing the tolerance deletes stations instead of improving pairs. Interpol
 model between hours to the observation's own minute is still the better answer and still
 does not exist — but it is worth about **12%** of the timing term and no more, because
 sub-hourly variability is not in an hourly series to recover.
+
+**And do not reach for the sub-hourly model to fix it: that has been tried and it loses.**
+Measurement 18 scores HRRR's archived 15-minute product against 10 CoAgMet masts on four
+days. The mean pairing offset falls from 14.7 minutes to 4.2 and vector RMSE gets **worse**
+by 0.037–0.063 m/s, sign holding with any one station left out, because the :15/:30/:45
+fields are forecasts from the top of the hour and an hour of lead costs 0.23 m/s against
+the analysis it replaces. What does pay is averaging the *measured* side over ±5 minutes:
+0.044–0.074 m/s better than hourly, also stable. Read the clock as a term inside the
+residual rather than on top of it — the decorrelation curve says what the wind does in ten
+minutes, not what pairing costs a model that is already 2.3 m/s out.
 
 ## A weather history is four products, and one of them must never ship
 

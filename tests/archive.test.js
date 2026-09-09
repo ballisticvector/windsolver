@@ -12,6 +12,10 @@
  *
  *   curl -sS https://noaa-hrrr-bdp-pds.s3.amazonaws.com/hrrr.20250901/conus/\
  *   hrrr.t12z.wrfsfcf01.grib2.idx -o tests/fixtures/hrrr-20250901t12z-f01.idx
+ *
+ * `hrrr-20250901t12z-subhf01.idx` is the sub-hourly sidecar for the same cycle,
+ * fetched the same way from `hrrr.t12z.wrfsubhf01.grib2.idx`. It is here because
+ * it is the only file in the archive that publishes one field eight times.
  */
 
 "use strict";
@@ -122,7 +126,20 @@ describe("the .idx sidecar", () => {
   test("keeps the parameter and level as NCEP spells them", () => {
     const wind = entries.find((e) => e.parameter === "UGRD" && e.level === "10 m above ground");
     expect(wind.start).toBe(48667069);
-    expect(wind.forecast).toBe("1 hour fcst:");
+    expect(wind.forecast).toBe("1 hour fcst");
+  });
+
+  test("drops the empty field the line's own trailing colon leaves behind", () => {
+    // Every NCEP line ends in a colon. Keeping it made the forecast "anl:" and
+    // "15 min fcst:", which no caller writes, so a verbatim match against a lead
+    // time found nothing and the selection silently fell back to the first
+    // message of that parameter — a real wind at the wrong minute.
+    const anl = archive.parseIndex("1:0:d=2025090112:UGRD:10 m above ground:anl:");
+    expect(anl[0].forecast).toBe("anl");
+    // A colon inside the description still survives, because only the last empty
+    // field is dropped and only when it is empty.
+    const prose = archive.parseIndex("1:0:d=1:PROB:surface:prob >0.254:1 hour fcst:");
+    expect(prose[0].forecast).toBe("prob >0.254:1 hour fcst");
   });
 
   test("keeps a line whose parameter is itself colon-free prose", () => {
@@ -298,6 +315,131 @@ describe("fetching a message by byte range", () => {
   test("requires a cycle and something to fetch", async () => {
     await expect(archive.fetchArchiveRecords({ wanted: wanted })).rejects.toThrow(/cycle is required/);
     await expect(archive.fetchArchiveRecords({ cycle: CYCLE })).rejects.toThrow(/wanted is required/);
+  });
+});
+
+describe("the sub-hourly file, where one field is published eight times", () => {
+  const SUBHF = fs.readFileSync(path.join(FIXTURES, "hrrr-20250901t12z-subhf01.idx"), "utf8");
+  const BOX = { west: -105.30, south: 40.005, east: -105.26, north: 40.035 };
+
+  /** The same S3, serving the sub-hourly sidecar and no message body. */
+  function subS3() {
+    const calls = [];
+    const fetchImpl = async (url, init) => {
+      const range = init && init.headers && (init.headers.Range || init.headers.range);
+      calls.push({ url: url, range: range || null });
+      if (/\.idx$/.test(url)) return ok(Buffer.from(SUBHF, "utf8"));
+      // Not GRIB: every test here is about which message was asked for, and the
+      // range request is the answer.
+      return ok(Buffer.alloc(64, 0x41), 206);
+    };
+    return { fetch: fetchImpl, calls: calls };
+  }
+
+  function subSource() {
+    const s3 = subS3();
+    return {
+      s3: s3,
+      source: archive.createArchiveSource({
+        fetch: s3.fetch, product: archive.SUBHOURLY_PRODUCT
+      })
+    };
+  }
+
+  function wind(made, extra) {
+    return made.source.fetchHrrrBox(Object.assign({
+      box: BOX, cycle: CYCLE, levels: ["10_m_above_ground"], variables: ["UGRD"]
+    }, extra || {}));
+  }
+
+  test("a lead time in minutes names the file and the sidecar's own spelling", () => {
+    expect(archive.forecastAt(0, "wrfsubhf")).toEqual({ forecastHour: 0, forecast: "anl" });
+    expect(archive.forecastAt(15, "wrfsubhf")).toEqual({ forecastHour: 1, forecast: "15 min fcst" });
+    expect(archive.forecastAt(60, "wrfsubhf")).toEqual({ forecastHour: 1, forecast: "60 min fcst" });
+    expect(archive.forecastAt(75, "wrfsubhf")).toEqual({ forecastHour: 2, forecast: "75 min fcst" });
+    // The same instant, spelled the way the hourly file spells it. Neither
+    // spelling is derived from the other, so both are written down.
+    expect(archive.forecastAt(60)).toEqual({ forecastHour: 1, forecast: "1 hour fcst" });
+  });
+
+  test("refuses a lead time the model does not produce", () => {
+    expect(() => archive.forecastAt(7, "wrfsubhf")).toThrow(/every 15 minutes/);
+    expect(() => archive.forecastAt(30)).toThrow(/is hourly/);
+    expect(() => archive.forecastAt(-15, "wrfsubhf")).toThrow(/whole number/);
+    expect(() => archive.forecastAt(1.5, "wrfsubhf")).toThrow(/whole number/);
+  });
+
+  test("requires the minute, because the first matching message is the wrong one", async () => {
+    // Without it the object answers with 12:15's wind for a request meant for
+    // 13:00, which is weather rather than an error.
+    const made = subSource();
+    await expect(wind(made)).rejects.toThrow(/forecastMinutes is required/);
+    expect(made.s3.calls.length).toBe(0);
+  });
+
+  test("asks for the message the minute names, out of the eight that match", async () => {
+    const made = subSource();
+    await expect(wind(made, { forecastMinutes: 30 })).rejects.toThrow();
+    const ranges = made.s3.calls.filter((c) => c.range);
+    expect(ranges.length).toBe(1);
+    // Line 66 of the sidecar: UGRD, 10 m above ground, 30 min fcst. The 25-30
+    // minute average of the same field is line 69, and it is not this one.
+    expect(ranges[0].range).toBe("bytes=61172704-63316175");
+    expect(ranges[0].url).toContain("hrrr.t12z.wrfsubhf01.grib2");
+  });
+
+  test("reads the hour's last instant out of the same file, not the next one", async () => {
+    const made = subSource();
+    await expect(wind(made, { forecastMinutes: 60 })).rejects.toThrow();
+    const ranges = made.s3.calls.filter((c) => c.range);
+    expect(ranges[0].range).toBe("bytes=158452752-160596223");
+    expect(made.s3.calls[0].url).toContain("wrfsubhf01.grib2.idx");
+  });
+
+  test("refuses a lead time given twice, once in each unit", async () => {
+    const made = subSource();
+    await expect(wind(made, { forecastMinutes: 15, forecastHour: 1 }))
+      .rejects.toThrow(/not both/);
+  });
+
+  test("says which instant is missing rather than which field", async () => {
+    const made = subSource();
+    await expect(wind(made, { forecastMinutes: 15, variables: ["SFCR"] }))
+      .rejects.toThrow(/SFCR is published at none of 10 m above ground for 15 min fcst/);
+  });
+
+  // The record-level entry point is a public export of its own, and a caller
+  // reaching for one message of one field is the likeliest use of the
+  // sub-hourly product. It has to pin the instant for the same reason.
+  test("the record call pins the instant too, in either unit", async () => {
+    const s3 = subS3();
+    const records = (extra) => archive.fetchArchiveRecords(Object.assign({
+      fetch: s3.fetch, cycle: CYCLE, product: archive.SUBHOURLY_PRODUCT,
+      wanted: [{ parameter: "UGRD", level: "10 m above ground" }]
+    }, extra || {}));
+
+    await expect(records()).rejects.toThrow(/forecastMinutes is required/);
+    await expect(records({ forecastMinutes: 15, forecastHour: 1 })).rejects.toThrow(/not both/);
+    expect(s3.calls.length).toBe(0);
+
+    await expect(records({ forecastMinutes: 45 })).rejects.toThrow();
+    const ranges = s3.calls.filter((c) => c.range);
+    expect(ranges.length).toBe(1);
+    // Line 115: UGRD, 10 m above ground, 45 min fcst.
+    expect(ranges[0].range).toBe("bytes=109513229-111656700");
+    expect(ranges[0].url).toContain("hrrr.t12z.wrfsubhf01.grib2");
+  });
+
+  test("the record call takes the first instant of the hour as well", async () => {
+    const s3 = subS3();
+    await expect(archive.fetchArchiveRecords({
+      fetch: s3.fetch, cycle: CYCLE, product: archive.SUBHOURLY_PRODUCT,
+      forecastMinutes: 15,
+      wanted: [{ parameter: "VGRD", level: "10 m above ground" }]
+    })).rejects.toThrow();
+    // Message 18, ending where 19 starts, and not message 21's 10-15 minute
+    // average of the same field.
+    expect(s3.calls.filter((c) => c.range)[0].range).toBe("bytes=15850601-18232215");
   });
 });
 

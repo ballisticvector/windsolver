@@ -1519,6 +1519,87 @@ Interpolating a 3 km model at 8 m spacing draws detail the model does not have, 
 lattice is an interpolation cost of its own: 32 samples per cell is 0.09 m/s better than
 8, which is why the constant is what it is.*
 
+## Measurement 18: the quarter-hourly model, and what it does not buy
+
+Measurement 13 priced the pairing clock at 0.85 m/s and 23° and left one thing open: *does
+a sub-hourly model fix it?* Step 1 of `docs/near-ground-wind.md` records it as unknown and
+guesses it "would halve the remaining offset". HRRR publishes a 15-minute product in the
+archive — `wrfsubhf`, four instants of every field in one object — and `archive.js` can now
+read it, so the guess is now a measurement, and it is the wrong way round.
+
+10 CoAgMet masts (2–3 m), four UTC days spread across two seasons, 12 hours each from 12Z,
+5,719 five-minute observations against **1.15 GB of archived HRRR** read as byte ranges.
+Four arms over the same observations and the same box, each debiased by its own
+least-squares speed scale so the 10 m/2 m gap is absorbed identically in all of them.
+
+```
+arm             n     offset mean/max min   scale   speed RMSE   dir RMSE   vector RMSE
+hourly        5719         14.7 / 27.5      0.698      1.498       56.4        2.335
+quarter       5719          4.2 /  7.5      0.694      1.515       58.6        2.380
+quarter+one   1894          2.5 /  2.5      0.692      1.503       59.0        2.369
+quarter+avg   1894          0   /  0        0.680      1.469       56.7        2.270
+```
+
+- `hourly` pairs each observation with the nearest whole-hour field, which is what every
+  measurement above this one did.
+- `quarter` pairs it with the nearest 15-minute instant — the same model, read four times
+  as often. **The mean offset falls from 14.7 minutes to 4.2 and the score gets worse.**
+- `quarter+one` is one pair per model instant, the single nearest observation, no
+  averaging: the control for `quarter+avg`'s smaller sample.
+- `quarter+avg` averages the measured side over ±5 minutes around each instant, vectorially.
+
+**Moving the model to the observation's own minute costs 0.037 to 0.063 m/s of vector RMSE,
+and the sign holds with any one of the ten stations left out.** Ten minutes of pairing error
+was removed and the answer got worse, which only makes sense once the arms are read against
+the lead they carry:
+
+```
+the same valid times, analysis against a 60-minute forecast (n = 1006)
+  analysis          speed RMSE 1.464   dir RMSE 54.5   vector RMSE 2.279
+  60 min forecast   speed RMSE 1.566   dir RMSE 57.8   vector RMSE 2.511
+```
+
+**A field's forecast lead costs 0.23 m/s of vector RMSE per hour, and the clock it is being
+spent to buy is worth about 0.05.** The :15, :30 and :45 fields are forecasts from the top
+of that hour; the hourly arm is reading analyses. So the quarter arm trades a 0.23 m/s
+penalty for a 0.05 m/s gain, and the trade is what the table shows. This is not a statement
+that sub-hourly HRRR is bad — it is a statement that **at these offsets the analysis is
+worth more than the minute**, and that the clock term measured on ASOS does not transfer to
+a model-side fix.
+
+The other two arms say where the recoverable part actually is. `quarter+avg` beats
+`quarter+one` by **0.099 m/s** on identical instants and an identical count — the only
+difference between them is the ±5 minute vector mean on the measured side — and beats the
+hourly baseline by 0.044 to 0.074 m/s, sign holding across every station left out. **The
+measured side is where pre-averaging pays, and it pays about twice what the model side
+costs.** That is measurement 13's "~30% for both sides" showing up as a real, if small,
+gain from one side alone.
+
+One number that is not about the clock at all: **the model moves a median 0.386 m/s and
+8.3° between one 15-minute instant and the next** (n = 1920). Against a direction RMSE of
+56° at these masts, HRRR's own sub-hourly motion is an eighth of its error. There is not
+much inside the hour for a finer clock to find.
+
+### What this settles
+
+- **Step 1 of `docs/near-ground-wind.md` is answered, negatively.** A sub-hourly model is
+  not the fix for the clock term; ten-minute averaging on the measured side is, and it is
+  worth about 3% of vector RMSE rather than the 30% hoped for from both sides.
+- **`wrfsubhf` stays out of the runtime path.** Nothing scored better with it, and the live
+  NOMADS reader is untouched. What it is now good for is a research question that needs a
+  known valid time — the archive path can read one instant of one field out of a 1.15 GB
+  object for a few hundred kilobytes.
+- **Nothing moved.** No coefficient, no threshold, no default.
+
+*Caveats. Four days and ten Colorado masts; two seasons, but not a climatology. The model is
+read at 10 m and the masts are at 2–3 m with no height correction, absorbed by the debias
+identically in every arm. CoAgMet's five-minute record is itself an average, so the averaged
+arm is a mean of means. The averaging is one-sided — HRRR publishes no hour-long sub-hourly
+mean, so the model side is an instant in every arm. `rgw01` returned nothing for 2026-03-14
+and is recorded as a gap rather than dropped silently. And the whole table sits under the
+±2 kt-class instrument floor: these differences are tenths of the sensor's own tolerance,
+which is why the leverage block is the part worth reading.*
+
 ## The hypotheses, and how much weight each one carries
 
 Roughly in the order the evidence supports them.

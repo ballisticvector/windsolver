@@ -49,6 +49,28 @@ const DEFAULT_BUCKET_URL = "https://noaa-hrrr-bdp-pds.s3.amazonaws.com";
 const DEFAULT_PRODUCT = "wrfsfcf";
 
 /**
+ * The sub-hourly file: the same surface fields every 15 minutes.
+ *
+ * `wrfsubhf01` off the 12Z cycle carries the instants valid at 12:15, 12:30,
+ * 12:45 and 13:00, so one hour of quarter-hourly wind is `wrfsubhf00` (the
+ * analysis alone) plus `wrfsubhf01`. It is the only model output in this project
+ * that can be moved to an observation's own minute.
+ *
+ * **Four instants of the same field live in one object**, which is a trap the
+ * hourly files do not have: `UGRD` at `10 m above ground` matches eight index
+ * lines here — four instants and four five-minute averages — and taking the
+ * first is a valid wind at the wrong minute. `forecastMinutes` is therefore
+ * required for this product and an ambiguous selection is refused.
+ *
+ * The five-minute averages are template 4.8, which `grib2.js` refuses by design.
+ * They would not help anyway: they cover minutes 10-15, 25-30, 40-45 and 55-60,
+ * so twenty minutes of the hour, not an hour of pre-averaging.
+ */
+const SUBHOURLY_PRODUCT = "wrfsubhf";
+
+const SUBHOURLY_STEP_MINUTES = 15;
+
+/**
  * A ceiling on one range request. The largest single message in an HRRR surface
  * file is under 3 MB; the whole object is about 130 MB, which is what arrives
  * when a range is ignored. 16 MB is far above any real message and far below the
@@ -71,6 +93,11 @@ function pad2(n) {
   return String(n).padStart(2, "0");
 }
 
+/** A copy without one trailing empty field. */
+function trailing(fields) {
+  return fields.length && fields[fields.length - 1] === "" ? fields.slice(0, -1) : fields;
+}
+
 /**
  * `{ year, month, day, hour }` from either that shape or a Date.
  *
@@ -91,6 +118,60 @@ function cycleParts(cycle) {
     throw fail("bad-request", "cycle must be a Date or { year, month, day, hour } in UTC");
   }
   return cycle;
+}
+
+function isSubhourly(product) {
+  return (product || DEFAULT_PRODUCT) === SUBHOURLY_PRODUCT;
+}
+
+/**
+ * The file a lead time of `minutes` lives in, and the sidecar's name for it.
+ *
+ * The two spellings differ by product and there is no rule joining them: the
+ * hourly file says `1 hour fcst` and the sub-hourly one says `60 min fcst` for
+ * the same instant. Both are verbatim matches against the index, so the wrong
+ * one is a `not-in-index` error rather than a wrong field, and neither is
+ * derived from the other.
+ */
+function forecastAt(minutes, product) {
+  const m = minutes === undefined ? 0 : minutes;
+  if (!Number.isInteger(m) || m < 0) {
+    throw fail("bad-request", "forecastMinutes must be a whole number of minutes, got " + JSON.stringify(minutes));
+  }
+  if (m === 0) return { forecastHour: 0, forecast: "anl" };
+  if (isSubhourly(product)) {
+    if (m % SUBHOURLY_STEP_MINUTES !== 0) {
+      throw fail("bad-request", "HRRR sub-hourly output is every " + SUBHOURLY_STEP_MINUTES +
+        " minutes; " + m + " is not an instant it produces");
+    }
+    return { forecastHour: Math.ceil(m / 60), forecast: m + " min fcst" };
+  }
+  if (m % 60 !== 0) {
+    throw fail("bad-request", "the " + (product || DEFAULT_PRODUCT) + " file is hourly; " + m +
+      " minutes needs product \"" + SUBHOURLY_PRODUCT + "\"");
+  }
+  const hour = m / 60;
+  return { forecastHour: hour, forecast: hour + " hour fcst" };
+}
+
+/**
+ * The lead time a request means, from whichever unit it was given in.
+ *
+ * A lead time is minutes when it is given in minutes and hours otherwise; the
+ * sub-hourly product has no hourly reading, so it insists on minutes.
+ */
+function leadOf(o) {
+  if (o.forecastMinutes !== undefined && o.forecastHour !== undefined) {
+    throw fail("bad-request", "give forecastMinutes or forecastHour, not both");
+  }
+  if (isSubhourly(o.product) && o.forecastMinutes === undefined) {
+    throw fail("bad-request", SUBHOURLY_PRODUCT + " holds four instants of every field, so " +
+      "forecastMinutes is required; without it the first message in the object is a valid " +
+      "wind at the wrong minute");
+  }
+  return o.forecastMinutes === undefined
+    ? forecastAt((o.forecastHour || 0) * 60, o.product)
+    : forecastAt(o.forecastMinutes, o.product);
 }
 
 /** The S3 URL of one cycle and forecast hour. */
@@ -156,7 +237,10 @@ function parseIndex(text) {
       level: f[4],
       // The rest can itself contain a colon ("0-1 hour max fcst" does not, but
       // probability descriptions do), so it is rejoined rather than indexed.
-      forecast: f.slice(5).join(":"),
+      // Every line ends in a colon, which splits to a trailing empty field: it
+      // is dropped here, because a forecast is compared verbatim and "anl:"
+      // matches nothing a caller would write.
+      forecast: trailing(f.slice(5)).join(":"),
       line: raw
     });
   }
@@ -377,20 +461,33 @@ function assertMatchesIndex(record, entry, url) {
  * Fetch a set of variables for one cycle and forecast hour from the archive.
  *
  * Two round trips: the sidecar, then one range request per message. Returns
- * `{ url, indexUrl, bytes, records, entries }`, with the records exactly as
- * `grib2.decode` produces them — grid-relative, so `toEarthRelativeWind` is
- * still the caller's job.
+ * `{ url, indexUrl, forecast, forecastHour, bytes, records, entries }`, with the
+ * records exactly as `grib2.decode` produces them — grid-relative, so
+ * `toEarthRelativeWind` is still the caller's job.
+ *
+ * The lead time may be given as `forecastHour` or, for `wrfsubhf`, as
+ * `forecastMinutes`; either way it selects the message as well as the object, so
+ * a file holding four instants of a field cannot answer with the wrong one.
  */
 async function fetchArchiveRecords(opts) {
   const o = opts || {};
   if (!o.cycle) throw fail("bad-request", "cycle is required");
   if (!o.wanted) throw fail("bad-request", "wanted is required: [{ parameter, level }]");
-  const index = await fetchIndex(o);
-  const entries = selectEntries(index.entries, o.wanted);
-  const got = await fetchEntries(entries, o);
+  const lead = leadOf(o);
+  const inner = Object.assign({}, o, { forecastHour: lead.forecastHour });
+  const index = await fetchIndex(inner);
+  // The lead time pins the message, unless the caller has already spelled one
+  // out — an hourly file has one instant of a field and needs neither.
+  const wanted = (Array.isArray(o.wanted) ? o.wanted : [o.wanted]).map(function (w) {
+    return w.forecast === undefined ? Object.assign({ forecast: lead.forecast }, w) : w;
+  });
+  const entries = selectEntries(index.entries, wanted);
+  const got = await fetchEntries(entries, inner);
   return {
     url: got.url,
     indexUrl: index.url,
+    forecast: lead.forecast,
+    forecastHour: lead.forecastHour,
     bytes: got.bytes,
     entries: entries,
     records: got.records
@@ -459,7 +556,8 @@ function createArchiveSource(opts) {
     const o = Object.assign({}, base, callOpts || {});
     if (!o.box) throw fail("bad-request", "box is required");
     if (!o.cycle) throw fail("bad-request", "cycle is required");
-    const forecastHour = o.forecastHour || 0;
+    const lead = leadOf(o);
+    const forecastHour = lead.forecastHour;
     const levels = (o.levels || []).map(indexLevel);
     const variables = o.variables || [];
     if (!levels.length) throw fail("bad-request", "levels is required");
@@ -477,13 +575,22 @@ function createArchiveSource(opts) {
     for (const parameter of variables) {
       const before = wanted.length;
       for (const level of levels) {
-        if (index.entries.some(function (e) { return e.parameter === parameter && e.level === level; })) {
-          wanted.push({ parameter: parameter, level: level });
+        const hits = index.entries.filter(function (e) {
+          return e.parameter === parameter && e.level === level && e.forecast === lead.forecast;
+        });
+        // One object, one instant per field. More than one line means the lead
+        // time did not pin it down, and a wrong minute reads as weather.
+        if (hits.length > 1) {
+          throw fail("ambiguous-message", index.url + " lists " + hits.length + " " + parameter +
+            " at " + level + " for " + lead.forecast + "; a lead time has to name one message",
+            { url: index.url, parameter: parameter, level: level, forecast: lead.forecast });
         }
+        if (hits.length === 1) wanted.push({ parameter: parameter, level: level, forecast: lead.forecast });
       }
       if (wanted.length === before) {
         throw fail("not-in-index", parameter + " is published at none of " + levels.join(", ") +
-          " in " + index.url, { url: index.url, parameter: parameter, levels: levels });
+          " for " + lead.forecast + " in " + index.url,
+          { url: index.url, parameter: parameter, levels: levels, forecast: lead.forecast });
       }
     }
 
@@ -494,7 +601,8 @@ function createArchiveSource(opts) {
       const key = url + "#" + entry.start + "-" + entry.end;
       let buffer = messages.get(key);
       if (!buffer) {
-        const got = await fetchEntries([entry], Object.assign({}, o, { decode: false }));
+        const got = await fetchEntries([entry], Object.assign({}, o,
+          { forecastHour: forecastHour, decode: false }));
         buffer = got.buffers[0];
         messages.set(key, buffer);
       }
@@ -510,6 +618,7 @@ function createArchiveSource(opts) {
       indexUrl: index.url,
       cycle: o.cycle,
       forecastHour: forecastHour,
+      forecast: lead.forecast,
       bytes: bytes,
       attempts: 1,
       records: records
@@ -522,11 +631,14 @@ function createArchiveSource(opts) {
 module.exports = {
   DEFAULT_BUCKET_URL,
   DEFAULT_PRODUCT,
+  SUBHOURLY_PRODUCT,
+  SUBHOURLY_STEP_MINUTES,
   DEFAULT_MAX_BYTES,
   DEFAULT_TIMEOUT_MS,
   DEFAULT_RETRIES,
   RETRYABLE_STATUS,
   objectUrl,
+  forecastAt,
   indexUrl,
   parseIndex,
   selectEntries,
