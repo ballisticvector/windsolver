@@ -1065,7 +1065,8 @@ describe("stepParticle: a trail is cut rather than drawn across a hole", () => {
     const still = lib.stepParticle(grid, { lat: 40.02, lon: -105.02, age: 3 }, 10);
     expect(still.lat).toBeCloseTo(40.02, 12);
     expect(still.lon).toBeCloseTo(-105.02, 12);
-    expect(still.age).toBe(4);
+    // Age is the seconds it has been advanced by, not the number of steps.
+    expect(still.age).toBe(13);
   });
 });
 
@@ -1195,6 +1196,37 @@ describe("trailPath: a trail is a length in pixels, not a number of frames", () 
     expect(lib.trailPath({ trailPx: 0.5, stepPx: 2 }).points).toBe(2);
     expect(lib.trailPath({ trailPx: 0, stepPx: 0 }).points)
       .toBe(lib.trailPath().points);
+  });
+});
+
+describe("particleLife: a life is a distance, not a number of frames", () => {
+  test("a particle is allowed the same travel however fast the map is drawn", () => {
+    // The reduced-motion map draws at 12 px/s against 55, and a life counted in
+    // frames shrank with it until a particle died inside the trail it was meant
+    // to be drawing. Both must buy the same distance over the ground.
+    const full = lib.motionScale(8, 20, { pxPerSecond: 55 });
+    const slowed = lib.motionScale(8, 20, { pxPerSecond: 12 });
+    expect(lib.particleLife(slowed)).toBeCloseTo(lib.particleLife(full), 6);
+  });
+
+  test("the life is the asked-for travel in pixels, in the seconds advance takes", () => {
+    const scale = lib.motionScale(8, 20, { pxPerSecond: 40 });
+    const life = lib.particleLife(scale, { travelPx: 200 });
+    // Drawn pixels = model seconds / secondsPerSecond * pxPerSecond.
+    expect((life / scale.secondsPerSecond) * scale.pxPerSecond).toBeCloseTo(200, 6);
+  });
+
+  test("a scale with no wind in it gives no life rather than an infinity", () => {
+    expect(lib.particleLife(lib.motionScale(0, 20, { pxPerSecond: 40 }))).toBe(0);
+    expect(lib.particleLife(null)).toBe(0);
+  });
+
+  test("a life outlives a trail even at its most staggered, so nothing is a dot", () => {
+    const scale = lib.motionScale(8, 20, { pxPerSecond: 12 });
+    const shortest = 0.35 * lib.particleLife(scale);
+    const px = (shortest / scale.secondsPerSecond) * scale.pxPerSecond;
+    const path = lib.trailPath();
+    expect(px).toBeGreaterThan((path.points - 1) * path.stepPx);
   });
 });
 

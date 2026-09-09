@@ -318,7 +318,7 @@
       const size = this._map.getSize();
       this._field = lib.particleField(grid, {
         count: lib.particleCount(size.x, size.y),
-        life: 120
+        life: lib.particleLife(this._scale)
       });
       // One trail per particle, in the same order, holding where it has been.
       this._trails = this._field.particles.map(function () { return []; });

@@ -272,6 +272,9 @@ function sampleField(grid, lat, lon) {
  *
  * Calm is a step of zero length, not a death: a particle standing still is
  * what calm looks like, and it is true.
+ *
+ * `age` counts the seconds it has been advanced by rather than the number of
+ * times, so a life is a distance over the ground however the drawing is paced.
  */
 function stepParticle(grid, particle, seconds) {
   const here = sampleField(grid, particle.lat, particle.lon);
@@ -288,7 +291,7 @@ function stepParticle(grid, particle, seconds) {
   return {
     lat: lat,
     lon: lon,
-    age: (particle.age || 0) + 1,
+    age: (particle.age || 0) + seconds,
     from: { lat: particle.lat, lon: particle.lon }
   };
 }
@@ -350,8 +353,10 @@ function particleField(grid, opts) {
       lat: home.lat,
       lon: home.lon,
       age: 0,
-      // Staggered, so the whole cloud does not blink out together.
-      life: seeded ? life : 1 + Math.floor(rand() * life),
+      // Staggered, so the whole cloud does not blink out together, but never
+      // shorter than a trail: a particle that dies before it has drawn one is
+      // a dot, which is what reduced motion used to turn the whole map into.
+      life: seeded ? life : life * (0.35 + 0.65 * rand()),
       from: null
     };
   }
@@ -410,6 +415,26 @@ function motionScale(fullMph, metresPerPixel, opts) {
       ". They are a rendering of one snapshot, not air travelling over time, and " +
       "a trail stops at ground with no terrain under it rather than crossing it."
   };
+}
+
+/**
+ * How long a particle lives, expressed as the distance on screen it is allowed
+ * to cover, in the model seconds `advance` is given.
+ *
+ * A life counted in frames is a distance that changes with the drawing speed:
+ * at the reduced-motion 12 px/s the old fixed 120 frames was about 24 px of
+ * travel, so a particle died at roughly the length of the trail it was meant
+ * to be drawing and the map became a field of dots. A distance is the thing
+ * that should be held still — long enough to draw a trail, short enough that
+ * the cloud does not collapse onto a few streamlines.
+ */
+function particleLife(scale, opts) {
+  const o = opts || {};
+  const travelPx = Number.isFinite(o.travelPx) && o.travelPx > 0 ? o.travelPx : 200;
+  const px = scale && Number.isFinite(scale.pxPerSecond) ? scale.pxPerSecond : 0;
+  const secs = scale && Number.isFinite(scale.secondsPerSecond) ? scale.secondsPerSecond : 0;
+  if (px <= 0 || secs <= 0) return 0;
+  return (travelPx / px) * secs;
 }
 
 /**
@@ -1087,6 +1112,7 @@ const api = {
   particleField: particleField,
   particleCount: particleCount,
   motionScale: motionScale,
+  particleLife: particleLife,
   trailPath: trailPath,
   elevationRange: elevationRange,
   centreWind: centreWind,
