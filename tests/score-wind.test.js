@@ -1425,3 +1425,50 @@ describe("what the ranking is standing on", () => {
     expect(scoreWind.summarise(report)).not.toMatch(/leave one station out/);
   });
 });
+
+describe("the mass-consistent candidate", () => {
+  test("it is scored beside the weighted ones, on the same pairs", () => {
+    // The point of adding it here rather than in a script of its own: one set
+    // of observations, one set of hours, and the difference between two rows is
+    // the method and nothing else.
+    const service = stubService(function () {
+      return terrainField({ speedMps: 6, fromDeg: 250, referenceMps: 6 },
+        { reliefM: 60, apexOffsetM: 120 });
+    });
+    return scoreWind.buildReport({
+      source: stubSource(), service: service, stations: ["KBDU"], hours: 3,
+      endMs: Date.UTC(2026, 8, 1, 6), mass: true, massLayers: 8
+    }).then(function (report) {
+      expect(report.overall.mass).toBeDefined();
+      expect(report.overall.massStable).toBeDefined();
+      expect(report.overall.mass.n).toBe(report.overall.model.n);
+      expect(Number.isFinite(report.overall.mass.speed.rmseMps)).toBe(true);
+
+      // Stability is the one knob, so the two rows have to be able to differ.
+      // If they never do, the knob is not reaching the answer.
+      const a = report.stations[0].gain.mass;
+      const b = report.stations[0].gain.massStable;
+      expect(a).not.toBeNull();
+      expect(b).not.toBeNull();
+      expect(a).not.toBeCloseTo(b, 6);
+    });
+  });
+
+  test("ground too steep for the coordinate is refused once and counted, not solved", () => {
+    // A refused station is a fact about the method's reach, so it belongs in
+    // the report. Counting it once rather than once an hour keeps the failure
+    // list readable.
+    const service = stubService(function () {
+      return terrainField({ speedMps: 6, fromDeg: 250, referenceMps: 6 },
+        { reliefM: 900, apexOffsetM: 60 });
+    });
+    return scoreWind.buildReport({
+      source: stubSource(), service: service, stations: ["KBDU"], hours: 3,
+      endMs: Date.UTC(2026, 8, 1, 6), mass: true, massLayers: 8
+    }).then(function (report) {
+      expect(Object.keys(report.massRefusals)).toEqual(["KBDU"]);
+      expect(report.massRefusals.KBDU).toMatch(/deg/);
+      expect(report.failures.filter(function (f) { return f.stage === "mass"; }).length).toBe(1);
+    });
+  });
+});
