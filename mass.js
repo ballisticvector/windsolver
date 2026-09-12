@@ -1091,9 +1091,12 @@ function solveTerrain2(mesh, faces, f, opts) {
  *
  * `null` above the lid, on a dead column, or below the ground.
  */
-function terrainWindAt(mesh, faces, f, i, j, heightAglM) {
+function terrainWindAt(mesh, faces, f, i, j, heightAglM, opts) {
   if (!tLive(mesh, i, j)) return null;
   if (!(heightAglM >= 0)) return null;
+  const o = opts || {};
+  const z0 = o.roughnessM === undefined ? DEFAULT_ROUGHNESS_M : o.roughnessM;
+  if (!(z0 > 0)) throw fail("bad-roughness", "roughnessM must be positive");
   const nz = mesh.nz;
   const top = mesh.interfaceAgl[(nz * mesh.ny + j) * mesh.nx + i];
   if (heightAglM > top) return null;
@@ -1115,6 +1118,36 @@ function terrainWindAt(mesh, faces, f, i, j, heightAglM) {
     const through = ((f.fz[tFz(mesh, i, j, k)] + f.fz[tFz(mesh, i, j, k + 1)]) / 2) / faces.plan;
     return { east: east, north: north, through: through, agl: tCentreAgl(mesh, i, j, k) };
   };
+
+  // Below the middle of the lowest layer there is no cell underneath to
+  // interpolate against, and returning that cell instead reads the wind too
+  // fast in exactly the layer this product is about: with a 5 m first layer a
+  // request for 2 m came back as 2.5 m, worth about 6% of speed. Measured in
+  // the first CoAgMet run, where it showed up as a mass-consistent candidate
+  // gaining 1.059 over ground the solve had left alone.
+  //
+  // So the solve says what the terrain does, and the log law says what the
+  // profile does between the ground and the first cell it resolved. The same
+  // profile the guess was built on, carrying the same caveat: nothing in this
+  // project has tested it below 6.1 m.
+  const firstAgl = tCentreAgl(mesh, i, j, 0);
+  if (heightAglM < firstAgl && firstAgl > z0) {
+    const base = centre(0);
+    if (!base) return null;
+    const ratio = heightAglM <= z0 ? 0
+      : Math.log(heightAglM / z0) / Math.log(firstAgl / z0);
+    // The flux through the ground is zero by construction, so the vertical part
+    // goes to zero with the height rather than with the logarithm.
+    const lift = firstAgl > 0 ? base.through * (heightAglM / firstAgl) : 0;
+    const e = base.east * ratio;
+    const n = base.north * ratio;
+    let b = toDeg(Math.atan2(-e, -n));
+    if (b < 0) b += 360;
+    return {
+      east: e, north: n, up: lift,
+      speedMps: Math.hypot(e, n), fromDeg: b, heightAglM: heightAglM
+    };
+  }
 
   let k = 0;
   while (k < nz - 1 && tCentreAgl(mesh, i, j, k) < heightAglM) k++;

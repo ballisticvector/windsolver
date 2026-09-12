@@ -521,7 +521,7 @@ function massSolve(cache, derived, reference, fieldHeightAglM, candidate, opts) 
  * that points backwards between two columns is the same class of bug as an
  * averaged aspect.
  */
-function massSampleAt(derived, solved, lat, lon, heightAglM) {
+function massSampleAt(derived, solved, lat, lon, heightAglM, roughnessM) {
   if (!solved || !solved.field) return null;
   const m = proj.fromGeographic(derived.crs, lat, lon);
   const px = (m.x - derived.transform.originX) / derived.transform.scaleX - 0.5;
@@ -537,8 +537,10 @@ function massSampleAt(derived, solved, lat, lon, heightAglM) {
   let weight = 0;
   for (const c of corners) {
     if (!(c[2] > 0)) continue;
+    // The same roughness the height correction on every other row uses, so a
+    // difference between two rows is the method and not two different z0.
     const at = mass.terrainWindAt(solved.mesh, solved.faces, solved.field,
-      i0 + c[0], j0 + c[1], heightAglM);
+      i0 + c[0], j0 + c[1], heightAglM, { roughnessM: roughnessM });
     if (!at) continue;
     east += at.east * c[2];
     north += at.north * c[2];
@@ -736,7 +738,8 @@ async function buildReport(options) {
   const massRefusals = {};
   const massOptions = {
     layers: o.massLayers === undefined ? 16 : o.massLayers,
-    stretch: o.massStretch === undefined ? 1.2 : o.massStretch
+    stretch: o.massStretch === undefined ? 1.2 : o.massStretch,
+    roughnessM: o.roughnessM === undefined ? downscale.DEFAULT_ROUGHNESS_M : o.roughnessM
   };
   const dropped = [];
 
@@ -925,7 +928,7 @@ async function buildReport(options) {
             }
             at = null;
           } else {
-            at = massSampleAt(field.derived, solved, station.lat, station.lon, wanted);
+            at = massSampleAt(field.derived, solved, station.lat, station.lon, wanted, roughnessM);
           }
         } else {
           at = downscale.windAt(

@@ -441,3 +441,54 @@ describe("layers that follow the ground", () => {
     }
   });
 });
+
+describe("sampling below the lowest layer's centre", () => {
+  test("a 2 m wind is read at 2 m, not at the middle of the cell that contains it", () => {
+    // The bug the first CoAgMet run found. Over ground the solve leaves alone,
+    // a request below the first cell centre was returning that centre, so the
+    // mass candidate scored 1.059 against a downscaling that scored 0.992 —
+    // six per cent of pure sampling height, in the layer the product is about.
+    const terrain = flat(16, 16, 1000, 30);
+    const f = mass.solveFollowing(terrain, { speedMps: 10, fromDeg: 270 },
+      { layers: 12, topAboveM: 200, stretch: 1.2 });
+
+    const firstCentre = f.mesh.thickness[(0 * f.mesh.ny + 8) * f.mesh.nx + 8] / 2;
+    expect(firstCentre).toBeGreaterThan(2);   // the case the fix is for
+
+    // Flat ground, so the solve changes nothing and the answer is the profile
+    // the guess was built on: ln(2/z0) / ln(10/z0) of the reference.
+    const expected = 10 * (Math.log(2 / 0.03) / Math.log(10 / 0.03));
+    const at = mass.terrainWindAt(f.mesh, f.faces, f.field, 8, 8, 2);
+    expect(at.speedMps).toBeCloseTo(expected, 2);
+    expect(at.heightAglM).toBe(2);
+
+    // And it is genuinely slower than the cell it sits in, which is the whole
+    // point — the old answer was the cell.
+    const centre = mass.terrainWindAt(f.mesh, f.faces, f.field, 8, 8, firstCentre);
+    expect(at.speedMps).toBeLessThan(centre.speedMps * 0.98);
+  });
+
+  test("the profile goes to zero at the roughness length, not to the cell value", () => {
+    const f = mass.solveFollowing(flat(12, 12, 1000, 30), { speedMps: 10, fromDeg: 270 },
+      { layers: 12, topAboveM: 200, stretch: 1.2 });
+    // A log law has no wind at z0 by construction. Reporting one there would be
+    // inventing the one part of the profile it cannot describe.
+    expect(mass.terrainWindAt(f.mesh, f.faces, f.field, 6, 6, 0.03).speedMps).toBe(0);
+    expect(mass.terrainWindAt(f.mesh, f.faces, f.field, 6, 6, 0).speedMps).toBe(0);
+    // Monotone in between.
+    let last = -1;
+    for (const h of [0.05, 0.5, 1, 2, 3]) {
+      const s = mass.terrainWindAt(f.mesh, f.faces, f.field, 6, 6, h).speedMps;
+      expect(s).toBeGreaterThan(last);
+      last = s;
+    }
+  });
+
+  test("a rougher surface makes the same height read slower", () => {
+    const f = mass.solveFollowing(flat(12, 12, 1000, 30), { speedMps: 10, fromDeg: 270 },
+      { layers: 12, topAboveM: 200, stretch: 1.2 });
+    const grass = mass.terrainWindAt(f.mesh, f.faces, f.field, 6, 6, 2, { roughnessM: 0.03 });
+    const scrub = mass.terrainWindAt(f.mesh, f.faces, f.field, 6, 6, 2, { roughnessM: 0.25 });
+    expect(scrub.speedMps).toBeLessThan(grass.speedMps);
+  });
+});
