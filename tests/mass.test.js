@@ -492,3 +492,55 @@ describe("sampling below the lowest layer's centre", () => {
     expect(scrub.speedMps).toBeLessThan(grass.speedMps);
   });
 });
+
+describe("choosing the mesh by the ground", () => {
+  test("gentle ground gets the layers that follow it", () => {
+    const s = mass.solveFor(slopedValley(36, 36, 1000, 150, 30, 24),
+      { speedMps: 10, fromDeg: 225 }, { layers: 16, topAboveM: 450, stretch: 1.25 });
+    expect(s.kind).toBe("terrain-following");
+    expect(s.maxSlopeDeg).toBeLessThan(45);
+  });
+
+  test("ground too steep for the coordinate falls back rather than refusing", () => {
+    // The case that lost five of six Colorado valleys: Carbondale reaches 53
+    // degrees inside a two-mile box, Cortez 63. Refusing those is refusing the
+    // product, and the staircase has no slope limit at all.
+    const s = mass.solveFor(valley(36, 36, 1000, 300, 30),
+      { speedMps: 10, fromDeg: 225 }, { layers: 16, topAboveM: 900 });
+    expect(s.kind).toBe("staircase");
+    expect(s.maxSlopeDeg).toBeGreaterThan(45);
+    expect(s.field.converged).toBe(true);
+    // And it is a real answer, not a placeholder: the valley still channels.
+    const before = mass.sampleAt({ kind: "staircase", mesh: s.mesh, field: s.guess },
+      18, 18, 10);
+    const after = mass.sampleAt(s, 18, 18, 10);
+    expect(turn(before.fromDeg, after.fromDeg)).toBeLessThan(-5);
+  });
+
+  test("a caller can pin the following mesh, which is how the two are compared", () => {
+    const s = mass.solveFor(valley(36, 36, 1000, 300, 30),
+      { speedMps: 10, fromDeg: 225 }, { layers: 16, topAboveM: 900, maxSlopeDeg: null });
+    expect(s.kind).toBe("terrain-following");
+  });
+
+  test("sampleAt answers the same question on either mesh", () => {
+    // Flat ground, where the two meshes are the same solver, so the only thing
+    // being tested is that the dispatch does not change the answer.
+    const terrain = flat(24, 24, 1000, 30);
+    const a = mass.solveFor(terrain, { speedMps: 8, fromDeg: 270 },
+      { layers: 12, topAboveM: 480, stretch: 1 });
+    const b = mass.solveFor(terrain, { speedMps: 8, fromDeg: 270 },
+      { layers: 12, topAboveM: 480, stretch: 1, maxSlopeDeg: -1 });
+    expect(a.kind).toBe("terrain-following");
+    expect(b.kind).toBe("staircase");
+
+    const sa = mass.sampleAt(a, 12, 12, 2);
+    const sb = mass.sampleAt(b, 12, 12, 2);
+    expect(sb.speedMps).toBeCloseTo(sa.speedMps, 2);
+    expect(sb.fromDeg).toBeCloseTo(sa.fromDeg, 2);
+    // And both read 2 m at 2 m, not the cell that contains it.
+    const expected = 8 * (Math.log(2 / 0.03) / Math.log(10 / 0.03));
+    expect(sa.speedMps).toBeCloseTo(expected, 2);
+    expect(sb.speedMps).toBeCloseTo(expected, 2);
+  });
+});

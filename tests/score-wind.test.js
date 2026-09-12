@@ -1454,10 +1454,12 @@ describe("the mass-consistent candidate", () => {
     });
   });
 
-  test("ground too steep for the coordinate is refused once and counted, not solved", () => {
-    // A refused station is a fact about the method's reach, so it belongs in
-    // the report. Counting it once rather than once an hour keeps the failure
-    // list readable.
+  test("ground too steep for the coordinate falls back to the staircase, and says so", () => {
+    // Five of six Colorado valley domains at a two-mile radius contain ground
+    // past 45 degrees, so refusing them was refusing the terrain the product is
+    // for. The staircase resolves the near-ground layer badly and has no slope
+    // limit at all, and `massMesh` says which station got which — two rows on
+    // different meshes are not the same measurement.
     const service = stubService(function () {
       return terrainField({ speedMps: 6, fromDeg: 250, referenceMps: 6 },
         { reliefM: 900, apexOffsetM: 60 });
@@ -1466,9 +1468,23 @@ describe("the mass-consistent candidate", () => {
       source: stubSource(), service: service, stations: ["KBDU"], hours: 3,
       endMs: Date.UTC(2026, 8, 1, 6), mass: true, massLayers: 8
     }).then(function (report) {
-      expect(Object.keys(report.massRefusals)).toEqual(["KBDU"]);
-      expect(report.massRefusals.KBDU).toMatch(/deg/);
-      expect(report.failures.filter(function (f) { return f.stage === "mass"; }).length).toBe(1);
+      expect(report.massMesh.KBDU).toBe("staircase");
+      expect(report.massRefusals).toEqual({});
+      // And it is a scored answer rather than a hole.
+      expect(report.overall.mass.n).toBe(report.overall.model.n);
+    });
+  });
+
+  test("gentle ground keeps the layers that follow it", () => {
+    const service = stubService(function () {
+      return terrainField({ speedMps: 6, fromDeg: 250, referenceMps: 6 },
+        { reliefM: 60, apexOffsetM: 120 });
+    });
+    return scoreWind.buildReport({
+      source: stubSource(), service: service, stations: ["KBDU"], hours: 3,
+      endMs: Date.UTC(2026, 8, 1, 6), mass: true, massLayers: 8
+    }).then(function (report) {
+      expect(report.massMesh.KBDU).toBe("terrain-following");
     });
   });
 });
