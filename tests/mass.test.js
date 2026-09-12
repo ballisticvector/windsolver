@@ -302,3 +302,142 @@ describe("what continuity produces on its own", () => {
     expect(liftOver).toBeGreaterThan(liftAround);
   });
 });
+
+/**
+ * A valley whose wall slope is an argument rather than an accident.
+ *
+ * `valley` above is 73 degrees, which is a cliff and not a valley; it was
+ * written to make channelling unmissable on the staircase and it is past what a
+ * terrain-following mesh is trusted to.
+ */
+function slopedValley(nx, ny, floorM, wallM, spacingM, halfWidthCells) {
+  const out = new Float32Array(nx * ny);
+  const cx = (nx - 1) / 2;
+  for (let j = 0; j < ny; j++) {
+    for (let i = 0; i < nx; i++) {
+      const d = Math.abs(i - cx) / halfWidthCells;
+      out[j * nx + i] = floorM + wallM * (d >= 1 ? 1 : d * d);
+    }
+  }
+  return { width: nx, height: ny, spacingM: { x: spacingM, y: spacingM }, elevation: out };
+}
+
+describe("layers that follow the ground", () => {
+  test("on flat ground with equal layers it is the same solver as the box", () => {
+    // The two formulations meet here: no slope, no metric, and the flux
+    // coefficients divide by a cell volume to give the box's own stencil. If
+    // this ever stops matching, one of the two has drifted.
+    const terrain = flat(24, 24, 1000, 30);
+    const boxMesh = mass.buildMesh(terrain, { layers: 12, topAboveM: 480 });
+    const box = mass.solve(boxMesh, mass.initialField(boxMesh, { speedMps: 8, fromDeg: 270 }));
+    const following = mass.solveFollowing(terrain, { speedMps: 8, fromDeg: 270 },
+      { layers: 12, topAboveM: 480, stretch: 1 });
+
+    const a = mass.windAt(boxMesh, box, 12, 12, 20);
+    const b = mass.terrainWindAt(following.mesh, following.faces, following.field, 12, 12, 20);
+    expect(b.speedMps).toBeCloseTo(a.speedMps, 3);
+    expect(b.fromDeg).toBeCloseTo(a.fromDeg, 3);
+  });
+
+  test("the drawn layer is resolved in every column, which is what the box could not do", () => {
+    const terrain = slopedValley(48, 48, 1000, 150, 30, 24);
+
+    // The box: the first cell above a column stands anywhere from nothing to a
+    // whole layer above that column's own ground, so "10 m" is a different
+    // height in every column.
+    const boxMesh = mass.buildMesh(terrain, { layers: 20, topAboveM: 450 });
+    let lowest = Infinity;
+    let highest = -Infinity;
+    for (let j = 0; j < boxMesh.ny; j++) {
+      for (let i = 0; i < boxMesh.nx; i++) {
+        for (let k = 0; k < boxMesh.nz; k++) {
+          if (boxMesh.blocked[(k * boxMesh.ny + j) * boxMesh.nx + i]) continue;
+          const agl = mass.heightAgl(boxMesh, i, j, k);
+          if (agl < lowest) lowest = agl;
+          if (agl > highest) highest = agl;
+          break;
+        }
+      }
+    }
+    expect(highest - lowest).toBeGreaterThan(10);
+
+    // Following the ground, the lowest layer is thin everywhere, so 2 m is a
+    // real sample rather than a point inside one fat cell.
+    const mesh = mass.buildTerrainMesh(terrain, { layers: 20, topAboveM: 450, stretch: 1.25 });
+    expect(mesh.firstLayerM).toBeLessThan(5);
+    for (let j = 0; j < mesh.ny; j++) {
+      for (let i = 0; i < mesh.nx; i++) {
+        expect(mesh.thickness[(0 * mesh.ny + j) * mesh.nx + i]).toBeLessThan(5);
+      }
+    }
+  });
+
+  test("no flux crosses the ground, which is one number rather than a blocked region", () => {
+    const following = mass.solveFollowing(slopedValley(36, 36, 1000, 150, 30, 12),
+      { speedMps: 10, fromDeg: 225 }, { layers: 16, topAboveM: 450, stretch: 1.25 });
+    const m = following.mesh;
+    for (let j = 0; j < m.ny; j++) {
+      for (let i = 0; i < m.nx; i++) {
+        expect(following.field.fz[(0 * m.ny + j) * m.nx + i]).toBe(0);
+      }
+    }
+  });
+
+  test("a moderate valley channels, and agrees with the staircase oracle", () => {
+    // Two meshes, two ground conditions, two discretisations. Agreeing on the
+    // turn is the strongest evidence available here that either is right,
+    // because neither was fitted to anything.
+    const terrain = slopedValley(48, 48, 1000, 150, 30, 24);
+
+    const boxMesh = mass.buildMesh(terrain, { layers: 40, topAboveM: 900 });
+    const guess = mass.initialField(boxMesh, { speedMps: 10, fromDeg: 225 });
+    const box = mass.solve(boxMesh, guess, { maxIterations: 30000 });
+    const boxTurn = turn(mass.windAt(boxMesh, guess, 24, 24, 10).fromDeg,
+      mass.windAt(boxMesh, box, 24, 24, 10).fromDeg);
+
+    const f = mass.solveFollowing(terrain, { speedMps: 10, fromDeg: 225 },
+      { layers: 20, topAboveM: 900, stretch: 1.25, maxIterations: 30000 });
+    const followTurn = turn(mass.terrainWindAt(f.mesh, f.faces, f.guess, 24, 24, 10).fromDeg,
+      mass.terrainWindAt(f.mesh, f.faces, f.field, 24, 24, 10).fromDeg);
+
+    expect(f.field.converged).toBe(true);
+    expect(followTurn).toBeLessThan(-4);
+    expect(Math.abs(followTurn - boxTurn)).toBeLessThan(3);
+  });
+
+  test("ground too steep for the coordinate is refused, and says how steep", () => {
+    // 73 degrees: the original `valley` helper, and past where the measured
+    // agreement with the oracle holds. Refused rather than returned with a note,
+    // because a drawn wind is a believed wind.
+    expect(() => mass.solveFollowing(valley(36, 36, 1000, 300, 30),
+      { speedMps: 10, fromDeg: 225 }, { layers: 20, topAboveM: 900 }))
+      .toThrow(/too steep|past the/i);
+
+    try {
+      mass.solveFollowing(valley(36, 36, 1000, 300, 30), { speedMps: 10, fromDeg: 225 },
+        { layers: 20, topAboveM: 900 });
+    } catch (err) {
+      expect(err.code).toBe("too-steep");
+      expect(err.maxSlopeDeg).toBeGreaterThan(45);
+    }
+
+    // And it can be overridden on purpose, which is not the same as by accident.
+    expect(() => mass.solveFollowing(valley(36, 36, 1000, 300, 30),
+      { speedMps: 10, fromDeg: 225 }, { layers: 20, topAboveM: 900, maxSlopeDeg: null }))
+      .not.toThrow();
+  });
+
+  test("a dead column takes no flux and is not filled in from its neighbours", () => {
+    const terrain = slopedValley(24, 24, 1000, 60, 30, 12);
+    terrain.elevation[12 * 24 + 12] = NaN;
+    const f = mass.solveFollowing(terrain, { speedMps: 8, fromDeg: 270 },
+      { layers: 12, topAboveM: 300, stretch: 1.25 });
+
+    expect(f.mesh.holes).toBe(1);
+    expect(mass.terrainWindAt(f.mesh, f.faces, f.field, 12, 12, 10)).toBeNull();
+    for (let k = 0; k < f.mesh.nz; k++) {
+      expect(f.faces.cx[(k * f.mesh.ny + 12) * (f.mesh.nx + 1) + 12]).toBe(0);
+      expect(f.faces.cx[(k * f.mesh.ny + 12) * (f.mesh.nx + 1) + 13]).toBe(0);
+    }
+  });
+});
