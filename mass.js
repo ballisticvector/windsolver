@@ -548,6 +548,618 @@ function solveTerrain(terrain, wind, opts) {
   return { mesh: mesh, field: solve(mesh, guess, opts) };
 }
 
+/* ------------------------------------------------------------------------ *
+ * Terrain-following layers, and the flux form the solve really wants
+ * ------------------------------------------------------------------------ *
+ *
+ * Everything above works on a box of equal cells with the ground cut out of it
+ * as a staircase. That is exact and it is the oracle, and it has two faults
+ * that matter for the product this is aimed at:
+ *
+ * - **A drawn height is not a height.** `windAt` finds the first open cell
+ *   above a column, and on a staircase that cell's centre stands anywhere from
+ *   nothing to a whole layer above *that column's* ground. Asking for 10 m over
+ *   a map with 300 m of relief returns a different height in every valley and
+ *   on every ridge, which is not a thing to draw.
+ * - **Stretching in absolute height does not fix it.** Thin layers near the
+ *   floor of the box are only near the ground where the ground is the floor.
+ *   Over a ridge they are as coarse as before.
+ *
+ * So the layers follow the terrain: every column carries the same number, each
+ * one a fixed fraction of that column's depth, and the fractions are geometric
+ * so the lowest are thin. `heightAglM` then means the same thing everywhere,
+ * and the 0-3 m layer is resolved on a ridge as well as in a hollow.
+ *
+ * **The mesh moves, so the solve moves into flux form.** Minimise the weighted
+ * change in the flux through each face rather than in the velocity at each
+ * cell, subject to the fluxes balancing:
+ *
+ *     minimise sum over faces of (F - F0)^2 / (2 c)   subject to   sum F = 0
+ *     => F = F0 + c (P_above - P_below)
+ *     => sum over neighbours of c (P_n - P_c) = -D0
+ *
+ * with `c = A / d` for a face of area A whose cell centres are d apart, times
+ * `r` for the interfaces. That is the same seven-point problem as before — on a
+ * box of equal cells the coefficients divide by the volume to give exactly the
+ * `1/dx^2` stencil above — but it carries the face **area**, which is what
+ * changes when each column has its own thicknesses. Continuity stays exact
+ * because what leaves one cell through a face is what enters the next through
+ * the same face, whatever shape the face is.
+ *
+ * **Two things fall out for free, and they are the reason this is worth the
+ * rewrite.** There is no staircase, so no spurious step acceleration. And the
+ * ground condition stops being "block the cells underneath" and becomes the one
+ * line it should be: the flux through the bottom interface is zero. Because
+ * that interface slopes, `F = (w - u dz/dx - v dz/dy) dx dy = 0` says the flow
+ * is *tangent to the hillside*, which is the physical statement, rather than
+ * "no vertical velocity at a flat step".
+ */
+
+/**
+ * Layer thicknesses, as fractions of a column's depth, thin end first.
+ *
+ * Geometric with ratio `stretch`. At 20 layers and 1.25 the lowest is 0.24% of
+ * the depth — about 2 m in an 800 m column — and the top one is 21%, which is
+ * where nothing is happening anyway. `stretch: 1` gives equal layers and is how
+ * this mesh is checked against the box above.
+ */
+function layerFractions(nz, stretch) {
+  if (!(nz >= 2)) throw fail("bad-layers", "layers must be at least 2");
+  if (!(stretch > 0)) throw fail("bad-stretch", "stretch must be positive");
+  const out = new Float64Array(nz);
+  let sum = 0;
+  for (let k = 0; k < nz; k++) { out[k] = Math.pow(stretch, k); sum += out[k]; }
+  for (let k = 0; k < nz; k++) out[k] /= sum;
+  return out;
+}
+
+/**
+ * Above this, a terrain-following solve is not trusted here.
+ *
+ * Not a property of the atmosphere — a property of this discretisation. See
+ * `maxSlopeDeg` on the mesh for what was measured against the oracle.
+ */
+const DEFAULT_MAX_SLOPE_DEG = 45;
+
+/** The steepest ground between neighbouring columns, and how much is steep. */
+function groundSlope(elevation, nx, ny, dx, dy, dead, steepDeg) {
+  const limit = Math.tan((steepDeg * Math.PI) / 180);
+  let maxTan = 0;
+  let steep = 0;
+  let counted = 0;
+  for (let j = 0; j < ny; j++) {
+    for (let i = 0; i < nx; i++) {
+      if (dead[j * nx + i]) continue;
+      const h = elevation[j * nx + i];
+      let worst = 0;
+      if (i + 1 < nx && !dead[j * nx + i + 1]) {
+        worst = Math.max(worst, Math.abs(elevation[j * nx + i + 1] - h) / dx);
+      }
+      if (j + 1 < ny && !dead[(j + 1) * nx + i]) {
+        worst = Math.max(worst, Math.abs(elevation[(j + 1) * nx + i] - h) / dy);
+      }
+      counted++;
+      if (worst > maxTan) maxTan = worst;
+      if (worst > limit) steep++;
+    }
+  }
+  return {
+    maxDeg: (Math.atan(maxTan) * 180) / Math.PI,
+    steepFraction: counted ? steep / counted : 0
+  };
+}
+
+/**
+ * A mesh whose layers follow the ground.
+ *
+ * The lid is flat at `max(terrain) + topAboveM`, so a column under a ridge is
+ * shallower than one in a valley and its layers are thinner in proportion. That
+ * is the standard sigma arrangement, and it is what makes "10 m above ground"
+ * one surface rather than a different height in every column.
+ *
+ * A column whose terrain could not be read is **dead**: no cells, and every
+ * face it touches carries no flux and takes no correction. A hole stays a hole,
+ * the same answer `/v1/field` already gives.
+ */
+function buildTerrainMesh(terrain, opts) {
+  const o = opts || {};
+  if (!terrain || !terrain.elevation || !terrain.width || !terrain.height) {
+    throw fail("bad-terrain", "an elevation grid with width, height and elevation is required");
+  }
+  const nx = terrain.width;
+  const ny = terrain.height;
+  if (terrain.elevation.length !== nx * ny) {
+    throw fail("bad-terrain", "elevation must hold width * height values");
+  }
+  const dx = Number(terrain.spacingM && terrain.spacingM.x);
+  const dy = Number(terrain.spacingM && terrain.spacingM.y);
+  if (!(dx > 0) || !(dy > 0)) throw fail("bad-spacing", "spacingM.x and spacingM.y must be positive metres");
+
+  let minZ = Infinity;
+  let maxZ = -Infinity;
+  const dead = new Uint8Array(nx * ny);
+  let holes = 0;
+  for (let c = 0; c < nx * ny; c++) {
+    const z = terrain.elevation[c];
+    if (!Number.isFinite(z)) { dead[c] = 1; holes++; continue; }
+    if (z < minZ) minZ = z;
+    if (z > maxZ) maxZ = z;
+  }
+  if (!Number.isFinite(minZ)) throw fail("no-terrain", "every cell of the elevation grid is a hole");
+
+  const relief = maxZ - minZ;
+  const above = o.topAboveM === undefined ? Math.max(3 * relief, 200) : o.topAboveM;
+  if (!(above > 0)) throw fail("bad-top", "topAboveM must be positive");
+  const nz = o.layers === undefined ? 20 : o.layers;
+  const stretch = o.stretch === undefined ? 1.25 : o.stretch;
+  const fractions = layerFractions(nz, stretch);
+  const zTop = maxZ + above;
+
+  // Interface heights above each column's own ground: nz + 1 per column, the
+  // first always zero because the first interface is the ground itself.
+  const agl = new Float32Array(nx * ny * (nz + 1));
+  const thickness = new Float32Array(nx * ny * nz);
+  for (let j = 0; j < ny; j++) {
+    for (let i = 0; i < nx; i++) {
+      const c = j * nx + i;
+      if (dead[c]) continue;
+      const depth = zTop - terrain.elevation[c];
+      let running = 0;
+      for (let k = 0; k < nz; k++) {
+        const t = fractions[k] * depth;
+        thickness[(k * ny + j) * nx + i] = t;
+        running += t;
+        agl[((k + 1) * ny + j) * nx + i] = running;
+      }
+    }
+  }
+
+  const slopeStats = groundSlope(terrain.elevation, nx, ny, dx, dy, dead,
+    o.steepDeg === undefined ? DEFAULT_MAX_SLOPE_DEG : o.steepDeg);
+
+  return {
+    kind: "terrain-following",
+    nx: nx, ny: ny, nz: nz,
+    dx: dx, dy: dy,
+    zTop: zTop,
+    zMin: minZ,
+    stretch: stretch,
+    elevation: terrain.elevation,
+    dead: dead,
+    holes: holes,
+    reliefM: relief,
+    thickness: thickness,
+    interfaceAgl: agl,
+    // The steepest ground in the domain, and how much of it is steep. A
+    // terrain-following mesh is skewed in proportion to the slope it follows,
+    // and the seven-point stencil this solve uses is diagonal in the computed
+    // coordinate — it drops the cross terms, whose size is second order in that
+    // skew. Measured against the staircase oracle the two agree to 0.2 deg at
+    // 9 deg of slope, 0.4 at 23, 1.8 at 40, and the answer is visibly wrong by
+    // 59. So the number travels with the mesh rather than living in a comment.
+    maxSlopeDeg: slopeStats.maxDeg,
+    steepFraction: slopeStats.steepFraction,
+    // The thinnest layer anywhere, which is what decides whether the layer this
+    // product is about is resolved at all. A caller drawing 2 m over a mesh
+    // whose first layer is 40 m is interpolating inside one cell and should be
+    // told so rather than shown a number.
+    firstLayerM: (function () {
+      let m = Infinity;
+      for (let c = 0; c < nx * ny; c++) {
+        if (dead[c]) continue;
+        const t = thickness[c];
+        if (t < m) m = t;
+      }
+      return Number.isFinite(m) ? m : null;
+    })()
+  };
+}
+
+function tCol(mesh, i, j) { return j * mesh.nx + i; }
+function tCell(mesh, i, j, k) { return (k * mesh.ny + j) * mesh.nx + i; }
+function tFx(mesh, i, j, k) { return (k * mesh.ny + j) * (mesh.nx + 1) + i; }
+function tFy(mesh, i, j, k) { return (k * (mesh.ny + 1) + j) * mesh.nx + i; }
+function tFz(mesh, i, j, k) { return (k * mesh.ny + j) * mesh.nx + i; }
+
+function tLive(mesh, i, j) {
+  return i >= 0 && j >= 0 && i < mesh.nx && j < mesh.ny && !mesh.dead[tCol(mesh, i, j)];
+}
+function tInside(mesh, i, j) {
+  return i >= 0 && j >= 0 && i < mesh.nx && j < mesh.ny;
+}
+/**
+ * A face with solid on one side, which is not the same as a face on the edge.
+ *
+ * Off the edge of the domain the air carries on and the face is open; against a
+ * column whose terrain could not be read there is no air and no flux. Treating
+ * the second like the first lets a hole breathe, which fills it from its
+ * neighbours by another name.
+ */
+function tFaceSolid(mesh, ai, aj, bi, bj) {
+  return (tInside(mesh, ai, aj) && mesh.dead[tCol(mesh, ai, aj)])
+    || (tInside(mesh, bi, bj) && mesh.dead[tCol(mesh, bi, bj)]);
+}
+
+/** Height above that column's ground, at the centre of one of its cells. */
+function tCentreAgl(mesh, i, j, k) {
+  const lo = mesh.interfaceAgl[(k * mesh.ny + j) * mesh.nx + i];
+  const hi = mesh.interfaceAgl[((k + 1) * mesh.ny + j) * mesh.nx + i];
+  return (lo + hi) / 2;
+}
+
+/** Physical height of an interface, which is the ground plus its own offset. */
+function tInterfaceZ(mesh, i, j, k) {
+  return mesh.elevation[tCol(mesh, i, j)] + mesh.interfaceAgl[(k * mesh.ny + j) * mesh.nx + i];
+}
+
+/**
+ * Face areas and the coefficients the solve needs, once per mesh.
+ *
+ * A vertical face between two columns is as tall as the two layers either side
+ * of it average; an interface is flat in plan whatever it does in height, so
+ * its area is `dx dy` and the slope enters through the flux rather than the
+ * area. `c = A / d` is the same quantity for both, with the interfaces scaled
+ * by `r`.
+ *
+ * A face on the ground, or against a dead column, gets **zero**: no area, no
+ * coefficient, no correction. That single value is the whole no-flow-through
+ * condition, and it is why nothing downstream needs a special case for it.
+ */
+function terrainFaces(mesh, opts) {
+  const o = opts || {};
+  const r = o.r === undefined ? DEFAULT_R : o.r;
+  if (!(r > 0)) throw fail("bad-r", "r must be positive");
+  const nx = mesh.nx, ny = mesh.ny, nz = mesh.nz;
+
+  const ax = new Float32Array((nx + 1) * ny * nz);
+  const ay = new Float32Array(nx * (ny + 1) * nz);
+  const cx = new Float32Array((nx + 1) * ny * nz);
+  const cy = new Float32Array(nx * (ny + 1) * nz);
+  const cz = new Float32Array(nx * ny * (nz + 1));
+
+  for (let k = 0; k < nz; k++) {
+    for (let j = 0; j < ny; j++) {
+      for (let i = 0; i <= nx; i++) {
+        if (tFaceSolid(mesh, i - 1, j, i, j)) continue;
+        const left = tLive(mesh, i - 1, j);
+        const right = tLive(mesh, i, j);
+        if (!left && !right) continue;
+        const tl = left ? mesh.thickness[tCell(mesh, i - 1, j, k)] : 0;
+        const tr = right ? mesh.thickness[tCell(mesh, i, j, k)] : 0;
+        // A face on the edge of the domain is as tall as the one cell it has.
+        const t = left && right ? (tl + tr) / 2 : tl + tr;
+        ax[tFx(mesh, i, j, k)] = mesh.dy * t;
+        cx[tFx(mesh, i, j, k)] = (mesh.dy * t) / mesh.dx;
+      }
+    }
+    for (let j = 0; j <= ny; j++) {
+      for (let i = 0; i < nx; i++) {
+        if (tFaceSolid(mesh, i, j - 1, i, j)) continue;
+        const down = tLive(mesh, i, j - 1);
+        const up = tLive(mesh, i, j);
+        if (!down && !up) continue;
+        const td = down ? mesh.thickness[tCell(mesh, i, j - 1, k)] : 0;
+        const tu = up ? mesh.thickness[tCell(mesh, i, j, k)] : 0;
+        const t = down && up ? (td + tu) / 2 : td + tu;
+        ay[tFy(mesh, i, j, k)] = mesh.dx * t;
+        cy[tFy(mesh, i, j, k)] = (mesh.dx * t) / mesh.dy;
+      }
+    }
+  }
+
+  const plan = mesh.dx * mesh.dy;
+  for (let k = 0; k <= nz; k++) {
+    for (let j = 0; j < ny; j++) {
+      for (let i = 0; i < nx; i++) {
+        if (!tLive(mesh, i, j)) continue;
+        // k = 0 is the ground. No flux, no correction, no exception anywhere
+        // else in the module.
+        if (k === 0) continue;
+        const below = mesh.thickness[tCell(mesh, i, j, k - 1)];
+        const above = k < nz ? mesh.thickness[tCell(mesh, i, j, k)] : below;
+        const d = (below + above) / 2;
+        cz[tFz(mesh, i, j, k)] = d > 0 ? (r * plan) / d : 0;
+      }
+    }
+  }
+
+  return { ax: ax, ay: ay, cx: cx, cy: cy, cz: cz, r: r, plan: plan };
+}
+
+/**
+ * The first guess, as fluxes through the faces of the terrain-following mesh.
+ *
+ * Horizontal components are the reference wind on a neutral log profile of
+ * height above ground, the same one the box above uses and carrying the same
+ * caveat: `docs/near-ground-wind.md` records that nothing in this project has
+ * tested that profile below 6.1 m.
+ *
+ * **The interfaces are where the terrain enters.** An interface follows the
+ * ground, so its flux is `(w - u dz/dx - v dz/dy) dx dy`, and with `w0 = 0` a
+ * horizontal wind over a slope already carries flux through it. That term is
+ * the air being driven into the hillside, and it is what the solve turns into
+ * flow around and over. Forcing the ground interface to zero is what makes it
+ * have to.
+ */
+function terrainFluxes(mesh, faces, wind, opts) {
+  const o = opts || {};
+  const ref = readWind(wind);
+  const z0 = o.roughnessM === undefined ? DEFAULT_ROUGHNESS_M : o.roughnessM;
+  if (!(z0 > 0)) throw fail("bad-roughness", "roughnessM must be positive");
+  const refHeight = o.referenceHeightM === undefined ? 10 : o.referenceHeightM;
+  if (!(refHeight > z0)) throw fail("bad-height", "referenceHeightM must be above the roughness length");
+
+  const nx = mesh.nx, ny = mesh.ny, nz = mesh.nz;
+  const denom = Math.log(refHeight / z0);
+  const profile = function (agl) {
+    if (!Number.isFinite(agl) || agl <= z0) return 0;
+    return Math.log(agl / z0) / denom;
+  };
+
+  const fx = new Float32Array((nx + 1) * ny * nz);
+  const fy = new Float32Array(nx * (ny + 1) * nz);
+  const fz = new Float32Array(nx * ny * (nz + 1));
+
+  for (let k = 0; k < nz; k++) {
+    for (let j = 0; j < ny; j++) {
+      for (let i = 0; i <= nx; i++) {
+        const a = faces.ax[tFx(mesh, i, j, k)];
+        if (!(a > 0)) continue;
+        const left = tLive(mesh, i - 1, j);
+        const right = tLive(mesh, i, j);
+        const agl = left && right
+          ? (tCentreAgl(mesh, i - 1, j, k) + tCentreAgl(mesh, i, j, k)) / 2
+          : (left ? tCentreAgl(mesh, i - 1, j, k) : tCentreAgl(mesh, i, j, k));
+        fx[tFx(mesh, i, j, k)] = ref.east * profile(agl) * a;
+      }
+    }
+    for (let j = 0; j <= ny; j++) {
+      for (let i = 0; i < nx; i++) {
+        const a = faces.ay[tFy(mesh, i, j, k)];
+        if (!(a > 0)) continue;
+        const down = tLive(mesh, i, j - 1);
+        const up = tLive(mesh, i, j);
+        const agl = down && up
+          ? (tCentreAgl(mesh, i, j - 1, k) + tCentreAgl(mesh, i, j, k)) / 2
+          : (down ? tCentreAgl(mesh, i, j - 1, k) : tCentreAgl(mesh, i, j, k));
+        fy[tFy(mesh, i, j, k)] = ref.north * profile(agl) * a;
+      }
+    }
+  }
+
+  for (let k = 1; k <= nz; k++) {
+    for (let j = 0; j < ny; j++) {
+      for (let i = 0; i < nx; i++) {
+        if (!tLive(mesh, i, j)) continue;
+        const agl = mesh.interfaceAgl[(k * ny + j) * nx + i];
+        const speed = profile(agl);
+        // The interface's own slope, centred where both neighbours exist and
+        // one-sided at the edge of the domain. A dead neighbour is not a slope
+        // of zero, it is no information, so the other side is used alone.
+        const east = tLive(mesh, i + 1, j) ? tInterfaceZ(mesh, i + 1, j, k) : null;
+        const west = tLive(mesh, i - 1, j) ? tInterfaceZ(mesh, i - 1, j, k) : null;
+        const here = tInterfaceZ(mesh, i, j, k);
+        const sx = east !== null && west !== null ? (east - west) / (2 * mesh.dx)
+          : east !== null ? (east - here) / mesh.dx
+            : west !== null ? (here - west) / mesh.dx : 0;
+        const north = tLive(mesh, i, j + 1) ? tInterfaceZ(mesh, i, j + 1, k) : null;
+        const south = tLive(mesh, i, j - 1) ? tInterfaceZ(mesh, i, j - 1, k) : null;
+        const sy = north !== null && south !== null ? (north - south) / (2 * mesh.dy)
+          : north !== null ? (north - here) / mesh.dy
+            : south !== null ? (here - south) / mesh.dy : 0;
+        fz[tFz(mesh, i, j, k)] = -(ref.east * speed * sx + ref.north * speed * sy) * faces.plan;
+      }
+    }
+  }
+  // k = 0 stays zero: that is the ground, and the flow is tangent to it.
+
+  return { fx: fx, fy: fy, fz: fz, reference: ref };
+}
+
+/** Net outflow from each cell, in cubic metres a second. Exact on this mesh. */
+function terrainDivergence(mesh, f) {
+  const nx = mesh.nx, ny = mesh.ny, nz = mesh.nz;
+  const out = new Float32Array(nx * ny * nz);
+  for (let k = 0; k < nz; k++) {
+    for (let j = 0; j < ny; j++) {
+      for (let i = 0; i < nx; i++) {
+        if (!tLive(mesh, i, j)) continue;
+        out[tCell(mesh, i, j, k)] =
+          (f.fx[tFx(mesh, i + 1, j, k)] - f.fx[tFx(mesh, i, j, k)]) +
+          (f.fy[tFy(mesh, i, j + 1, k)] - f.fy[tFy(mesh, i, j, k)]) +
+          (f.fz[tFz(mesh, i, j, k + 1)] - f.fz[tFz(mesh, i, j, k)]);
+      }
+    }
+  }
+  return out;
+}
+
+/**
+ * The projection, on the terrain-following mesh.
+ *
+ * Identical in structure to `solve` above and identical in result on a mesh of
+ * equal cells — the coefficients divided by a cell's volume are the same
+ * seven-point stencil. What differs is that the areas are real, so a face
+ * between two columns of different depth carries the right amount.
+ */
+function solveTerrain2(mesh, faces, f, opts) {
+  const o = opts || {};
+  const omega = o.omega === undefined ? DEFAULT_OMEGA : o.omega;
+  if (!(omega > 0 && omega < 2)) throw fail("bad-omega", "omega must be in (0, 2)");
+  const tolerance = o.tolerance === undefined ? DEFAULT_TOLERANCE : o.tolerance;
+  const maxIterations = o.maxIterations === undefined ? DEFAULT_MAX_ITERATIONS : o.maxIterations;
+
+  const nx = mesh.nx, ny = mesh.ny, nz = mesh.nz;
+  const d0 = terrainDivergence(mesh, f);
+  const before = maxAbs(d0);
+  const norm = before;
+
+  const P = new Float64Array(nx * ny * nz);
+  let iterations = 0;
+  let residual = norm > 0 ? 1 : 0;
+
+  for (; iterations < maxIterations && residual > tolerance; iterations++) {
+    let worst = 0;
+    for (let k = 0; k < nz; k++) {
+      for (let j = 0; j < ny; j++) {
+        for (let i = 0; i < nx; i++) {
+          if (!tLive(mesh, i, j)) continue;
+          const c = tCell(mesh, i, j, k);
+
+          let sum = 0;
+          let diag = 0;
+          // Six faces. A coefficient of zero is the ground or a dead column and
+          // contributes nothing at all; a live face whose neighbour is outside
+          // the domain or above the lid contributes to the diagonal with a
+          // multiplier of zero beyond it, which is the open boundary.
+          const add = function (coef, ni, nj, nk) {
+            if (!(coef > 0)) return;
+            diag += coef;
+            if (nk < 0 || nk >= nz) return;          // through the lid: P = 0
+            if (!tLive(mesh, ni, nj)) return;        // past the edge: P = 0
+            sum += coef * P[tCell(mesh, ni, nj, nk)];
+          };
+          add(faces.cx[tFx(mesh, i, j, k)], i - 1, j, k);
+          add(faces.cx[tFx(mesh, i + 1, j, k)], i + 1, j, k);
+          add(faces.cy[tFy(mesh, i, j, k)], i, j - 1, k);
+          add(faces.cy[tFy(mesh, i, j + 1, k)], i, j + 1, k);
+          add(faces.cz[tFz(mesh, i, j, k)], i, j, k - 1);
+          add(faces.cz[tFz(mesh, i, j, k + 1)], i, j, k + 1);
+          if (diag === 0) continue;
+
+          const err = sum + d0[c] - diag * P[c];
+          const size = Math.abs(err);
+          if (size > worst) worst = size;
+          P[c] += (omega * err) / diag;
+        }
+      }
+    }
+    residual = norm > 0 ? worst / norm : 0;
+  }
+
+  const fx = Float32Array.from(f.fx);
+  const fy = Float32Array.from(f.fy);
+  const fz = Float32Array.from(f.fz);
+  const at = function (i, j, k) {
+    if (k < 0 || k >= nz) return 0;
+    if (!tLive(mesh, i, j)) return 0;
+    return P[tCell(mesh, i, j, k)];
+  };
+
+  for (let k = 0; k < nz; k++) {
+    for (let j = 0; j < ny; j++) {
+      for (let i = 0; i <= nx; i++) {
+        const coef = faces.cx[tFx(mesh, i, j, k)];
+        if (coef > 0) fx[tFx(mesh, i, j, k)] += coef * (at(i, j, k) - at(i - 1, j, k));
+      }
+    }
+    for (let j = 0; j <= ny; j++) {
+      for (let i = 0; i < nx; i++) {
+        const coef = faces.cy[tFy(mesh, i, j, k)];
+        if (coef > 0) fy[tFy(mesh, i, j, k)] += coef * (at(i, j, k) - at(i, j - 1, k));
+      }
+    }
+  }
+  for (let k = 0; k <= nz; k++) {
+    for (let j = 0; j < ny; j++) {
+      for (let i = 0; i < nx; i++) {
+        const coef = faces.cz[tFz(mesh, i, j, k)];
+        if (coef > 0) fz[tFz(mesh, i, j, k)] += coef * (at(i, j, k) - at(i, j, k - 1));
+      }
+    }
+  }
+
+  const out = { fx: fx, fy: fy, fz: fz, reference: f.reference };
+  const after = maxAbs(terrainDivergence(mesh, out));
+  return Object.assign(out, {
+    iterations: iterations,
+    converged: residual <= tolerance,
+    residual: residual,
+    maxDivergenceBefore: before,
+    maxDivergenceAfter: after,
+    r: faces.r
+  });
+}
+
+/**
+ * The wind at a column, at a height above *that column's* ground.
+ *
+ * Which is now a real question with one answer, rather than whatever the
+ * staircase happened to leave at that height. Velocities come back out of the
+ * fluxes by dividing by the area they crossed, and the vertical is interpolated
+ * between the centres of the two layers the height falls between.
+ *
+ * `null` above the lid, on a dead column, or below the ground.
+ */
+function terrainWindAt(mesh, faces, f, i, j, heightAglM) {
+  if (!tLive(mesh, i, j)) return null;
+  if (!(heightAglM >= 0)) return null;
+  const nz = mesh.nz;
+  const top = mesh.interfaceAgl[(nz * mesh.ny + j) * mesh.nx + i];
+  if (heightAglM > top) return null;
+
+  const centre = function (k) {
+    if (k < 0 || k >= nz) return null;
+    const al = faces.ax[tFx(mesh, i, j, k)];
+    const ar = faces.ax[tFx(mesh, i + 1, j, k)];
+    const ad = faces.ay[tFy(mesh, i, j, k)];
+    const au = faces.ay[tFy(mesh, i, j + 1, k)];
+    const east = ((al > 0 ? f.fx[tFx(mesh, i, j, k)] / al : 0)
+      + (ar > 0 ? f.fx[tFx(mesh, i + 1, j, k)] / ar : 0)) / 2;
+    const north = ((ad > 0 ? f.fy[tFy(mesh, i, j, k)] / ad : 0)
+      + (au > 0 ? f.fy[tFy(mesh, i, j + 1, k)] / au : 0)) / 2;
+    // The interface flux is the part of the motion that crosses the sloping
+    // surface. Adding back what the horizontal wind contributes along that
+    // slope recovers a physical vertical velocity, which is the thing worth
+    // reporting: over a hillside most of `w` is the air following the ground.
+    const through = ((f.fz[tFz(mesh, i, j, k)] + f.fz[tFz(mesh, i, j, k + 1)]) / 2) / faces.plan;
+    return { east: east, north: north, through: through, agl: tCentreAgl(mesh, i, j, k) };
+  };
+
+  let k = 0;
+  while (k < nz - 1 && tCentreAgl(mesh, i, j, k) < heightAglM) k++;
+  const hi = centre(k);
+  const lo = centre(k - 1);
+  let pick = hi;
+  if (lo && hi && hi.agl > lo.agl && heightAglM < hi.agl) {
+    const t = (heightAglM - lo.agl) / (hi.agl - lo.agl);
+    const clamped = t < 0 ? 0 : t > 1 ? 1 : t;
+    pick = {
+      east: lo.east * (1 - clamped) + hi.east * clamped,
+      north: lo.north * (1 - clamped) + hi.north * clamped,
+      through: lo.through * (1 - clamped) + hi.through * clamped
+    };
+  }
+  if (!pick) return null;
+
+  const speed = Math.hypot(pick.east, pick.north);
+  let from = toDeg(Math.atan2(-pick.east, -pick.north));
+  if (from < 0) from += 360;
+  return {
+    east: pick.east, north: pick.north, up: pick.through,
+    speedMps: speed, fromDeg: from, heightAglM: heightAglM
+  };
+}
+
+/** Mesh, faces, guess, solve — for a caller with one domain and one wind. */
+function solveFollowing(terrain, wind, opts) {
+  const o = opts || {};
+  const mesh = buildTerrainMesh(terrain, opts);
+  // Refused rather than returned with a caveat. A field that is visibly wrong
+  // and carries a warning is still drawn, and a drawn wind is believed.
+  const limit = o.maxSlopeDeg === undefined ? DEFAULT_MAX_SLOPE_DEG : o.maxSlopeDeg;
+  if (limit !== null && mesh.maxSlopeDeg > limit) {
+    throw fail("too-steep",
+      "ground reaches " + mesh.maxSlopeDeg.toFixed(1) + " deg, past the " + limit +
+      " deg this terrain-following solve is trusted to; use the staircase mesh, " +
+      "coarsen the terrain, or pass maxSlopeDeg to override deliberately",
+      { maxSlopeDeg: mesh.maxSlopeDeg, limitDeg: limit, steepFraction: mesh.steepFraction });
+  }
+  const faces = terrainFaces(mesh, opts);
+  const guess = terrainFluxes(mesh, faces, wind, opts);
+  return { mesh: mesh, faces: faces, guess: guess, field: solveTerrain2(mesh, faces, guess, opts) };
+}
+
 module.exports = {
   DEFAULT_R,
   DEFAULT_OMEGA,
@@ -560,5 +1172,18 @@ module.exports = {
   solve,
   windAt,
   solveTerrain,
-  heightAgl
+  heightAgl,
+
+  // Terrain-following: the mesh the product actually wants, with the box above
+  // kept as the oracle it is checked against.
+  DEFAULT_MAX_SLOPE_DEG,
+  layerFractions,
+  groundSlope,
+  buildTerrainMesh,
+  terrainFaces,
+  terrainFluxes,
+  terrainDivergence,
+  solveTerrain2,
+  terrainWindAt,
+  solveFollowing
 };
