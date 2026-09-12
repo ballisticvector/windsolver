@@ -45,6 +45,16 @@
  *                could not resolve — the DEM minus a wide DEM smoothed to the
  *                model's own scale — as a radius in metres (default 3000)
  *   --anomaly-resolution  metres for the wide read the smoothing runs over
+ *   --mass       also score a mass-consistent solve — a wind that satisfies
+ *                continuity over the ground rather than one weighted by its
+ *                shape. Two rows, r = 1 and r = 0.1, because stability is the
+ *                one knob and nothing here estimates it. **Slow**: the solve is
+ *                the expensive thing in this tool, seconds a station-hour
+ *                against milliseconds for every other row, and a station whose
+ *                ground passes 45 degrees is refused and counted rather than
+ *                solved on a coordinate that cannot carry it.
+ *   --mass-layers   vertical layers in that solve (default 16)
+ *   --mass-stretch  geometric ratio between them (default 1.2; 1 is uniform)
  *                (default 100)
  *   --exposure   also score the model wind brought to the station over a rougher
  *                surface than the national 0.03 m, one-step and through
@@ -173,6 +183,8 @@ const derive = require("../derive.js");
 const downscale = require("../downscale.js");
 const fieldModule = require("../field.js");
 const geo = require("../geo.js");
+const mass = require("../mass.js");
+const proj = require("../proj.js");
 const archive = require("../archive.js");
 const observationsModule = require("../observations.js");
 const roughness = require("../roughness.js");
@@ -201,6 +213,7 @@ const FLAGS = [
   "stations", "source", "fems-map", "end", "hours", "forecast", "radius", "resolution",
   "tolerance", "position", "elevation", "roughness", "no-height", "ablate",
   "shelter", "scales", "anomaly", "anomaly-resolution", "exposure", "archive",
+  "mass", "mass-layers", "mass-stretch",
   "out", "pairs", "json"
 ];
 
@@ -307,6 +320,20 @@ function candidatesFor(opts) {
         options: {}, exposure: { site: "closed", model: true } }
     );
   }
+  // A different family altogether, and the reason it is a candidate rather than
+  // a replacement: everything else in this table weights the model wind by a
+  // function of the ground, and this one solves for a wind that conserves mass
+  // over it. `mass.js` has the argument. Two rows, because the one physical
+  // knob is stability: `r` near 1 lets the flow go over a hill, small `r` makes
+  // vertical displacement expensive and sends it around, which is what a stable
+  // nocturnal layer does. Nothing here estimates `r`, so both are scored.
+  if (o.mass) {
+    list.push(
+      { key: "mass", label: "mass-consistent", short: "mass", options: {}, mass: { r: 1 } },
+      { key: "massStable", label: "mass, stable", short: "mstab", options: {}, mass: { r: 0.1 } }
+    );
+  }
+
   if (!o.ablate) return list;
 
   list.push(
@@ -407,6 +434,14 @@ function candidatesFor(opts) {
  * tool keeps finding elsewhere.
  */
 function exposureFactorFor(candidate, ctx) {
+  // A mass-consistent candidate is sampled at the sensor's own height on a mesh
+  // that resolves it, so there is no second profile to apply on top. That is
+  // the point of it: `docs/near-ground-wind.md` prices the 10 m to 2 m step at
+  // about x0.72 and records that nothing here has tested it below 6.1 m, and
+  // every other row in this table carries that step as a multiplier afterwards.
+  // This one carries it inside the guess the solve then adjusts, which is a
+  // weaker dependence rather than none.
+  if (candidate.mass) return 1;
   if (!candidate.exposure) return ctx.defaultFactor;
   const from = ctx.fieldHeightAglM;
   if (from === null) return null;
@@ -422,6 +457,98 @@ function exposureFactorFor(candidate, ctx) {
     siteRoughnessM: site,
     modelRoughnessM: candidate.exposure.model ? ctx.modelRoughnessM : null
   });
+}
+
+/**
+ * A mass-consistent solve over the same ground the downscaling is weighted on.
+ *
+ * The mesh is a property of the terrain and the wind is not, so the mesh and
+ * its faces are built once per domain and only the fluxes and the solve are
+ * paid per hour. That matters: the solve is the expensive thing in this tool by
+ * two orders of magnitude.
+ *
+ * Returns `null` with a reason when the ground is too steep for a
+ * terrain-following coordinate — `mass.js` refuses above 45 degrees, measured
+ * against its own staircase oracle — because a refused station is a fact about
+ * the method and belongs in the report rather than in a crash.
+ */
+function massSolve(cache, derived, reference, fieldHeightAglM, candidate, opts) {
+  const o = opts || {};
+  if (cache.derived !== derived) {
+    const mid = Math.floor(derived.height / 2);
+    const sp = derive.spacingAt(gridOf(derived), mid);
+    cache.derived = derived;
+    cache.terrain = {
+      width: derived.width,
+      height: derived.height,
+      spacingM: { x: sp.x, y: sp.y },
+      elevation: derived.elevation
+    };
+    cache.mesh = null;
+    cache.refusal = null;
+    try {
+      cache.mesh = mass.buildTerrainMesh(cache.terrain, o);
+      if (cache.mesh.maxSlopeDeg > mass.DEFAULT_MAX_SLOPE_DEG) {
+        cache.refusal = "ground reaches " + cache.mesh.maxSlopeDeg.toFixed(1)
+          + " deg, past the " + mass.DEFAULT_MAX_SLOPE_DEG + " deg a terrain-following solve is trusted to";
+        cache.mesh = null;
+      } else {
+        cache.faces = mass.terrainFaces(cache.mesh, o);
+      }
+    } catch (err) {
+      cache.refusal = err.message;
+      cache.mesh = null;
+    }
+  }
+  if (!cache.mesh) return { field: null, refusal: cache.refusal };
+
+  const r = candidate.mass && candidate.mass.r !== undefined ? candidate.mass.r : mass.DEFAULT_R;
+  const faces = r === mass.DEFAULT_R
+    ? cache.faces
+    : mass.terrainFaces(cache.mesh, Object.assign({}, o, { r: r }));
+  const guess = mass.terrainFluxes(cache.mesh, faces,
+    { east: reference.east, north: reference.north },
+    Object.assign({}, o, { referenceHeightM: fieldHeightAglM }));
+  const solved = mass.solveTerrain2(cache.mesh, faces, guess, o);
+  return { mesh: cache.mesh, faces: faces, field: solved, refusal: null };
+}
+
+/**
+ * The solved wind at a station, bilinear through the components.
+ *
+ * Through east and north rather than through bearings, for the reason
+ * `downscale.windAt` gives: averaging 350 and 10 degrees is 180, and a wind
+ * that points backwards between two columns is the same class of bug as an
+ * averaged aspect.
+ */
+function massSampleAt(derived, solved, lat, lon, heightAglM) {
+  if (!solved || !solved.field) return null;
+  const m = proj.fromGeographic(derived.crs, lat, lon);
+  const px = (m.x - derived.transform.originX) / derived.transform.scaleX - 0.5;
+  const py = (m.y - derived.transform.originY) / derived.transform.scaleY - 0.5;
+  const i0 = Math.floor(px);
+  const j0 = Math.floor(py);
+  const fx = px - i0;
+  const fy = py - j0;
+  const corners = [[0, 0, (1 - fx) * (1 - fy)], [1, 0, fx * (1 - fy)],
+    [0, 1, (1 - fx) * fy], [1, 1, fx * fy]];
+  let east = 0;
+  let north = 0;
+  let weight = 0;
+  for (const c of corners) {
+    if (!(c[2] > 0)) continue;
+    const at = mass.terrainWindAt(solved.mesh, solved.faces, solved.field,
+      i0 + c[0], j0 + c[1], heightAglM);
+    if (!at) continue;
+    east += at.east * c[2];
+    north += at.north * c[2];
+    weight += c[2];
+  }
+  // A corner that is a hole drops out rather than being counted as calm; if
+  // every corner is a hole there is no wind here and the station says so.
+  if (!(weight > 0)) return null;
+  return { speedMps: Math.hypot(east / weight, north / weight),
+    fromDeg: bearingFrom(east / weight, north / weight) };
 }
 
 /** The elevation grid a derived domain was built from, in the shape a reader wants. */
@@ -580,7 +707,7 @@ async function buildReport(options) {
   const useExposure = !!o.exposure;
   const candidates = o.candidates || candidatesFor({
     ablate: o.ablate, shelter: useShelter, scales: o.scales, anomaly: !!anomaly,
-    exposure: useExposure });
+    exposure: useExposure, mass: !!o.mass });
   const wantsAnomaly = candidates.some(function (c) { return c.anomaly; });
   // The wide, coarse read the smoothing runs over. It is the same terrain cache
   // the fine domains come from, so a second station in the same valley pays for
@@ -603,6 +730,14 @@ async function buildReport(options) {
   const stations = [];
   const allPairs = [];
   const failures = [];
+  // A station whose ground is too steep for a terrain-following coordinate is
+  // refused once and counted, not once an hour. The count is a result: it says
+  // how much of a real station set this method can be asked about at all.
+  const massRefusals = {};
+  const massOptions = {
+    layers: o.massLayers === undefined ? 16 : o.massLayers,
+    stretch: o.massStretch === undefined ? 1.2 : o.massStretch
+  };
   const dropped = [];
 
   for (const id of ids) {
@@ -614,6 +749,8 @@ async function buildReport(options) {
 
     const samples = [];
     const rescaled = {};
+    // The mesh belongs to the ground and the solve belongs to the hour.
+    const massCache = {};
     // How much each candidate multiplied the model wind at this station's own
     // coordinate. The score says whether a term helped; this says what it did,
     // and the two answer different questions — a term can be harmless on
@@ -766,14 +903,38 @@ async function buildReport(options) {
           }
           weights = rescaled[candidate.key];
         }
-        const at = candidate.reference
-          ? { speedMps: referenceSpeed, fromDeg: bearingFrom(reference.east, reference.north) }
-          : downscale.windAt(
+        let at;
+        if (candidate.reference) {
+          at = { speedMps: referenceSpeed, fromDeg: bearingFrom(reference.east, reference.north) };
+        } else if (candidate.mass) {
+          // Sampled at the sensor's own height, on a mesh whose lowest layer
+          // resolves it, rather than at the field height and corrected
+          // afterwards. That is the one structural difference between this row
+          // and every other row in the table.
+          const wanted = useSensorHeight && height.sensorHeightM !== null
+            ? height.sensorHeightM : field.heightAglM;
+          const solved = massSolve(massCache, field.derived, reference,
+            field.heightAglM, candidate, massOptions);
+          if (solved.refusal) {
+            if (!massRefusals[id]) {
+              massRefusals[id] = solved.refusal;
+              failures.push({
+                station: id, validTime: validTime.toISOString(), stage: "mass",
+                code: "too-steep", error: solved.refusal
+              });
+            }
+            at = null;
+          } else {
+            at = massSampleAt(field.derived, solved, station.lat, station.lon, wanted);
+          }
+        } else {
+          at = downscale.windAt(
             Object.keys(candidate.options).length === 0 && weights === field.weights
               ? field
               : downscale.downscale(weights, reference,
                 Object.assign({ heightAglM: field.heightAglM }, candidate.options)),
             station.lat, station.lon);
+        }
         const factor = height.byCandidate[candidate.key];
         byCandidate[candidate.key] = at && factor !== null && factor !== undefined
           ? { speedMps: at.speedMps * factor, fromDeg: at.fromDeg }
@@ -1041,6 +1202,7 @@ async function buildReport(options) {
     // run and not a missing field.
     leverage: leverage,
     droppedStations: dropped,
+    massRefusals: massRefusals,
     elevationToleranceM: elevationToleranceM,
     failures: failures,
     elapsedMs: now() - started
@@ -1208,6 +1370,11 @@ async function main() {
     scales: fixedScales(args.scales),
     anomaly: anomalyOf(args),
     exposure: !!args.exposure,
+    mass: !!args.mass,
+    massLayers: args["mass-layers"] === undefined
+      ? undefined : number(args["mass-layers"], 16, "mass-layers"),
+    massStretch: args["mass-stretch"] === undefined
+      ? undefined : number(args["mass-stretch"], 1.2, "mass-stretch"),
     endMs: endMs,
     writePairs: args.pairs && args.pairs !== true
       ? function (doc) { fs.writeFileSync(String(args.pairs), JSON.stringify(doc) + "\n"); }
