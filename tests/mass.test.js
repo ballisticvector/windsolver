@@ -544,3 +544,59 @@ describe("choosing the mesh by the ground", () => {
     expect(sb.speedMps).toBeCloseTo(expected, 2);
   });
 });
+
+describe("superposition", () => {
+  test("the solved field is linear in the wind, so two solves answer every wind", () => {
+    // **This is load-bearing, not a curiosity.** Everything in the solve is
+    // linear in the reference wind: the profile scales it, the interface flux
+    // is -(u.sx + v.sy) which is linear in u and v, the Poisson right-hand side
+    // is the divergence of that, and the velocity update adds a gradient. So a
+    // domain can be solved once for a unit east wind and once for a unit north
+    // wind, and every wind after that is a combination of the two - which is
+    // what makes a saved location interactive rather than a minutes-long solve
+    // per query.
+    //
+    // A future change that clamps a factor, or adds a term that depends on wind
+    // speed, breaks that silently and turns a cached property into a wrong
+    // answer. This test is what makes that loud.
+    const terrain = hill(36, 36, 1000, 150, 30, 6);
+    const opts = { layers: 12, topAboveM: 600, stretch: 1.25, maxIterations: 40000 };
+    const mesh = mass.buildTerrainMesh(terrain, opts);
+    const faces = mass.terrainFaces(mesh, opts);
+    const run = function (east, north) {
+      return mass.solveTerrain2(mesh, faces,
+        mass.terrainFluxes(mesh, faces, { east: east, north: north }, opts), opts);
+    };
+
+    const basisE = run(1, 0);
+    const basisN = run(0, 1);
+
+    for (const spec of [{ speedMps: 10, fromDeg: 225 }, { speedMps: 3, fromDeg: 40 },
+      { speedMps: 17, fromDeg: 310 }]) {
+      const ref = mass.readWind(spec);
+      const direct = run(ref.east, ref.north);
+      const combined = {
+        fx: new Float32Array(basisE.fx.length),
+        fy: new Float32Array(basisE.fy.length),
+        fz: new Float32Array(basisE.fz.length),
+        reference: ref
+      };
+      for (let i = 0; i < basisE.fx.length; i++) {
+        combined.fx[i] = ref.east * basisE.fx[i] + ref.north * basisN.fx[i];
+      }
+      for (let i = 0; i < basisE.fy.length; i++) {
+        combined.fy[i] = ref.east * basisE.fy[i] + ref.north * basisN.fy[i];
+      }
+      for (let i = 0; i < basisE.fz.length; i++) {
+        combined.fz[i] = ref.east * basisE.fz[i] + ref.north * basisN.fz[i];
+      }
+
+      for (const cell of [[18, 18], [4, 18], [30, 18], [18, 5]]) {
+        const a = mass.terrainWindAt(mesh, faces, direct, cell[0], cell[1], 10);
+        const b = mass.terrainWindAt(mesh, faces, combined, cell[0], cell[1], 10);
+        expect(b.speedMps).toBeCloseTo(a.speedMps, 3);
+        expect(Math.abs(turn(a.fromDeg, b.fromDeg))).toBeLessThan(0.05);
+      }
+    }
+  });
+});
