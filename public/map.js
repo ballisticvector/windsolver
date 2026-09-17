@@ -158,7 +158,7 @@
       // a trail on a wash of its own colour is a trail nobody can see.
       const flow = flowing();
       if (!flow) {
-        ctx.globalAlpha = 0.45;
+        ctx.globalAlpha = 0.45 * windAlpha();
         for (const cell of lib.cellsOf(grid)) {
           if (!cell.covered) continue;
           const p = point(cell.lat, cell.lon);
@@ -175,7 +175,7 @@
       // so the variation that was only ever in the colour wash is legible as a
       // shape. The scale comes from the drawn cells rather than from the whole
       // grid, so it describes what is actually on the screen.
-      ctx.globalAlpha = 0.95;
+      ctx.globalAlpha = 0.95 * windAlpha();
       const stride = lib.strideFor(grid, 320);
       const drawn = lib.cellsOf(grid, { stride: stride });
       const maxPx = Math.min(26, Math.max(9, Math.min(cellW, cellH) * stride * 0.8));
@@ -241,6 +241,44 @@
   }
 
   function flowing() { return displayMode() === "flow"; }
+
+  /**
+   * Where the slider sits, 0 for ground and 1 for wind.
+   *
+   * One number for both halves, because they are one question: a trail is only
+   * visible against what is under it, so turning the wind up while the ground
+   * stays bright buys nothing. Ground goes grey and dark as it rises, and the
+   * wind goes from a hint to full strength.
+   *
+   * **The wind never reaches zero.** A slider that can hide the answer
+   * altogether leaves somebody staring at a map wondering whether the solve
+   * failed, and the honest way to see no wind is to turn the layers off.
+   */
+  function balance() {
+    const el = $("balance");
+    const raw = el ? Number(el.value) : 45;
+    return Number.isFinite(raw) ? Math.max(0, Math.min(1, raw / 100)) : 0.45;
+  }
+
+  function lerp(a, b, t) { return a + (b - a) * t; }
+
+  /** How strongly the wind is drawn, at the current balance. */
+  function windAlpha() { return lerp(0.35, 1, balance()); }
+
+  function applyBalance() {
+    const t = balance();
+    const container = map.getContainer();
+    if (!container) return;
+    container.style.setProperty("--ground-bright", lerp(1, 0.3, t).toFixed(3));
+    container.style.setProperty("--ground-gray", lerp(0, 1, t).toFixed(3));
+    container.style.setProperty("--relief-bright", lerp(1, 0.32, t).toFixed(3));
+    // Past halfway the ground is dark enough that the attribution needs its own
+    // background to stay readable.
+    container.classList.toggle("dim", t > 0.5);
+    const canvas = particleLayer && particleLayer.canvas && particleLayer.canvas();
+    if (canvas) canvas.style.opacity = String(windAlpha());
+    fieldLayer.refresh();
+  }
 
   const fieldLayer = new FieldLayer();
   // The arrow scale is decided at draw time, from the cells that survived the
@@ -312,6 +350,10 @@
      */
     refresh: function () {
       this._reset();
+    },
+    /** The drawing surface, so the balance can fade it without a redraw. */
+    canvas: function () {
+      return this._canvas || null;
     },
     setEnabled: function (on) {
       this._on = !!on;
@@ -494,12 +536,16 @@
    */
   function applyDisplayMode() {
     const flow = displayMode() === "flow";
-    const container = map.getContainer();
-    if (container) container.classList.toggle("flow", flow);
     if (flow && !$("particles").checked) {
       $("particles").checked = true;
       particleLayer.setEnabled(true);
     }
+    // The mode moves the slider rather than overriding it: a flow view wants a
+    // dark ground, and somebody who then wants the ground back can just drag it
+    // without discovering that the mode was quietly winning.
+    const el = $("balance");
+    if (el) el.value = flow ? "85" : "45";
+    applyBalance();
     // Both layers cache what they drew, so both have to be told the question
     // changed rather than only the one that looks different.
     fieldLayer.refresh();
@@ -507,6 +553,8 @@
   }
 
   $("display").addEventListener("change", applyDisplayMode);
+  $("balance").addEventListener("input", applyBalance);
+  applyBalance();
   // A page in a background tab is animating nothing anybody can see.
   document.addEventListener("visibilitychange", function () {
     particleLayer.setEnabled(!document.hidden && $("particles").checked);

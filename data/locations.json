@@ -13,6 +13,16 @@
       "note": "The coordinate docs/terrain-wind-map.md has used since the first design note. Ground reaches 22.5 degrees at its steepest over a two-mile radius and none of it passes 45, so this solves on layers that follow the ground. Along a 45 degree line from here the terrain does almost nothing - 25 m of relief over two miles - so a line that is meant to cross a canyon needs its own coordinate and probably a larger radius."
     },
     {
+      "id": "whittington-wide",
+      "name": "NRA Whittington Center — whole property",
+      "region": "Raton, New Mexico",
+      "lat": 36.77,
+      "lon": -104.49,
+      "radiusMiles": 5,
+      "resolutionM": 60,
+      "note": "Ten miles across, which holds the canyons a two-mile box cuts in half. Read at 60 m, which the mosaic snaps to 64: a wider box at a coarser read is CHEAPER than a small box at a fine one, because the terrain snaps to powers of two of the 1 m source. 251 x 251 is a third of the cells the two-mile domain carries at 16 m. Use this one to see where the flow splits and converges; use `whittington` for detail at a firing line."
+    },
+    {
       "id": "boulder",
       "name": "Boulder",
       "region": "Colorado",
