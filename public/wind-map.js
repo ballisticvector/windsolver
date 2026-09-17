@@ -620,11 +620,23 @@ function explain(body, status) {
 /** The `/v1/field` query for a pin, with the parameters the service names. */
 function fieldQuery(spec) {
   const params = new URLSearchParams();
+  // A saved place carries its own box, so naming one is enough. The coordinate
+  // still goes out because a caller may want a different radius over the same
+  // place, and because a query that says where it is reads better in a log.
+  if (spec.location) params.set("location", String(spec.location));
   params.set("lat", String(round(spec.lat, 6)));
   params.set("lon", String(round(spec.lon, 6)));
   params.set("radiusMiles", String(spec.radiusMiles));
   if (spec.cols) params.set("cols", String(Math.round(spec.cols)));
   if (spec.resolutionM) params.set("resolutionM", String(spec.resolutionM));
+  // A measured wind replaces the model entirely: no cycle, no availability lag,
+  // and a field that is the caller's own reading bent by the ground. Both parts
+  // or neither — the service refuses half a wind, and so does this.
+  if (spec.speedMph !== undefined && spec.fromDeg !== undefined) {
+    params.set("speedMph", String(round(spec.speedMph, 2)));
+    params.set("fromDeg", String(round(spec.fromDeg, 1)));
+    if (spec.heightAglM !== undefined) params.set("heightAglM", String(round(spec.heightAglM, 2)));
+  }
   return "/v1/field?" + params.toString();
 }
 

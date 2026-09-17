@@ -600,3 +600,68 @@ describe("superposition", () => {
     }
   });
 });
+
+describe("a basis, and the winds it answers", () => {
+  test("a combined wind matches a direct solve, on the following mesh", () => {
+    const terrain = slopedValley(36, 36, 1000, 150, 30, 24);
+    const opts = { layers: 12, topAboveM: 450, stretch: 1.25, maxIterations: 40000 };
+    const basis = mass.solveBasis(terrain, opts);
+    expect(basis.kind).toBe("terrain-following");
+
+    for (const spec of [{ speedMps: 10, fromDeg: 225 }, { speedMps: 4, fromDeg: 95 }]) {
+      const combined = mass.combine(basis, spec);
+      const direct = mass.solveFor(terrain, spec, opts);
+      for (const cell of [[18, 18], [5, 18], [30, 18]]) {
+        const a = mass.sampleAt(direct, cell[0], cell[1], 10);
+        const b = mass.sampleAt(combined, cell[0], cell[1], 10);
+        expect(b.speedMps).toBeCloseTo(a.speedMps, 3);
+        expect(Math.abs(turn(a.fromDeg, b.fromDeg))).toBeLessThan(0.05);
+      }
+    }
+  });
+
+  test("and on the staircase, which is the mesh steep ground gets", () => {
+    // Linearity is a property of the method, not of one mesh. If it held on
+    // only one of them, half the saved places in the country would be wrong.
+    const terrain = valley(36, 36, 1000, 300, 30);
+    const opts = { layers: 14, topAboveM: 900, maxIterations: 40000 };
+    const basis = mass.solveBasis(terrain, opts);
+    expect(basis.kind).toBe("staircase");
+
+    const spec = { speedMps: 10, fromDeg: 225 };
+    const combined = mass.combine(basis, spec);
+    const direct = mass.solveFor(terrain, spec, opts);
+    const a = mass.sampleAt(direct, 18, 18, 10);
+    const b = mass.sampleAt(combined, 18, 18, 10);
+    expect(b.speedMps).toBeCloseTo(a.speedMps, 3);
+    expect(Math.abs(turn(a.fromDeg, b.fromDeg))).toBeLessThan(0.05);
+  });
+
+  test("a combination is only as converged as the basis it came from", () => {
+    // Scaling an unconverged field does not converge it, and a caller that
+    // reads `converged` has to get the truth about where the numbers came from.
+    const terrain = slopedValley(30, 30, 1000, 150, 30, 20);
+    const basis = mass.solveBasis(terrain,
+      { layers: 10, topAboveM: 450, stretch: 1.25, maxIterations: 2 });
+    expect(basis.east.converged).toBe(false);
+    expect(mass.combine(basis, { speedMps: 10, fromDeg: 225 }).field.converged).toBe(false);
+  });
+
+  test("two solves, then every wind is free", () => {
+    // The claim the saved-location design rests on, stated as a timing rather
+    // than an argument. Not a benchmark — a floor: if combining ever costs the
+    // same order as solving, the cache has stopped being worth having.
+    const terrain = slopedValley(40, 40, 1000, 150, 30, 26);
+    const opts = { layers: 12, topAboveM: 450, stretch: 1.25, maxIterations: 40000 };
+
+    const t0 = Date.now();
+    const basis = mass.solveBasis(terrain, opts);
+    const solveMs = Date.now() - t0;
+
+    const t1 = Date.now();
+    for (let i = 0; i < 8; i++) mass.combine(basis, { speedMps: 10, fromDeg: i * 45 });
+    const combineMs = (Date.now() - t1) / 8;
+
+    expect(combineMs * 10).toBeLessThan(solveMs);
+  });
+});

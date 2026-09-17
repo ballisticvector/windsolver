@@ -1,0 +1,26 @@
+{
+  "schemaVersion": 1,
+  "note": "Places a caller asks about often enough to be worth naming. A location is a box and a resolution, not a wind: the atmosphere over it is whatever the caller brings or whatever HRRR says at the hour. radiusMiles has to hold the landform that shapes the wind - a half-mile box in a canyon contains no canyon and the solve has nothing to act on.",
+  "locations": [
+    {
+      "id": "whittington",
+      "name": "NRA Whittington Center",
+      "region": "Raton, New Mexico",
+      "lat": 36.77,
+      "lon": -104.49,
+      "radiusMiles": 2,
+      "resolutionM": 30,
+      "note": "The coordinate docs/terrain-wind-map.md has used since the first design note. Ground reaches 22.5 degrees at its steepest over a two-mile radius and none of it passes 45, so this solves on layers that follow the ground. Along a 45 degree line from here the terrain does almost nothing - 25 m of relief over two miles - so a line that is meant to cross a canyon needs its own coordinate and probably a larger radius."
+    },
+    {
+      "id": "boulder",
+      "name": "Boulder",
+      "region": "Colorado",
+      "lat": 40.015,
+      "lon": -105.2705,
+      "radiusMiles": 2,
+      "resolutionM": 30,
+      "note": "The default the page has always opened on, and the domain most of the ingestion measurements in README.md were taken over."
+    }
+  ]
+}

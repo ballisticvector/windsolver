@@ -56,12 +56,128 @@ const slice = require("./slice.js");
 const profile = require("./profile.js");
 const stationsLib = require("./stations.js");
 const terrainLib = require("./terrain.js");
+const locations = require("./data/locations.json");
+const basisFile = require("./basis.js");
+
+/** Where `tools/warm-location.js` writes, and where this reads. */
+const DEFAULT_BASIS_DIR = nodePath.join(__dirname, "data", "basis");
+const fieldModule = require("./field.js");
+const derive = require("./derive.js");
+const mass = require("./mass.js");
 const volumeLib = require("./volume.js");
 
 const API_VERSION = 1;
 
-const ROUTES = ["/healthz", "/v1/field", "/v1/hillshade", "/v1/line", "/v1/stations",
-  "/v1/windprofile"];
+const ROUTES = ["/healthz", "/v1/field", "/v1/hillshade", "/v1/line", "/v1/locations",
+  "/v1/stations", "/v1/windprofile"];
+
+
+/**
+ * The solved places this process can answer for.
+ *
+ * **Loaded, never solved.** `mass.solveBasis` is synchronous and it blocks the
+ * event loop: warming the Whittington Center took 7 minutes 28 seconds and
+ * `/healthz` did not answer for any of it. So a service that solves on demand
+ * is a service that stops. `tools/warm-location.js` does the solving, writes a
+ * file, and this reads it — one gunzip and one pass over the ground to rebuild
+ * the mesh, which is milliseconds.
+ *
+ * A place with no current file is **cold**, and a request for it is refused
+ * with the command that would fix it. Refused rather than solved, because the
+ * alternative is a caller holding a socket open for seven minutes while nobody
+ * else is served at all.
+ */
+const warmPlaces = new Map();
+
+function locationById(id) {
+  for (const loc of locations.locations) {
+    if (loc.id === id) return loc;
+  }
+  return null;
+}
+
+function specForLocation(loc) {
+  const spec = { lat: loc.lat, lon: loc.lon, radiusMiles: loc.radiusMiles };
+  if (loc.resolutionM !== undefined) spec.targetResolutionM = loc.resolutionM;
+  return spec;
+}
+
+/**
+ * A place's basis, read off disk the first time it is wanted.
+ *
+ * **Loading is not solving.** A gunzip and one pass over the ground to rebuild
+ * the mesh is a fraction of a second; the solve it replaces was 7 minutes 28 of
+ * blocked event loop. So this is done on demand rather than at startup, which
+ * keeps a process that never touches a saved place from reading tens of
+ * megabytes it will not use — and keeps the test suite from rebuilding a mesh
+ * for every server it constructs.
+ *
+ * A stale file is one solved for a different box or different mesh options —
+ * `basis.keyFor` decides — and it is refused rather than used, because a basis
+ * over other ground is not a worse answer for this place, it is an answer to
+ * another question.
+ */
+function basisPath(dir, id) {
+  return nodePath.join(dir, id + ".basis");
+}
+
+function basisKeyFor(loc) {
+  return basisFile.keyFor(specForLocation(loc), {
+    layers: MASS_LAYERS, stretch: MASS_STRETCH, r: mass.DEFAULT_R, maxIterations: 60000
+  });
+}
+
+/** Whether a place has a file at all, without reading it. */
+function placeHasBasis(dir, id) {
+  try {
+    return fs.existsSync(basisPath(dir, id));
+  } catch (_err) {
+    return false;
+  }
+}
+
+function warmPlace(dir, loc, log) {
+  const held = warmPlaces.get(loc.id);
+  if (held !== undefined) return held;
+  const file = basisPath(dir, loc.id);
+  let loaded = null;
+  if (fs.existsSync(file)) {
+    try {
+      loaded = basisFile.load(file, basisKeyFor(loc));
+      if (log) {
+        log({ level: "info", message: "location loaded", location: loc.id,
+          mesh: loaded.basis.kind, cells: loaded.grid.width * loaded.grid.height });
+      }
+    } catch (err) {
+      if (log) {
+        log({ level: "warn", message: "location not loaded", location: loc.id,
+          code: err.code || null, error: err.message });
+      }
+      loaded = null;
+    }
+  }
+  // `null` is cached too: a place with no file should not stat the disk on
+  // every request for the life of the process.
+  warmPlaces.set(loc.id, loaded);
+  return loaded;
+}
+
+/** Enough places to be readable, without implying a precision nothing has. */
+function round(value, places) {
+  if (value === null || value === undefined || Number.isNaN(value)) return null;
+  const f = Math.pow(10, places);
+  return Math.round(value * f) / f;
+}
+
+// A measured wind arrives in mph because that is what the instrument reads.
+const MPS_PER_MPH = 0.44704;
+
+// The solve a measured wind gets. Fewer layers than a research run: this one
+// answers a request rather than a question, and `docs/near-ground-wind.md`
+// records that the profile below the lowest layer is the log law either way.
+const MASS_LAYERS = 12;
+const MASS_STRETCH = 1.25;
+const MASS_MAX_ITERATIONS = 40000;
 
 const DEFAULT_PORT = 8787;
 
@@ -396,7 +512,8 @@ function provenanceOf(field) {
  * projection. `native` goes out alongside it so nobody mistakes the answer for
  * the field's own shape.
  */
-function gridOver(field, box, cols, rows) {
+function gridOver(field, box, cols, rows, sample) {
+  const read = sample || function (lat, lon) { return downscale.windAt(field, lat, lon); };
   const lats = new Array(rows);
   const lons = new Array(cols);
   for (let r = 0; r < rows; r++) {
@@ -422,7 +539,7 @@ function gridOver(field, box, cols, rows) {
   for (let r = 0; r < rows; r++) {
     for (let c = 0; c < cols; c++) {
       const i = r * cols + c;
-      const wind = downscale.windAt(field, lats[r], lons[c]);
+      const wind = read(lats[r], lons[c]);
       if (wind) {
         covered++;
         east[i] = wind.east;
@@ -582,6 +699,9 @@ function createHandler(opts) {
   const retryAfterS = o.retryAfterSeconds === undefined ? DEFAULT_RETRY_AFTER_S : o.retryAfterSeconds;
   const origins = o.origins || [];
   const log = typeof o.log === "function" ? o.log : null;
+  // Where `tools/warm-location.js` wrote. A caller may point somewhere else;
+  // tests point at a directory with nothing in it.
+  const basisDir = o.basisDir === undefined ? DEFAULT_BASIS_DIR : o.basisDir;
   // Off unless keys are configured, so a checkout and the suite are open and
   // there is no default credential to forget to change.
   const gatekeeper = o.auth || auth.createAuth({
@@ -730,6 +850,26 @@ function createHandler(opts) {
   }
 
   async function handleField(params, res, headers) {
+    // A saved place supplies the box, so it has to be resolved before anything
+    // reads a coordinate. Its values are defaults rather than overrides: a
+    // caller may name a place and still ask for a different radius or a coarser
+    // grid over it.
+    const locationId = params.get("location");
+    let loc = null;
+    if (locationId) {
+      loc = locationById(locationId);
+      if (!loc) {
+        throw serviceError("no-such-location", 404, "no saved location " + locationId,
+          { locations: locations.locations.map(function (l) { return l.id; }) });
+      }
+      if (!params.get("lat")) params.set("lat", String(loc.lat));
+      if (!params.get("lon")) params.set("lon", String(loc.lon));
+      if (!params.get("radiusMiles")) params.set("radiusMiles", String(loc.radiusMiles));
+      if (loc.resolutionM !== undefined && !params.get("resolutionM")) {
+        params.set("resolutionM", String(loc.resolutionM));
+      }
+    }
+
     const from = originParam(params);
     const radiusMiles = numberParam(params, "radiusMiles",
       { default: DEFAULT_RADIUS_MILES, above: 0, max: MAX_RADIUS_MILES });
@@ -748,6 +888,113 @@ function createHandler(opts) {
 
     const spec = { lat: from.lat, lon: from.lon, radiusMiles: radiusMiles };
     if (resolutionM !== undefined) spec.targetResolutionM = resolutionM;
+
+    // A wind the caller measured, instead of one a model forecast.
+    //
+    // **This is not a fallback for when HRRR is down.** Somebody standing on
+    // the ground with an anemometer has a better wind at their own position
+    // than a 3 km cell does; what they cannot get is the wind two thousand
+    // yards away over ground they cannot walk to. Supplying it skips the model
+    // entirely — no NOMADS, no cycle, no availability lag — and solves for a
+    // field that conserves mass over the terrain and matches nothing else.
+    //
+    // What it does NOT do is make the solved field equal the measurement where
+    // it was measured: the wind is the free stream the terrain bends, and a
+    // reading taken somewhere sheltered seeds the whole domain too slow. That
+    // is point initialisation and it is not implemented; `windSource` says
+    // which of the two a caller got.
+    const speedMph = numberParam(params, "speedMph", { default: undefined, min: 0, max: 200 });
+    const measuredFrom = numberParam(params, "fromDeg", { default: undefined, min: 0, max: 360 });
+    const heightAglM = numberParam(params, "heightAglM", { default: 2, above: 0, max: 500 });
+    if ((speedMph === undefined) !== (measuredFrom === undefined)) {
+      throw serviceError("half-a-wind", 400,
+        "a measured wind needs both speedMph and fromDeg; one without the other is not a wind");
+    }
+
+    if (loc) {
+      if (speedMph === undefined) {
+        throw serviceError("no-wind", 400,
+          "a saved location is a box and not a wind: give speedMph and fromDeg, " +
+          "or ask for lat/lon without a location to have the model supply one");
+      }
+      const warm = warmPlace(basisDir, loc, log);
+      if (!warm) {
+        throw serviceError("location-cold", 503,
+          loc.name + " has not been solved on this service. Solving takes minutes " +
+          "and blocks every other request, so it is a build step: run " +
+          "`node tools/warm-location.js --location " + loc.id + "` and restart.",
+          { location: loc.id });
+      }
+      const solved = mass.combine(warm.basis, { speedMps: speedMph * MPS_PER_MPH, fromDeg: measuredFrom });
+      const grid = warm.grid;
+      const asField = {
+        crs: grid.crs, width: grid.width, height: grid.height,
+        transform: grid.transform, weights: { elevation: grid.values }
+      };
+      // The box the basis was solved over, from the spec stored beside it, so
+      // the answer describes the ground it actually came from rather than
+      // whatever the request happened to ask for.
+      const solvedBox = fieldModule.domainOf(warm.header.spec).box;
+      return send(res, 200, {
+        ok: true,
+        schemaVersion: API_VERSION,
+        location: { id: loc.id, name: loc.name, region: loc.region || null },
+        domain: solvedBox,
+        solvedAt: warm.header.savedAt,
+        heightAglM: heightAglM,
+        windSource: "measured",
+        measured: { speedMph: speedMph, fromDeg: measuredFrom, heightAglM: heightAglM },
+        mesh: solved.kind,
+        maxSlopeDeg: round(solved.maxSlopeDeg, 1),
+        converged: solved.field.converged,
+        fromBasis: true,
+        terrain: { dataset: warm.header.dataset, resolutionM: grid.resolutionM,
+          filledFrom: warm.header.filledFrom, voidFraction: round(grid.voidFraction, 4) },
+        confidence: null,
+        grid: gridOver(asField, solvedBox, Math.round(cols), rows,
+          function (lat, lon) {
+            return fieldModule.massWindAt(grid, solved, lat, lon, heightAglM);
+          })
+      }, headers);
+    }
+
+    if (speedMph !== undefined) {
+      const ground = await solve(function () { return fieldModule.groundOnly(spec); });
+      const grid = ground.grid;
+      const spacing = derive.spacingAt(grid, Math.floor(grid.height / 2));
+      const solved = mass.solveFor({
+        width: grid.width, height: grid.height,
+        spacingM: { x: spacing.x, y: spacing.y }, elevation: grid.values
+      }, { speedMps: speedMph * MPS_PER_MPH, fromDeg: measuredFrom },
+      { layers: MASS_LAYERS, stretch: MASS_STRETCH, referenceHeightM: heightAglM,
+        maxIterations: MASS_MAX_ITERATIONS });
+
+      // `slice.elevationAt` wants a field-shaped thing; the ground read is one.
+      const asField = {
+        crs: grid.crs, width: grid.width, height: grid.height,
+        transform: grid.transform, weights: { elevation: grid.values }
+      };
+      return send(res, 200, {
+        ok: true,
+        schemaVersion: API_VERSION,
+        domain: ground.domain.box,
+        heightAglM: heightAglM,
+        windSource: "measured",
+        measured: { speedMph: speedMph, fromDeg: measuredFrom, heightAglM: heightAglM },
+        mesh: solved.kind,
+        maxSlopeDeg: round(solved.maxSlopeDeg, 1),
+        converged: solved.field.converged,
+        iterations: solved.field.iterations,
+        terrain: { dataset: ground.dataset ? ground.dataset.label : null,
+          resolutionM: grid.resolutionM, filledFrom: ground.filledFrom,
+          voidFraction: round(grid.voidFraction, 4) },
+        confidence: null,
+        grid: gridOver(asField, ground.domain.box, Math.round(cols), rows,
+          function (lat, lon) {
+            return fieldModule.massWindAt(grid, solved, lat, lon, heightAglM);
+          })
+      }, headers);
+    }
 
     const field = await solve(function () { return fieldService.get(spec); });
     const box = field.domain || requested;
@@ -768,6 +1015,44 @@ function createHandler(opts) {
         resolutionM: field.resolutionM
       }
     }, provenanceOf(field)), headers);
+  }
+
+  /**
+   * Places worth naming, and the box each of them needs.
+   *
+   * A location is a **box and a resolution, not a wind** — the atmosphere over
+   * it is whatever the caller brings or whatever HRRR says at the hour. What
+   * makes it worth saving is the part that is expensive and never changes: the
+   * ground, the mesh built on it and the face areas, all of which depend on the
+   * terrain alone. The solve is linear in the reference wind, so a saved place
+   * can be solved once for a unit east wind and once for a unit north wind and
+   * every wind after that is a combination of the two — see the superposition
+   * test in `tests/mass.test.js`, which exists to keep that true.
+   *
+   * `radiusMiles` is part of the record and not a display preference. A domain
+   * has to hold the landform that shapes the wind; a half-mile box in a canyon
+   * contains no canyon and the solve has nothing to act on.
+   */
+  async function handleLocations(params, res, headers) {
+    return send(res, 200, {
+      ok: true,
+      schemaVersion: API_VERSION,
+      locations: locations.locations.map(function (loc) {
+        // Warm means the two basis solves are in memory and any wind over this
+        // place is immediate. Cold means the first request pays for them.
+        // Whether a place *can* be answered, from the file's presence rather
+        // than from having read it: listing the places should not pull tens of
+        // megabytes off disk for places nobody asked about.
+        const loaded = warmPlaces.get(loc.id);
+        return Object.assign({
+          warm: placeHasBasis(basisDir, loc.id),
+          loaded: !!loaded,
+          mesh: loaded ? loaded.basis.kind : null,
+          maxSlopeDeg: loaded ? round(loaded.basis.maxSlopeDeg, 1) : null,
+          terrain: loaded && loaded.header.dataset ? loaded.header.dataset : null
+        }, loc);
+      })
+    }, headers);
   }
 
   /**
@@ -1101,7 +1386,8 @@ function createHandler(opts) {
     }
 
     const route = path === "/v1/field" ? handleField
-      : path === "/v1/hillshade" ? handleHillshade
+      : path === "/v1/locations" ? handleLocations
+        : path === "/v1/hillshade" ? handleHillshade
         : path === "/v1/line" ? handleLine
           : path === "/v1/stations" ? handleStations
             : path === "/v1/windprofile" ? handleWindProfile

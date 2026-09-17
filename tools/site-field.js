@@ -51,13 +51,11 @@
 
 const fs = require("fs");
 
-const dem = require("../dem.js");
 const derive = require("../derive.js");
 const fieldModule = require("../field.js");
 const mass = require("../mass.js");
 const proj = require("../proj.js");
 const slice = require("../slice.js");
-const terrainModule = require("../terrain.js");
 
 const MPS_PER_MPH = 0.44704;
 const M_PER_YARD = 0.9144;
@@ -88,39 +86,9 @@ function number(value, fallback, name) {
   return n;
 }
 
-/**
- * The elevation grid alone: no derivatives, no weather, one terrain read.
- *
- * **With the same backfill `field.js` does, and for the same reason.** A hole is
- * not a rare event at 1 m — TNM reports coverage from tile footprints and a void
- * is a property of the pixels — so the fine product can be chosen and then be
- * nodata over half the box. Without this the first run over the Whittington
- * Center lost every point past 660 yards to "no terrain here" on ground that is
- * plainly there.
- */
+/** The ground under a site. `field.groundOnly` is the one that knows the traps. */
 async function groundUnder(spec) {
-  const domain = fieldModule.domainOf(spec);
-  // **`mosaic` needs the box, or it keeps the first tile's own extent.** Without
-  // it the canvas is `blankLike(base)` — whatever rectangle 3DEP happened to
-  // return — and the coordinate that was asked about can land anywhere in it.
-  // Over the Whittington Center it landed 16 rows from the north edge of a
-  // 129-row grid, so a line running north-east left the domain at 880 yards and
-  // every point past it read "no terrain here" over ground that is plainly
-  // there.
-  const onBox = Object.assign({}, spec, { box: domain.box });
-  const read = await terrainModule.readTerrain(domain.readBox, spec);
-  let grid = fieldModule.mosaic(read.grids, onBox);
-  let filledFrom = null;
-  if (grid.voidFraction > 0) {
-    const only = dem.coarserThan(read.dataset ? read.dataset.id : null);
-    if (only.length) {
-      const coarse = await terrainModule.readTerrain(domain.readBox,
-        Object.assign({}, spec, { only: only }));
-      grid = fieldModule.mosaic([grid].concat(coarse.grids), onBox);
-      filledFrom = coarse.dataset ? coarse.dataset.label : null;
-    }
-  }
-  return { domain: domain, grid: grid, dataset: read.dataset, filledFrom: filledFrom };
+  return fieldModule.groundOnly(spec);
 }
 
 /** Fractional column and row of a coordinate on the grid it was read onto. */
