@@ -78,6 +78,29 @@
     aside { flex:none; height:auto; overflow:visible;
             border-left:none; border-top:1px solid var(--line); }
   }
+
+/*
+ * Flow view. The basemap is pushed back rather than removed: the wind has to
+ * sit on ground somebody can recognise, and a road is how they know which
+ * canyon they are looking at. Everything else about this view is subtraction —
+ * no speed wash, no arrows — because a trail is the same colour as the wash
+ * beneath it and disappears into it.
+ */
+#map.flow .leaflet-tile-pane { filter: grayscale(1) brightness(0.38) contrast(0.85); }
+/*
+ * The relief is its own pane, not a tile, so it needs its own rule — and it is
+ * the brighter of the two: a hillshade is a white picture and it was the one
+ * thing still shouting under the trails. Pushed back rather than hidden,
+ * because the shape of the ground is what the flow is a story about.
+ *
+ * **Darkened and not inverted.** Inverting a hillshade is the cheap way to get
+ * a dark ground and it turns every lit slope into a shadow — which reads as a
+ * hollow where there is a ridge. A picture that makes the terrain the wrong
+ * shape is worse than a bright one, whatever it does for the trails.
+ */
+#map.flow .leaflet-relief-pane { filter: brightness(0.34) contrast(1.2); }
+#map.flow .leaflet-control-attribution { background: rgba(12,16,22,0.65); color: #9aa6b2; }
+#map.flow .leaflet-control-attribution a { color: #cbd5e1; }
 </style>
 </head>
 <body>
@@ -134,6 +157,17 @@
         </select>
       </div>
     </div>
+    <div class="row">
+      <div>
+        <label for="display">Draw the wind as</label>
+        <select id="display">
+          <option value="arrows" selected>Arrows over a speed wash</option>
+          <option value="flow">Flow &mdash; particles on dark ground</option>
+          <option value="both">Both</option>
+        </select>
+      </div>
+    </div>
+
     <div class="check">
       <input id="relief" type="checkbox" checked>
       <label for="relief">Shaded relief under the wind</label>

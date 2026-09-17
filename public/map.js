@@ -116,6 +116,13 @@
       this._body = null;
       this._reset();
     },
+    /**
+     * Draw the same field again, because the question changed rather than the
+     * answer. Switching what the wind is drawn as does not re-solve anything.
+     */
+    refresh: function () {
+      this._reset();
+    },
     _reset: function () {
       if (!this._map) return;
       const size = this._map.getSize();
@@ -146,12 +153,22 @@
 
       // The speed wash. Uncovered cells are skipped, so the basemap shows
       // through wherever no terrain was read.
-      ctx.globalAlpha = 0.45;
-      for (const cell of lib.cellsOf(grid)) {
-        if (!cell.covered) continue;
-        const p = point(cell.lat, cell.lon);
-        ctx.fillStyle = lib.speedColor(cell.speedMps);
-        ctx.fillRect(p.x - cellW / 2, p.y - cellH / 2, cellW + 1, cellH + 1);
+      //
+      // Skipped entirely in a flow view: the particles carry the same ramp, and
+      // a trail on a wash of its own colour is a trail nobody can see.
+      const flow = flowing();
+      if (!flow) {
+        ctx.globalAlpha = 0.45;
+        for (const cell of lib.cellsOf(grid)) {
+          if (!cell.covered) continue;
+          const p = point(cell.lat, cell.lon);
+          ctx.fillStyle = lib.speedColor(cell.speedMps);
+          ctx.fillRect(p.x - cellW / 2, p.y - cellH / 2, cellW + 1, cellH + 1);
+        }
+      }
+      if (flow) {
+        if (typeof this.onScale === "function") this.onScale(null);
+        return;
       }
 
       // The arrows, thinned to a count the eye can read, and lengthed by speed
@@ -203,12 +220,37 @@
     }
   });
 
+  /**
+   * What the wind is drawn as.
+   *
+   * `flow` is the nullschool reading: particles on dark ground and nothing
+   * else. It is almost entirely subtraction, and the reason is in the trail
+   * drawing above — a trail is coloured off the same ramp as the wash beneath
+   * it, so on a washed cell it is invisible except for its casing. Take the
+   * wash away and the colour on the trail becomes the thing carrying the speed.
+   *
+   * **What it does not do is smooth anything.** Nullschool looks silky because
+   * it draws a 28 km global model; this draws terrain structure at tens of
+   * metres, and interpolating it to match would hide the only thing this engine
+   * has that nullschool does not. `AGENTS.md` says the same in one line: do not
+   * interpolate the sampling.
+   */
+  function displayMode() {
+    const el = $("display");
+    return el ? el.value : "arrows";
+  }
+
+  function flowing() { return displayMode() === "flow"; }
+
   const fieldLayer = new FieldLayer();
   // The arrow scale is decided at draw time, from the cells that survived the
   // thinning, so the caption is written by the layer that drew them.
   fieldLayer.onScale = function (scale) {
     const el = $("arrowScale");
-    if (el) el.textContent = scale.caption;
+    // A flow view draws no arrows, so it has no arrow scale to describe. An
+    // empty caption rather than a stale one: the last view's sentence left
+    // under a different picture is a caption that lies.
+    if (el) el.textContent = scale ? scale.caption : "";
   };
   fieldLayer.addTo(map);
 
@@ -264,6 +306,13 @@
       this._body = null;
       this._reset();
     },
+    /**
+     * Draw the same field again, because the question changed rather than the
+     * answer. Switching what the wind is drawn as does not re-solve anything.
+     */
+    refresh: function () {
+      this._reset();
+    },
     setEnabled: function (on) {
       this._on = !!on;
       this._reset();
@@ -316,8 +365,13 @@
         pxPerSecond: calm ? 12 : 55
       });
       const size = this._map.getSize();
+      // A flow view is nothing but these, so it can afford three times as many
+      // and trails twice as long. In the arrow view they are a second reading of
+      // a field the arrows already state, and a dense one would only smear it.
+      const flow = flowing();
       this._field = lib.particleField(grid, {
-        count: lib.particleCount(size.x, size.y),
+        count: lib.particleCount(size.x, size.y,
+          flow ? { perParticlePx: 620, max: 1600 } : undefined),
         life: lib.particleLife(this._scale)
       });
       // One trail per particle, in the same order, holding where it has been.
@@ -353,7 +407,10 @@
 
       const m = this._map;
       const grid = this._body.grid;
-      const path = lib.trailPath();
+      const flow = flowing();
+      // Long enough to read as a streamline, short enough that a thousand of
+      // them do not close up into hatching. At 64 px over this domain they did.
+      const path = flow ? lib.trailPath({ trailPx: 44, max: 72 }) : lib.trailPath();
       const particles = this._field.advance(elapsed * this._scale.secondsPerSecond);
       const trails = this._trails;
       ctx.lineCap = "round";
@@ -383,23 +440,30 @@
         // is the same quantity the wash and the legend carry, which is also why
         // a trail sits on a wash of its own colour and disappears into it; the
         // casing is what separates them without changing what the colour means.
-        ctx.lineWidth = 3.2;
-        ctx.strokeStyle = "rgba(12,16,22,0.55)";
-        ctx.stroke();
-        ctx.lineWidth = 1.5;
+        // The casing exists to separate a trail from a wash of its own colour.
+        // With no wash there is nothing to separate from, and drawing it on
+        // dark ground only thickens every trail into a smear.
+        if (!flow) {
+          ctx.lineWidth = 3.2;
+          ctx.strokeStyle = "rgba(12,16,22,0.55)";
+          ctx.stroke();
+        }
+        ctx.lineWidth = flow ? 1.1 : 1.5;
         ctx.strokeStyle = lib.speedColor(cell.speedMps);
         ctx.stroke();
         // A head, with a white core. A trail with no bright end reads as
         // texture rather than as something moving, and white is the only thing
         // that separates from the wash at every speed — the ramp cannot, since
         // a trail is by construction the same colour as the ground beneath it.
+        if (!flow) {
+          ctx.beginPath();
+          ctx.arc(at.x, at.y, 2.4, 0, Math.PI * 2);
+          ctx.fillStyle = "rgba(12,16,22,0.65)";
+          ctx.fill();
+        }
         ctx.beginPath();
-        ctx.arc(at.x, at.y, 2.4, 0, Math.PI * 2);
-        ctx.fillStyle = "rgba(12,16,22,0.65)";
-        ctx.fill();
-        ctx.beginPath();
-        ctx.arc(at.x, at.y, 1.3, 0, Math.PI * 2);
-        ctx.fillStyle = "rgba(255,255,255,0.95)";
+        ctx.arc(at.x, at.y, flow ? 0.9 : 1.3, 0, Math.PI * 2);
+        ctx.fillStyle = flow ? "rgba(255,255,255,0.8)" : "rgba(255,255,255,0.95)";
         ctx.fill();
       }
     }
@@ -418,6 +482,31 @@
   $("particles").addEventListener("change", function () {
     particleLayer.setEnabled($("particles").checked);
   });
+
+  /**
+   * Switching what the wind is drawn as.
+   *
+   * A flow view is only particles, so choosing it turns them on rather than
+   * leaving somebody looking at an empty box wondering what broke. Turning them
+   * off from inside a flow view is allowed and leaves the ground: it is the
+   * honest answer to "show me nothing", and the alternative is a checkbox that
+   * silently refuses.
+   */
+  function applyDisplayMode() {
+    const flow = displayMode() === "flow";
+    const container = map.getContainer();
+    if (container) container.classList.toggle("flow", flow);
+    if (flow && !$("particles").checked) {
+      $("particles").checked = true;
+      particleLayer.setEnabled(true);
+    }
+    // Both layers cache what they drew, so both have to be told the question
+    // changed rather than only the one that looks different.
+    fieldLayer.refresh();
+    particleLayer.refresh();
+  }
+
+  $("display").addEventListener("change", applyDisplayMode);
   // A page in a background tab is animating nothing anybody can see.
   document.addEventListener("visibilitychange", function () {
     particleLayer.setEnabled(!document.hidden && $("particles").checked);
