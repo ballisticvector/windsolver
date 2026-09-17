@@ -1,3 +1,10 @@
 node_modules/
 coverage/
 .DS_Store
+
+# A solved place is 47 MB of Float32 and is built, not authored:
+# `node tools/warm-location.js --all` makes it and `server.js` reads it.
+# Committing one would put a derived artefact bigger than the repository into
+# the history, and it is only valid for the ground and options it was solved
+# with anyway - see `basis.keyFor`.
+data/basis/

@@ -492,3 +492,176 @@ describe("sampling below the lowest layer's centre", () => {
     expect(scrub.speedMps).toBeLessThan(grass.speedMps);
   });
 });
+
+describe("choosing the mesh by the ground", () => {
+  test("gentle ground gets the layers that follow it", () => {
+    const s = mass.solveFor(slopedValley(36, 36, 1000, 150, 30, 24),
+      { speedMps: 10, fromDeg: 225 }, { layers: 16, topAboveM: 450, stretch: 1.25 });
+    expect(s.kind).toBe("terrain-following");
+    expect(s.maxSlopeDeg).toBeLessThan(45);
+  });
+
+  test("ground too steep for the coordinate falls back rather than refusing", () => {
+    // The case that lost five of six Colorado valleys: Carbondale reaches 53
+    // degrees inside a two-mile box, Cortez 63. Refusing those is refusing the
+    // product, and the staircase has no slope limit at all.
+    const s = mass.solveFor(valley(36, 36, 1000, 300, 30),
+      { speedMps: 10, fromDeg: 225 }, { layers: 16, topAboveM: 900 });
+    expect(s.kind).toBe("staircase");
+    expect(s.maxSlopeDeg).toBeGreaterThan(45);
+    expect(s.field.converged).toBe(true);
+    // And it is a real answer, not a placeholder: the valley still channels.
+    const before = mass.sampleAt({ kind: "staircase", mesh: s.mesh, field: s.guess },
+      18, 18, 10);
+    const after = mass.sampleAt(s, 18, 18, 10);
+    expect(turn(before.fromDeg, after.fromDeg)).toBeLessThan(-5);
+  });
+
+  test("a caller can pin the following mesh, which is how the two are compared", () => {
+    const s = mass.solveFor(valley(36, 36, 1000, 300, 30),
+      { speedMps: 10, fromDeg: 225 }, { layers: 16, topAboveM: 900, maxSlopeDeg: null });
+    expect(s.kind).toBe("terrain-following");
+  });
+
+  test("sampleAt answers the same question on either mesh", () => {
+    // Flat ground, where the two meshes are the same solver, so the only thing
+    // being tested is that the dispatch does not change the answer.
+    const terrain = flat(24, 24, 1000, 30);
+    const a = mass.solveFor(terrain, { speedMps: 8, fromDeg: 270 },
+      { layers: 12, topAboveM: 480, stretch: 1 });
+    const b = mass.solveFor(terrain, { speedMps: 8, fromDeg: 270 },
+      { layers: 12, topAboveM: 480, stretch: 1, maxSlopeDeg: -1 });
+    expect(a.kind).toBe("terrain-following");
+    expect(b.kind).toBe("staircase");
+
+    const sa = mass.sampleAt(a, 12, 12, 2);
+    const sb = mass.sampleAt(b, 12, 12, 2);
+    expect(sb.speedMps).toBeCloseTo(sa.speedMps, 2);
+    expect(sb.fromDeg).toBeCloseTo(sa.fromDeg, 2);
+    // And both read 2 m at 2 m, not the cell that contains it.
+    const expected = 8 * (Math.log(2 / 0.03) / Math.log(10 / 0.03));
+    expect(sa.speedMps).toBeCloseTo(expected, 2);
+    expect(sb.speedMps).toBeCloseTo(expected, 2);
+  });
+});
+
+describe("superposition", () => {
+  test("the solved field is linear in the wind, so two solves answer every wind", () => {
+    // **This is load-bearing, not a curiosity.** Everything in the solve is
+    // linear in the reference wind: the profile scales it, the interface flux
+    // is -(u.sx + v.sy) which is linear in u and v, the Poisson right-hand side
+    // is the divergence of that, and the velocity update adds a gradient. So a
+    // domain can be solved once for a unit east wind and once for a unit north
+    // wind, and every wind after that is a combination of the two - which is
+    // what makes a saved location interactive rather than a minutes-long solve
+    // per query.
+    //
+    // A future change that clamps a factor, or adds a term that depends on wind
+    // speed, breaks that silently and turns a cached property into a wrong
+    // answer. This test is what makes that loud.
+    const terrain = hill(36, 36, 1000, 150, 30, 6);
+    const opts = { layers: 12, topAboveM: 600, stretch: 1.25, maxIterations: 40000 };
+    const mesh = mass.buildTerrainMesh(terrain, opts);
+    const faces = mass.terrainFaces(mesh, opts);
+    const run = function (east, north) {
+      return mass.solveTerrain2(mesh, faces,
+        mass.terrainFluxes(mesh, faces, { east: east, north: north }, opts), opts);
+    };
+
+    const basisE = run(1, 0);
+    const basisN = run(0, 1);
+
+    for (const spec of [{ speedMps: 10, fromDeg: 225 }, { speedMps: 3, fromDeg: 40 },
+      { speedMps: 17, fromDeg: 310 }]) {
+      const ref = mass.readWind(spec);
+      const direct = run(ref.east, ref.north);
+      const combined = {
+        fx: new Float32Array(basisE.fx.length),
+        fy: new Float32Array(basisE.fy.length),
+        fz: new Float32Array(basisE.fz.length),
+        reference: ref
+      };
+      for (let i = 0; i < basisE.fx.length; i++) {
+        combined.fx[i] = ref.east * basisE.fx[i] + ref.north * basisN.fx[i];
+      }
+      for (let i = 0; i < basisE.fy.length; i++) {
+        combined.fy[i] = ref.east * basisE.fy[i] + ref.north * basisN.fy[i];
+      }
+      for (let i = 0; i < basisE.fz.length; i++) {
+        combined.fz[i] = ref.east * basisE.fz[i] + ref.north * basisN.fz[i];
+      }
+
+      for (const cell of [[18, 18], [4, 18], [30, 18], [18, 5]]) {
+        const a = mass.terrainWindAt(mesh, faces, direct, cell[0], cell[1], 10);
+        const b = mass.terrainWindAt(mesh, faces, combined, cell[0], cell[1], 10);
+        expect(b.speedMps).toBeCloseTo(a.speedMps, 3);
+        expect(Math.abs(turn(a.fromDeg, b.fromDeg))).toBeLessThan(0.05);
+      }
+    }
+  });
+});
+
+describe("a basis, and the winds it answers", () => {
+  test("a combined wind matches a direct solve, on the following mesh", () => {
+    const terrain = slopedValley(36, 36, 1000, 150, 30, 24);
+    const opts = { layers: 12, topAboveM: 450, stretch: 1.25, maxIterations: 40000 };
+    const basis = mass.solveBasis(terrain, opts);
+    expect(basis.kind).toBe("terrain-following");
+
+    for (const spec of [{ speedMps: 10, fromDeg: 225 }, { speedMps: 4, fromDeg: 95 }]) {
+      const combined = mass.combine(basis, spec);
+      const direct = mass.solveFor(terrain, spec, opts);
+      for (const cell of [[18, 18], [5, 18], [30, 18]]) {
+        const a = mass.sampleAt(direct, cell[0], cell[1], 10);
+        const b = mass.sampleAt(combined, cell[0], cell[1], 10);
+        expect(b.speedMps).toBeCloseTo(a.speedMps, 3);
+        expect(Math.abs(turn(a.fromDeg, b.fromDeg))).toBeLessThan(0.05);
+      }
+    }
+  });
+
+  test("and on the staircase, which is the mesh steep ground gets", () => {
+    // Linearity is a property of the method, not of one mesh. If it held on
+    // only one of them, half the saved places in the country would be wrong.
+    const terrain = valley(36, 36, 1000, 300, 30);
+    const opts = { layers: 14, topAboveM: 900, maxIterations: 40000 };
+    const basis = mass.solveBasis(terrain, opts);
+    expect(basis.kind).toBe("staircase");
+
+    const spec = { speedMps: 10, fromDeg: 225 };
+    const combined = mass.combine(basis, spec);
+    const direct = mass.solveFor(terrain, spec, opts);
+    const a = mass.sampleAt(direct, 18, 18, 10);
+    const b = mass.sampleAt(combined, 18, 18, 10);
+    expect(b.speedMps).toBeCloseTo(a.speedMps, 3);
+    expect(Math.abs(turn(a.fromDeg, b.fromDeg))).toBeLessThan(0.05);
+  });
+
+  test("a combination is only as converged as the basis it came from", () => {
+    // Scaling an unconverged field does not converge it, and a caller that
+    // reads `converged` has to get the truth about where the numbers came from.
+    const terrain = slopedValley(30, 30, 1000, 150, 30, 20);
+    const basis = mass.solveBasis(terrain,
+      { layers: 10, topAboveM: 450, stretch: 1.25, maxIterations: 2 });
+    expect(basis.east.converged).toBe(false);
+    expect(mass.combine(basis, { speedMps: 10, fromDeg: 225 }).field.converged).toBe(false);
+  });
+
+  test("two solves, then every wind is free", () => {
+    // The claim the saved-location design rests on, stated as a timing rather
+    // than an argument. Not a benchmark — a floor: if combining ever costs the
+    // same order as solving, the cache has stopped being worth having.
+    const terrain = slopedValley(40, 40, 1000, 150, 30, 26);
+    const opts = { layers: 12, topAboveM: 450, stretch: 1.25, maxIterations: 40000 };
+
+    const t0 = Date.now();
+    const basis = mass.solveBasis(terrain, opts);
+    const solveMs = Date.now() - t0;
+
+    const t1 = Date.now();
+    for (let i = 0; i < 8; i++) mass.combine(basis, { speedMps: 10, fromDeg: i * 45 });
+    const combineMs = (Date.now() - t1) / 8;
+
+    expect(combineMs * 10).toBeLessThan(solveMs);
+  });
+});

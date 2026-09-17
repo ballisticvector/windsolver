@@ -505,10 +505,13 @@ function solve(mesh, f, opts) {
  * asked for is inside it — a hole stays a hole, in the same way `/v1/field`
  * already refuses a cell it could not read.
  */
-function windAt(mesh, f, i, j, heightAglM) {
+function windAt(mesh, f, i, j, heightAglM, opts) {
   if (!insideAt(mesh, i, j, 0)) return null;
   const h = mesh.elevation[j * mesh.nx + i];
   if (!Number.isFinite(h) || !(heightAglM >= 0)) return null;
+  const o = opts || {};
+  const z0 = o.roughnessM === undefined ? DEFAULT_ROUGHNESS_M : o.roughnessM;
+  if (!(z0 > 0)) throw fail("bad-roughness", "roughnessM must be positive");
 
   const z = h + heightAglM;
   const kf = (z - mesh.zMin) / mesh.dz - 0.5;
@@ -525,6 +528,32 @@ function windAt(mesh, f, i, j, heightAglM) {
       up: (f.w[(k * ny + j) * nx + i] + f.w[((k + 1) * ny + j) * nx + i]) / 2
     };
   };
+
+  // The staircase has the same hole under it that the following mesh had: the
+  // lowest open cell in a column stands at an arbitrary height above that
+  // column's ground, and returning it for a 2 m request reads the wind too fast
+  // in the layer this product is about. Same answer as `terrainWindAt` — the
+  // solve says what the terrain does, the log law says what the profile does
+  // below the first cell it resolved.
+  let kFirst = 0;
+  while (kFirst < mesh.nz && mesh.blocked[cellAt(mesh, i, j, kFirst)]) kFirst++;
+  if (kFirst < mesh.nz) {
+    const firstAgl = heightAgl(mesh, i, j, kFirst);
+    if (heightAglM < firstAgl && firstAgl > z0) {
+      const base = centre(kFirst);
+      if (!base) return null;
+      const ratio = heightAglM <= z0 ? 0
+        : Math.log(heightAglM / z0) / Math.log(firstAgl / z0);
+      const e = base.east * ratio;
+      const n = base.north * ratio;
+      let bearing = toDeg(Math.atan2(-e, -n));
+      if (bearing < 0) bearing += 360;
+      return {
+        east: e, north: n, up: base.up * (heightAglM / firstAgl),
+        speedMps: Math.hypot(e, n), fromDeg: bearing, heightAglM: heightAglM
+      };
+    }
+  }
 
   const a = centre(k0);
   const b = centre(k0 + 1);
@@ -1174,6 +1203,65 @@ function terrainWindAt(mesh, faces, f, i, j, heightAglM, opts) {
   };
 }
 
+/**
+ * Solve on whichever mesh the ground allows, and say which one was used.
+ *
+ * The two meshes are not rivals, they are each other's cover. Layers that
+ * follow the ground resolve the 0-3 m layer this product is about and mean one
+ * height everywhere, and they are skewed in proportion to the slope they
+ * follow — measured against the staircase, they agree to 0.2 degrees at 9
+ * degrees of ground, 0.4 at 23, 1.8 at 40, and are visibly wrong by 59. The
+ * staircase resolves the near-ground layer badly and has **no slope limit at
+ * all**: its ground is blocked cells and zero flux, which is exact whatever the
+ * terrain does.
+ *
+ * **And the terrain this is for is mostly too steep for the better mesh.** Of
+ * six Colorado valley stations scored at a two-mile radius, five contained
+ * ground past 45 degrees — Carbondale 53, Cortez 63. Refusing those is refusing
+ * the product. Falling back to the staircase answers them on a mesh whose
+ * ground condition cannot be wrong, at the cost of the near-ground resolution,
+ * and `kind` says which happened so a caller can tell two answers apart.
+ *
+ * `maxSlopeDeg: null` pins the following mesh whatever the ground, which is how
+ * the two are compared against each other.
+ */
+function solveFor(terrain, wind, opts) {
+  const o = opts || {};
+  const limit = o.maxSlopeDeg === undefined ? DEFAULT_MAX_SLOPE_DEG : o.maxSlopeDeg;
+  const following = buildTerrainMesh(terrain, opts);
+  if (limit === null || following.maxSlopeDeg <= limit) {
+    const faces = terrainFaces(following, opts);
+    const guess = terrainFluxes(following, faces, wind, opts);
+    return {
+      kind: "terrain-following",
+      mesh: following, faces: faces, guess: guess,
+      field: solveTerrain2(following, faces, guess, opts),
+      maxSlopeDeg: following.maxSlopeDeg, steepFraction: following.steepFraction
+    };
+  }
+  const box = buildMesh(terrain, opts);
+  const guess = initialField(box, wind, opts);
+  return {
+    kind: "staircase",
+    mesh: box, faces: null, guess: guess,
+    field: solve(box, guess, opts),
+    maxSlopeDeg: following.maxSlopeDeg, steepFraction: following.steepFraction
+  };
+}
+
+/**
+ * The wind at a column and a height, on either mesh.
+ *
+ * Both samplers answer the same question in the same units and both extend the
+ * profile below the lowest cell they resolved, so a caller that does not care
+ * which mesh ran does not have to find out.
+ */
+function sampleAt(solved, i, j, heightAglM, opts) {
+  return solved.kind === "terrain-following"
+    ? terrainWindAt(solved.mesh, solved.faces, solved.field, i, j, heightAglM, opts)
+    : windAt(solved.mesh, solved.field, i, j, heightAglM, opts);
+}
+
 /** Mesh, faces, guess, solve — for a caller with one domain and one wind. */
 function solveFollowing(terrain, wind, opts) {
   const o = opts || {};
@@ -1191,6 +1279,92 @@ function solveFollowing(terrain, wind, opts) {
   const faces = terrainFaces(mesh, opts);
   const guess = terrainFluxes(mesh, faces, wind, opts);
   return { mesh: mesh, faces: faces, guess: guess, field: solveTerrain2(mesh, faces, guess, opts) };
+}
+
+/**
+ * The two solves a domain ever needs.
+ *
+ * Everything in the solve is linear in the reference wind — the profile scales
+ * it, the interface flux is `-(u dz/dx + v dz/dy)`, the Poisson right-hand side
+ * is the divergence of that, and the update adds a gradient. Nothing anywhere
+ * is nonlinear in `u` and `v`. So a domain solved once for a unit east wind and
+ * once for a unit north wind answers **every** wind afterwards, as
+ * `east * E + north * N`, in the time it takes to walk two arrays.
+ *
+ * That is the difference between a saved place and a slow one. A two-mile
+ * domain is tens of seconds of Gauss-Seidel; the mesh, the face areas and both
+ * basis fields depend on the ground alone, so they are computed when a place is
+ * saved and never again. Changing the wind, or the direction somebody is
+ * looking, then costs nothing.
+ *
+ * **`r` is part of the basis, not of the combination.** Stability changes the
+ * matrix, so a domain wanted at two stabilities is two bases. Everything else —
+ * speed, direction, the height a caller reads at — is free.
+ *
+ * `tests/mass.test.js` pins the linearity against a direct solve, because a
+ * later clamp or a speed-dependent term would break superposition silently and
+ * leave every cached place quietly wrong.
+ */
+function solveBasis(terrain, opts) {
+  const o = opts || {};
+  const limit = o.maxSlopeDeg === undefined ? DEFAULT_MAX_SLOPE_DEG : o.maxSlopeDeg;
+  const following = buildTerrainMesh(terrain, opts);
+  const useFollowing = limit === null || following.maxSlopeDeg <= limit;
+
+  const shared = {
+    kind: useFollowing ? "terrain-following" : "staircase",
+    maxSlopeDeg: following.maxSlopeDeg,
+    steepFraction: following.steepFraction
+  };
+
+  if (useFollowing) {
+    const faces = terrainFaces(following, opts);
+    const one = function (east, north) {
+      return solveTerrain2(following, faces,
+        terrainFluxes(following, faces, { east: east, north: north }, opts), opts);
+    };
+    return Object.assign(shared, {
+      mesh: following, faces: faces, east: one(1, 0), north: one(0, 1)
+    });
+  }
+
+  const box = buildMesh(terrain, opts);
+  const one = function (east, north) {
+    return solve(box, initialField(box, { east: east, north: north }, opts), opts);
+  };
+  return Object.assign(shared, { mesh: box, faces: null, east: one(1, 0), north: one(0, 1) });
+}
+
+/**
+ * One wind out of the two a basis holds.
+ *
+ * The result is shaped exactly like a solve, so `sampleAt` cannot tell the
+ * difference and nothing downstream has to know whether a field was solved just
+ * now or assembled from a place saved last week. `fromBasis` says which, for a
+ * caller that wants to report it.
+ */
+function combine(basis, wind) {
+  if (!basis || !basis.east || !basis.north) {
+    throw fail("bad-basis", "a solveBasis result is required");
+  }
+  const ref = readWind(wind);
+  const keys = basis.kind === "terrain-following" ? ["fx", "fy", "fz"] : ["u", "v", "w"];
+  const field = { reference: ref, fromBasis: true };
+  for (const key of keys) {
+    const a = basis.east[key];
+    const b = basis.north[key];
+    const out = new Float32Array(a.length);
+    for (let i = 0; i < a.length; i++) out[i] = ref.east * a[i] + ref.north * b[i];
+    field[key] = out;
+  }
+  // A combination is as converged as the worse of the two it came from: an
+  // unconverged basis does not become sound by being scaled.
+  field.converged = basis.east.converged && basis.north.converged;
+  field.iterations = Math.max(basis.east.iterations, basis.north.iterations);
+  return {
+    kind: basis.kind, mesh: basis.mesh, faces: basis.faces, field: field,
+    maxSlopeDeg: basis.maxSlopeDeg, steepFraction: basis.steepFraction, fromBasis: true
+  };
 }
 
 module.exports = {
@@ -1218,5 +1392,9 @@ module.exports = {
   terrainDivergence,
   solveTerrain2,
   terrainWindAt,
-  solveFollowing
+  solveFollowing,
+  solveFor,
+  sampleAt,
+  solveBasis,
+  combine
 };

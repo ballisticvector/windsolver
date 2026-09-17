@@ -24,6 +24,7 @@ const cog = require("./cog.js");
 const proj = require("./proj.js");
 const terrainModule = require("./terrain.js");
 const dem = require("./dem.js");
+const mass = require("./mass.js");
 const derive = require("./derive.js");
 const downscale = require("./downscale.js");
 const volumeModule = require("./volume.js");
@@ -657,8 +658,87 @@ function createFieldService(opts) {
   };
 }
 
+/**
+ * The ground alone: no weather, no derivatives, one terrain read.
+ *
+ * **This exists because callers kept rebuilding it and leaving pieces out.** A
+ * terrain read is four steps and three of them are only obvious after they have
+ * gone wrong: the box has to reach `mosaic` or the canvas keeps the first
+ * tile's own extent and the requested coordinate lands wherever it lands; a
+ * void is a property of the pixels rather than of the tile footprint, so the
+ * fine product can be chosen and then be nodata over half the domain; and the
+ * backfill has to come from a *coarser* product than the one already read.
+ * `tools/site-field.js` got all three wrong on its first run over the
+ * Whittington Center and lost every point past 880 yards.
+ *
+ * `assemble` does all of this already, on the way to a wind. This is the same
+ * path stopped one step early, for a caller that brings its own wind.
+ */
+async function groundOnly(spec, opts) {
+  const o = opts || {};
+  const domain = domainOf(spec);
+  const read = o.readTerrain
+    ? await o.readTerrain(domain.readBox, spec)
+    : await terrainModule.readTerrain(domain.readBox, spec);
+  const onBox = Object.assign({}, spec, { box: domain.box });
+  let grid = mosaic(read.grids, onBox);
+  let filledFrom = null;
+  if (grid.voidFraction > 0) {
+    const only = dem.coarserThan(read.dataset ? read.dataset.id : null);
+    if (only.length) {
+      const coarse = o.readTerrain
+        ? await o.readTerrain(domain.readBox, Object.assign({}, spec, { only: only }))
+        : await terrainModule.readTerrain(domain.readBox, Object.assign({}, spec, { only: only }));
+      grid = mosaic([grid].concat(coarse.grids), onBox);
+      filledFrom = coarse.dataset ? coarse.dataset.label : null;
+    }
+  }
+  return { domain: domain, grid: grid, dataset: read.dataset, filledFrom: filledFrom };
+}
+
+/**
+ * A mass-consistent solve, read at a coordinate rather than at a column.
+ *
+ * `mass.js` is deliberately CRS-free — it takes a grid and gives back a grid —
+ * so the projection lives here, next to the read that produced the ground.
+ * Bilinear through east and north and never through bearings, for the reason
+ * `downscale.windAt` gives: averaging 350 and 10 degrees is 180.
+ */
+function massWindAt(grid, solved, lat, lon, heightAglM, opts) {
+  const m = proj.fromGeographic(grid.crs, lat, lon);
+  const px = (m.x - grid.transform.originX) / grid.transform.scaleX - 0.5;
+  const py = (m.y - grid.transform.originY) / grid.transform.scaleY - 0.5;
+  const i0 = Math.floor(px);
+  const j0 = Math.floor(py);
+  const fx = px - i0;
+  const fy = py - j0;
+  const corners = [[0, 0, (1 - fx) * (1 - fy)], [1, 0, fx * (1 - fy)],
+    [0, 1, (1 - fx) * fy], [1, 1, fx * fy]];
+  let east = 0;
+  let north = 0;
+  let weight = 0;
+  for (const c of corners) {
+    if (!(c[2] > 0)) continue;
+    const at = mass.sampleAt(solved, i0 + c[0], j0 + c[1], heightAglM, opts);
+    if (!at) continue;
+    east += at.east * c[2];
+    north += at.north * c[2];
+    weight += c[2];
+  }
+  // A corner with no ground drops out rather than counting as calm; with no
+  // corner at all there is no wind here and the caller is told so.
+  if (!(weight > 0)) return null;
+  east /= weight;
+  north /= weight;
+  let from = (Math.atan2(-east, -north) * 180) / Math.PI;
+  if (from < 0) from += 360;
+  return { east: east, north: north, speedMps: Math.hypot(east, north), fromDeg: from };
+}
+
 module.exports = {
   FIELD_VERSION,
+  groundOnly,
+  massWindAt,
   DEFAULT_RADIUS_MILES,
   DEFAULT_TARGET_RESOLUTION_M,
   DEFAULT_LEVEL,

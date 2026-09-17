@@ -486,31 +486,49 @@ function massSolve(cache, derived, reference, fieldHeightAglM, candidate, opts) 
     };
     cache.mesh = null;
     cache.refusal = null;
+    cache.kind = null;
     try {
-      cache.mesh = mass.buildTerrainMesh(cache.terrain, o);
-      if (cache.mesh.maxSlopeDeg > mass.DEFAULT_MAX_SLOPE_DEG) {
-        cache.refusal = "ground reaches " + cache.mesh.maxSlopeDeg.toFixed(1)
-          + " deg, past the " + mass.DEFAULT_MAX_SLOPE_DEG + " deg a terrain-following solve is trusted to";
-        cache.mesh = null;
+      const following = mass.buildTerrainMesh(cache.terrain, o);
+      cache.maxSlopeDeg = following.maxSlopeDeg;
+      // Fall back rather than refuse. Five of six Colorado valley domains at a
+      // two-mile radius contain ground past 45 degrees, so refusing them is
+      // refusing the terrain the product is for. The staircase resolves the
+      // near-ground layer badly and has no slope limit at all, which is the
+      // right trade when the alternative is no answer.
+      if (following.maxSlopeDeg > mass.DEFAULT_MAX_SLOPE_DEG) {
+        cache.kind = "staircase";
+        cache.mesh = mass.buildMesh(cache.terrain, o);
       } else {
-        cache.faces = mass.terrainFaces(cache.mesh, o);
+        cache.kind = "terrain-following";
+        cache.mesh = following;
+        cache.faces = mass.terrainFaces(following, o);
       }
     } catch (err) {
       cache.refusal = err.message;
       cache.mesh = null;
     }
   }
-  if (!cache.mesh) return { field: null, refusal: cache.refusal };
+  if (!cache.mesh) return { field: null, refusal: cache.refusal, kind: null };
 
   const r = candidate.mass && candidate.mass.r !== undefined ? candidate.mass.r : mass.DEFAULT_R;
+  if (cache.kind === "staircase") {
+    const guess = mass.initialField(cache.mesh, { east: reference.east, north: reference.north },
+      Object.assign({}, o, { referenceHeightM: fieldHeightAglM }));
+    return {
+      kind: "staircase", mesh: cache.mesh, faces: null, refusal: null,
+      field: mass.solve(cache.mesh, guess, Object.assign({}, o, { r: r }))
+    };
+  }
   const faces = r === mass.DEFAULT_R
     ? cache.faces
     : mass.terrainFaces(cache.mesh, Object.assign({}, o, { r: r }));
   const guess = mass.terrainFluxes(cache.mesh, faces,
     { east: reference.east, north: reference.north },
     Object.assign({}, o, { referenceHeightM: fieldHeightAglM }));
-  const solved = mass.solveTerrain2(cache.mesh, faces, guess, o);
-  return { mesh: cache.mesh, faces: faces, field: solved, refusal: null };
+  return {
+    kind: "terrain-following", mesh: cache.mesh, faces: faces, refusal: null,
+    field: mass.solveTerrain2(cache.mesh, faces, guess, o)
+  };
 }
 
 /**
@@ -539,8 +557,8 @@ function massSampleAt(derived, solved, lat, lon, heightAglM, roughnessM) {
     if (!(c[2] > 0)) continue;
     // The same roughness the height correction on every other row uses, so a
     // difference between two rows is the method and not two different z0.
-    const at = mass.terrainWindAt(solved.mesh, solved.faces, solved.field,
-      i0 + c[0], j0 + c[1], heightAglM, { roughnessM: roughnessM });
+    const at = mass.sampleAt(solved, i0 + c[0], j0 + c[1], heightAglM,
+      { roughnessM: roughnessM });
     if (!at) continue;
     east += at.east * c[2];
     north += at.north * c[2];
@@ -736,6 +754,10 @@ async function buildReport(options) {
   // refused once and counted, not once an hour. The count is a result: it says
   // how much of a real station set this method can be asked about at all.
   const massRefusals = {};
+  // Which mesh each station's ground allowed. A station solved on the staircase
+  // is answering with a coarser near-ground layer than one solved on layers
+  // that follow the ground, and two such rows are not the same measurement.
+  const massMesh = {};
   const massOptions = {
     layers: o.massLayers === undefined ? 16 : o.massLayers,
     stretch: o.massStretch === undefined ? 1.2 : o.massStretch,
@@ -918,12 +940,13 @@ async function buildReport(options) {
             ? height.sensorHeightM : field.heightAglM;
           const solved = massSolve(massCache, field.derived, reference,
             field.heightAglM, candidate, massOptions);
+          if (solved.kind) massMesh[id] = solved.kind;
           if (solved.refusal) {
             if (!massRefusals[id]) {
               massRefusals[id] = solved.refusal;
               failures.push({
                 station: id, validTime: validTime.toISOString(), stage: "mass",
-                code: "too-steep", error: solved.refusal
+                code: "mass-failed", error: solved.refusal
               });
             }
             at = null;
@@ -1206,6 +1229,7 @@ async function buildReport(options) {
     leverage: leverage,
     droppedStations: dropped,
     massRefusals: massRefusals,
+    massMesh: massMesh,
     elevationToleranceM: elevationToleranceM,
     failures: failures,
     elapsedMs: now() - started

@@ -871,9 +871,25 @@
     const lon = Number($("lon").value);
     const radiusMiles = Number($("radius").value);
     const cols = Number($("cols").value);
+    const place = chosenPlace();
 
     if (!Number.isFinite(lat) || !Number.isFinite(lon)) {
       return setStatus("Latitude and longitude have to be numbers.", "error");
+    }
+
+    const spec = { lat: lat, lon: lon, radiusMiles: radiusMiles, cols: cols };
+    if (place) {
+      const speedMph = Number($("windSpeed").value);
+      const fromDeg = Number($("windFrom").value);
+      const heightAglM = Number($("windHeight").value);
+      if (!Number.isFinite(speedMph) || !Number.isFinite(fromDeg)) {
+        return setStatus("A measured wind needs a speed and a bearing. " +
+          "One without the other is not a wind.", "error");
+      }
+      spec.location = place.id;
+      spec.speedMph = speedMph;
+      spec.fromDeg = fromDeg;
+      if (Number.isFinite(heightAglM)) spec.heightAglM = heightAglM;
     }
 
     renderApiExample(lat, lon, radiusMiles);
@@ -887,17 +903,18 @@
     inFlight = controller;
 
     $("solve").disabled = true;
-    setStatus("Solving. A first look at new ground reads real terrain and pulls a " +
-      "live weather cycle, which takes a few seconds — sometimes longer if USGS is slow.",
+    setStatus(place
+      ? "Reading " + place.name + ". It is already solved, so this is your wind over " +
+        "ground that was worked out ahead of time."
+      : "Solving. A first look at new ground reads real terrain and pulls a " +
+        "live weather cycle, which takes a few seconds — sometimes longer if USGS is slow.",
     "working");
 
     const started = Date.now();
     let response;
     let body = null;
     try {
-      response = await fetch(lib.fieldQuery({
-        lat: lat, lon: lon, radiusMiles: radiusMiles, cols: cols
-      }), { signal: controller.signal });
+      response = await fetch(lib.fieldQuery(spec), { signal: controller.signal });
       body = await response.json().catch(function () { return null; });
     } catch (err) {
       $("solve").disabled = false;
@@ -941,6 +958,98 @@
   map.on("click", function (e) {
     moveTo(e.latlng.lat, e.latlng.lng);
   });
+
+  /**
+   * The saved places this service can answer for.
+   *
+   * A place is a box that has already been solved, so it answers a wind somebody
+   * types in rather than one a forecast supplies — which is the case somebody
+   * standing on the ground is actually in: their own anemometer is better than a
+   * 3 km cell at their feet, and useless two thousand yards away.
+   *
+   * A place that has not been solved is listed anyway, and says so. Hiding it
+   * would leave somebody wondering where their range went; the service's own
+   * refusal names the command that fixes it.
+   */
+  let places = [];
+
+  function chosenPlace() {
+    const id = $("place").value;
+    if (!id) return null;
+    for (const p of places) {
+      if (p.id === id) return p;
+    }
+    return null;
+  }
+
+  async function loadPlaces() {
+    let body = null;
+    try {
+      const response = await fetch("/v1/locations");
+      body = await response.json();
+    } catch (_err) {
+      return;   // A service without saved places is still a service.
+    }
+    if (!body || !body.ok || !Array.isArray(body.locations)) return;
+    places = body.locations;
+    const select = $("place");
+    for (const place of places) {
+      const option = document.createElement("option");
+      option.value = place.id;
+      option.textContent = place.name + (place.region ? " — " + place.region : "") +
+        (place.warm ? "" : "  (not solved yet)");
+      select.appendChild(option);
+    }
+  }
+
+  function describePlace(place) {
+    if (!place.warm) {
+      return "Not solved on this service yet. Solving takes minutes and holds every " +
+        "other request while it runs, so it is a build step rather than something " +
+        "this page can start.";
+    }
+    const parts = [];
+    if (place.terrain) parts.push(place.terrain);
+    if (place.mesh) parts.push(place.mesh + " mesh");
+    if (place.maxSlopeDeg !== null && place.maxSlopeDeg !== undefined) {
+      parts.push(place.maxSlopeDeg + "° at its steepest");
+    }
+    return "Solved ahead of time over " + place.radiusMiles + " miles — " + parts.join(", ") +
+      ". Type the wind you measured and it is bent by this ground. Modelled, not measured: " +
+      "read the turning before the number.";
+  }
+
+  $("place").addEventListener("change", function () {
+    const place = chosenPlace();
+    $("measured").hidden = !place;
+    clearField();
+    if (!place) {
+      setStatus("Back to the model's wind. Solve to read it at the pin.", "");
+      return;
+    }
+    $("placeNote").textContent = describePlace(place);
+    // The place brings its own box: a domain that does not hold the landform
+    // cannot show what the landform does.
+    const radius = $("radius");
+    let has = false;
+    for (const option of radius.options) {
+      if (Number(option.value) === Number(place.radiusMiles)) has = true;
+    }
+    if (!has) {
+      const option = document.createElement("option");
+      option.value = String(place.radiusMiles);
+      option.textContent = place.radiusMiles + (place.radiusMiles === 1 ? " mile" : " miles");
+      radius.appendChild(option);
+    }
+    radius.value = String(place.radiusMiles);
+    moveTo(place.lat, place.lon, { pan: true });
+    setStatus(place.warm
+      ? "Type the wind you measured, then solve."
+      : place.name + " has not been solved yet — see the note above.",
+    place.warm ? "" : "error");
+  });
+
+  loadPlaces();
 
   $("solve").addEventListener("click", solve);
 
