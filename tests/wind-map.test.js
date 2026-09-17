@@ -461,9 +461,17 @@ describe("the parts of the page a unit test cannot run", () => {
   test("the scale the arrows were drawn at is the scale the caption states", () => {
     // Written by the layer that drew them, because the thinning decides which
     // cells the scale saw and the page cannot know that.
+    //
+    // A flow view draws no arrows and so has no scale, and the caption has to
+    // go with them: the last view's sentence left under a different picture is
+    // a caption that lies. So the assertion is that the text comes from the
+    // scale when there is one, and is emptied when there is not.
     expect(js).toContain("fieldLayer.onScale = function (scale)");
     expect(js).toContain("$(\"arrowScale\")");
-    expect(js).toContain("el.textContent = scale.caption");
+    expect(js).toContain("scale ? scale.caption : \"\"");
+    // And the layer must actually report the no-arrows case rather than
+    // returning quietly and leaving whatever was there.
+    expect(js).toMatch(/if \(flow\) \{[\s\S]{0,160}onScale\(null\)/);
     const html = fs.readFileSync(path.join(__dirname, "..", "public", "index.html"), "utf8");
     expect(html).toContain("id=\"arrowScale\"");
   });
