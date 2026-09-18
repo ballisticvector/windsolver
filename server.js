@@ -89,6 +89,40 @@ const ROUTES = ["/healthz", "/v1/field", "/v1/hillshade", "/v1/line", "/v1/locat
  */
 const warmPlaces = new Map();
 
+/**
+ * A saved engagement, with the geometry worked out rather than typed.
+ *
+ * A shot is two pins; the range and the bearing follow from them. They are
+ * computed here rather than stored so a hand-typed yardage cannot drift away
+ * from the coordinates it claims to describe.
+ *
+ * `insideDomain` is the one that matters. A line is only worth drawing over
+ * ground that was actually solved, and the King of 2 Miles engagement began
+ * 54 m inside the old five-mile box's western wall and ended 1,445 m outside
+ * it — so the wind along it came from ground the solver had never read. A
+ * caller can now see that before it draws.
+ */
+function shotsOf(loc) {
+  if (!Array.isArray(loc.shots)) return [];
+  const box = geo.boundingBox(loc.lat, loc.lon, loc.radiusMiles);
+  return loc.shots.map(function (shot) {
+    const rb = geo.rangeAndBearing(
+      shot.shooter.lat, shot.shooter.lon, shot.target.lat, shot.target.lon);
+    return {
+      id: shot.id,
+      name: shot.name,
+      shooter: shot.shooter,
+      target: shot.target,
+      rangeM: round(rb.rangeM, 1),
+      rangeYd: round(rb.rangeM * 1.0936133, 0),
+      bearingDeg: round(rb.bearingDeg, 1),
+      insideDomain: geo.containsPoint(box, shot.shooter.lat, shot.shooter.lon)
+        && geo.containsPoint(box, shot.target.lat, shot.target.lon),
+      note: shot.note || null
+    };
+  });
+}
+
 function locationById(id) {
   for (const loc of locations.locations) {
     if (loc.id === id) return loc;
@@ -1109,7 +1143,12 @@ function createHandler(opts) {
           mesh: loaded ? loaded.basis.kind : null,
           maxSlopeDeg: loaded ? round(loaded.basis.maxSlopeDeg, 1) : null,
           terrain: loaded && loaded.header.dataset ? loaded.header.dataset : null
-        }, loc);
+        }, loc, {
+          // After `loc`, not before it. Spread first, the raw array out of
+          // `locations.json` wins and the hand-typed `rangeM` is what gets
+          // served - which is the drift this was meant to remove.
+          shots: shotsOf(loc)
+        });
       })
     }, headers);
   }

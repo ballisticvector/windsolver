@@ -173,6 +173,27 @@ function heightMiles(box) {
   return ((box.north - box.south) * METERS_PER_DEG_LAT) / METERS_PER_MILE;
 }
 
+/**
+ * How far and on what heading, from one pin to another.
+ *
+ * Local-flat rather than great-circle, and that is a deliberate limit: these
+ * are two points inside one solved box, kilometres apart, where the error from
+ * treating the ground as flat is millimetres. Anything long enough for the
+ * curvature to matter is longer than any domain this service solves.
+ *
+ * The bearing is 0 to 360 clockwise from north, which is what `/v1/line` takes
+ * and what a shooter reads off a compass. `Math.atan2` returns -180 to 180, and
+ * a negative bearing would be accepted by the line route and drawn backwards.
+ */
+function rangeAndBearing(fromLat, fromLon, toLat, toLon) {
+  const north = (toLat - fromLat) * METERS_PER_DEG_LAT;
+  const east = (toLon - fromLon) * metersPerDegLon((fromLat + toLat) / 2);
+  return {
+    rangeM: Math.hypot(north, east),
+    bearingDeg: (Math.atan2(east, north) * 180 / Math.PI + 360) % 360
+  };
+}
+
 module.exports = {
   METERS_PER_MILE,
   METERS_PER_DEG_LAT,
@@ -187,5 +208,6 @@ module.exports = {
   snapBoxOut,
   bboxParam,
   widthMiles,
-  heightMiles
+  heightMiles,
+  rangeAndBearing
 };

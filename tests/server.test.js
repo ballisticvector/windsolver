@@ -1636,3 +1636,55 @@ describe("a saved place that is warmed while the service is running", () => {
     }
   });
 });
+
+describe("a saved engagement on the listing", () => {
+  // Two pins and the line between them, so a caller can frame the warm field on
+  // the shot instead of on the middle of a box. The geometry is computed from
+  // the pins rather than read from the file, so a hand-typed yardage cannot
+  // drift away from the coordinates it claims to describe.
+
+  test("carries the shot with its range and bearing worked out", async () => {
+    const svc = await listen({ field: stubService() });
+    try {
+      const body = (await get(svc.url, "/v1/locations")).body;
+      const whittington = body.locations.find((l) => l.id === "whittington");
+      const shot = whittington.shots.find((s) => s.id === "ko2m-1");
+
+      expect(shot.rangeM).toBeGreaterThan(2195);
+      expect(shot.rangeM).toBeLessThan(2215);
+      expect(shot.rangeYd).toBeGreaterThan(2400);
+      expect(shot.rangeYd).toBeLessThan(2425);
+      expect(shot.bearingDeg).toBeCloseTo(317.2, 0);
+      expect(shot.shooter).toEqual({ lat: 36.792028, lon: -104.579632 });
+      expect(shot.target).toEqual({ lat: 36.806557, lon: -104.596452 });
+    } finally {
+      await svc.close();
+    }
+  });
+
+  // The flag that would have caught the original problem. Under the old centre
+  // this engagement ended 1,445 m outside the box, and nothing said so.
+  test("says whether both ends are inside the ground that was solved", async () => {
+    const svc = await listen({ field: stubService() });
+    try {
+      const body = (await get(svc.url, "/v1/locations")).body;
+      for (const loc of body.locations) {
+        for (const shot of loc.shots) {
+          expect(shot.insideDomain).toBe(true);
+        }
+      }
+    } finally {
+      await svc.close();
+    }
+  });
+
+  test("a place with no shots carries an empty list, not a missing field", async () => {
+    const svc = await listen({ field: stubService() });
+    try {
+      const body = (await get(svc.url, "/v1/locations")).body;
+      for (const loc of body.locations) expect(Array.isArray(loc.shots)).toBe(true);
+    } finally {
+      await svc.close();
+    }
+  });
+});
