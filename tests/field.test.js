@@ -809,3 +809,85 @@ describe("the ground is cached on the ground alone", () => {
     expect(seen).toEqual([200, 500]);
   });
 });
+
+describe("coarsening a grid the overview pyramid could not", () => {
+  const proj = require("../proj.js");
+
+  function grid(nx, ny, spacingM, fill) {
+    const values = new Float32Array(nx * ny);
+    for (let j = 0; j < ny; j++) {
+      for (let i = 0; i < nx; i++) values[j * nx + i] = fill(i, j);
+    }
+    return {
+      crs: proj.crsFromEpsg(26913),
+      width: nx, height: ny,
+      transform: { originX: 500000, originY: 4000000, scaleX: spacingM, scaleY: -spacingM },
+      resolutionM: spacingM, voidFraction: 0, values: values
+    };
+  }
+
+  test("a whole factor averages the block, and the ground stays where it was", () => {
+    // A ramp, so the average of each block is the value at the block's middle
+    // and the answer is checkable by hand.
+    const g = grid(8, 8, 32, function (i) { return 1000 + i; });
+    const c = field.coarsen(g, 2);
+
+    expect(c.width).toBe(4);
+    expect(c.height).toBe(4);
+    expect(c.resolutionM).toBe(64);
+    expect(c.transform.scaleX).toBe(64);
+    expect(c.transform.scaleY).toBe(-64);
+    // The origin is a corner, not a centre, so it does not move.
+    expect(c.transform.originX).toBe(g.transform.originX);
+    expect(c.transform.originY).toBe(g.transform.originY);
+    // Column 0 averages source columns 0 and 1: 1000 and 1001.
+    expect(c.values[0]).toBeCloseTo(1000.5, 6);
+    expect(c.values[3]).toBeCloseTo(1006.5, 6);
+  });
+
+  test("a hole stays a hole rather than borrowing from its neighbours", () => {
+    // The one thing every read in this repository refuses. A block with nothing
+    // readable in it has no ground, and averaging its neighbours in would put
+    // terrain under a place the survey never covered.
+    const g = grid(4, 4, 32, function () { return 1000; });
+    for (const at of [0, 1, 4, 5]) g.values[at] = NaN;   // the whole first block
+    g.values[2] = NaN;                                    // one corner of the second
+
+    const c = field.coarsen(g, 2);
+    expect(Number.isNaN(c.values[0])).toBe(true);
+    // A block with some ground averages what it has rather than going void.
+    expect(c.values[1]).toBeCloseTo(1000, 6);
+    expect(c.voidFraction).toBeCloseTo(0.25, 6);
+  });
+
+  test("a partial block at the edge is averaged, not dropped", () => {
+    // Otherwise the domain quietly shrinks by up to a block, and a caller who
+    // asked for five miles gets four and a bit with no way to tell.
+    const g = grid(5, 5, 32, function () { return 1000; });
+    const c = field.coarsen(g, 2);
+    expect(c.width).toBe(3);
+    expect(c.height).toBe(3);
+    expect(c.values[2]).toBeCloseTo(1000, 6);
+  });
+
+  test("a factor of one or less is a no-op, not a copy", () => {
+    const g = grid(4, 4, 32, function () { return 1000; });
+    expect(field.coarsen(g, 1)).toBe(g);
+    expect(field.coarsen(g, 0.5)).toBe(g);
+  });
+
+  test("averaging makes ground read gentler, which decides the mesh", () => {
+    // Not a side effect worth hiding: slope is measured between neighbouring
+    // cells, so a coarser read averages a cliff away. `mass.DEFAULT_MAX_SLOPE_DEG`
+    // sorts readings rather than places because of exactly this.
+    const mass = require("../mass.js");
+    const g = grid(16, 16, 32, function (i) { return 1000 + (i % 2 ? 60 : 0); });
+    const terrainOf = function (x) {
+      return { width: x.width, height: x.height,
+        spacingM: { x: x.resolutionM, y: x.resolutionM }, elevation: x.values };
+    };
+    const fine = mass.buildTerrainMesh(terrainOf(g), { layers: 8 });
+    const coarse = mass.buildTerrainMesh(terrainOf(field.coarsen(g, 2)), { layers: 8 });
+    expect(coarse.maxSlopeDeg).toBeLessThan(fine.maxSlopeDeg);
+  });
+});
