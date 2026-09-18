@@ -16,6 +16,7 @@
       "id": "whittington",
       "name": "NRA Whittington Center",
       "region": "Raton, New Mexico",
+      "default": true,
       "lat": 36.79723,
       "lon": -104.566203,
       "radiusMiles": 3,
@@ -47,16 +48,6 @@
       "radiusMiles": 5,
       "resolutionM": 64,
       "note": "The same centre as the 1000 yard box, five miles out and read coarse. This is the whole property and its surrounding landform - what the weather is doing to the Center, rather than what the ground is doing to a particular shot. It still covers the old centre at 36.77,-104.49, so nothing that was visible before this was re-centred has been lost."
-    },
-    {
-      "id": "boulder",
-      "name": "Boulder",
-      "region": "Colorado",
-      "lat": 40.015,
-      "lon": -105.2705,
-      "radiusMiles": 2,
-      "resolutionM": 30,
-      "note": "The default the page has always opened on, and the domain most of the ingestion measurements in README.md were taken over."
     }
   ]
 }
