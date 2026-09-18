@@ -20,7 +20,7 @@
       "lon": -104.49,
       "radiusMiles": 5,
       "resolutionM": 64,
-      "note": "Ten miles across, which holds the canyons a two-mile box cuts in half. Read at 64 m, and the number is exact on purpose: `cog.chooseLevel` takes the coarsest overview still FINER than what is asked, so 60 snaps to 32 and doubles the work rather than halving it. At 64 this is 251 x 251 against the two-mile domain's 445 x 424 at 16 m - a third of the cells over six times the ground. Note the mesh a domain gets depends on how finely it was read: slope is measured between neighbouring cells, so coarser ground reads gentler."
+      "note": "Ten miles across, which holds the canyons a two-mile box cuts in half. Read at 64 m, and it takes averaging to get there: a 3DEP 1 m tile carries five overviews, so 32 m is the floor and asking for anything coarser still returns 32. `field.groundOnly` averages the rest of the way, which is the difference between 520 x 518 at 32 m - 3.2 M solver cells, 497 s - and 260 x 259 at 64 m, 0.81 M cells, 80 s. It also decides the mesh: this ground reads 47.8 degrees at 32 m and 43.8 at 64, against a 45 degree limit, so the coarser read is what keeps it terrain-following. **By 1.2 degrees** - do not read that mesh as a property of the place."
     },
     {
       "id": "boulder",
