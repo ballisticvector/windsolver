@@ -659,6 +659,44 @@ function createFieldService(opts) {
 }
 
 /**
+ * How many cells to average into one, given what the pyramid gave.
+ *
+ * The rule is still "a whole factor of two or more": a 1.4x average is a blur
+ * that costs accuracy and saves nothing worth having. What is new is the
+ * tolerance, and it is there because the old `Math.floor(wanted / have)` was
+ * decided by map projection rather than by the caller.
+ *
+ * **An overview level is a power of two times the DEM's source pixel, and the
+ * source pixel is 1 m only in the DEM's own projection.** The same 3DEP "16 m"
+ * level measures 15.9936 m over the Whittington Center and 16.0192 m over Hat
+ * Creek, because the UTM scale factor differs at the two sites. Ask both for
+ * 32 m and the first halves — 2.0008 — while the second does not, at 1.9976.
+ * Hat Creek therefore solved 630 x 628 where 315 x 314 was asked for: four
+ * times the cells, 20215 sweeps, an hour and fifty-four minutes, 86 MB rather
+ * than about 22. Nobody could have predicted which they would get.
+ *
+ * The tolerance is relative rather than absolute because the shortfall grows
+ * with the factor: the same level is 1.9976 of a halving and 3.9952 of a
+ * quartering, so a fixed slack that fixed one would leave the other broken.
+ *
+ * One percent is wide enough for any projection — the largest deviation seen
+ * across these sites is 0.12% — and far too narrow to swallow a caller who
+ * meant 1.9. The effect is that a ratio at or above 1.9802 counts as a halving
+ * and anything below it does not.
+ */
+const RESOLUTION_TOLERANCE = 0.01;
+
+function coarsenFactor(wantedM, haveM) {
+  const wanted = typeof wantedM === "number" ? wantedM : NaN;
+  const have = typeof haveM === "number" ? haveM : NaN;
+  if (!Number.isFinite(wanted) || !Number.isFinite(have)) return 1;
+  if (!(wanted > 0) || !(have > 0)) return 1;
+
+  const factor = Math.floor((wanted / have) * (1 + RESOLUTION_TOLERANCE));
+  return factor >= 2 ? factor : 1;
+}
+
+/**
  * The ground alone: no weather, no derivatives, one terrain read.
  *
  * **This exists because callers kept rebuilding it and leaving pieces out.** A
@@ -696,17 +734,8 @@ async function groundOnly(spec, opts) {
   // The pyramid may not go as coarse as the caller asked. Averaging down the
   // rest of the way is the difference between a ten-mile domain costing three
   // million solver cells and costing three quarters of a million.
-  let coarsenedBy = 1;
-  const wanted = Number(spec.targetResolutionM);
-  if (Number.isFinite(wanted) && wanted > 0 && grid.resolutionM > 0) {
-    const factor = Math.floor(wanted / grid.resolutionM);
-    // Only on a whole factor of two or more: a 1.4x average is a blur that
-    // costs accuracy and saves nothing worth having.
-    if (factor >= 2) {
-      grid = coarsen(grid, factor);
-      coarsenedBy = factor;
-    }
-  }
+  const coarsenedBy = coarsenFactor(spec.targetResolutionM, grid.resolutionM);
+  if (coarsenedBy > 1) grid = coarsen(grid, coarsenedBy);
 
   return {
     domain: domain, grid: grid, dataset: read.dataset,
@@ -825,6 +854,8 @@ function coarsen(grid, factor) {
 module.exports = {
   FIELD_VERSION,
   coarsen,
+  coarsenFactor,
+  RESOLUTION_TOLERANCE,
   groundOnly,
   massWindAt,
   DEFAULT_RADIUS_MILES,
