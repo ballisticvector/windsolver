@@ -1142,6 +1142,21 @@
         (place.warm ? "" : "  (not solved yet)");
       select.appendChild(option);
     }
+
+    // Open on the place most people are here for rather than on "anywhere".
+    // Only a solved one: landing a first-time visitor on a place that answers
+    // with a refusal is worse than landing them on the general model, which
+    // always answers something.
+    //
+    // `change` is dispatched rather than the handler called, because the
+    // handler is what moves the map, sets the radius and writes the status
+    // line, and a selection that looked chosen but had done none of that would
+    // be a map showing one place and a picker naming another.
+    const start = places.find(function (p) { return p.default && p.warm; });
+    if (start && !select.value) {
+      select.value = start.id;
+      select.dispatchEvent(new window.Event("change"));
+    }
   }
 
   function describePlace(place) {

@@ -13,6 +13,7 @@
 // So the test that matters here is not that the arithmetic is right. It is that
 // a shot whose ends are not inside the box that solves it is refused.
 
+const path = require("path");
 const geo = require("../geo.js");
 const locations = require("../data/locations.json");
 
@@ -117,6 +118,44 @@ describe("the saved shots", () => {
     for (const loc of withShots) {
       for (const shot of loc.shots) {
         expect(shot.id).toMatch(/^[a-z0-9]+(?:-[a-z0-9]+)*$/);
+      }
+    }
+  });
+});
+
+describe("the place the page opens on", () => {
+  // Landing on "anywhere" asks a first-time visitor to know a coordinate before
+  // the service shows them anything. Landing on a saved place shows them the
+  // thing this service is for. But only one place can be that, and only a
+  // solved one: opening on a place whose answer is a refusal is worse than
+  // opening on the general model, which always answers something.
+
+  const locations = require("../data/locations.json").locations;
+
+  test("exactly one place is marked default", () => {
+    const flagged = locations.filter((l) => l.default);
+    expect(flagged.map((l) => l.id)).toHaveLength(1);
+  });
+
+  test("it is Whittington, which is what the ranges are", () => {
+    expect(locations.find((l) => l.default).id).toBe("whittington");
+  });
+
+  // A default is a promise to open there. A place nobody warms is a promise
+  // the service cannot keep, and `loadPlaces` falls back rather than keeping
+  // it — this is here so the fallback stays a safety net rather than the
+  // normal case.
+  test("the default is a place the warm workflow actually solves", () => {
+    const rows = require("../tools/basis-cache-key.js").matrix(path.join(__dirname, ".."));
+    const id = locations.find((l) => l.default).id;
+    expect(rows.filter((r) => r.id === id).length).toBeGreaterThan(0);
+  });
+
+  test("boulder is gone, and nothing still points at it", () => {
+    expect(locations.map((l) => l.id)).not.toContain("boulder");
+    for (const l of locations) {
+      for (const shot of l.shots || []) {
+        expect(shot.id).not.toContain("boulder");
       }
     }
   });
