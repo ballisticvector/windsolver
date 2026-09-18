@@ -693,7 +693,25 @@ async function groundOnly(spec, opts) {
       filledFrom = coarse.dataset ? coarse.dataset.label : null;
     }
   }
-  return { domain: domain, grid: grid, dataset: read.dataset, filledFrom: filledFrom };
+  // The pyramid may not go as coarse as the caller asked. Averaging down the
+  // rest of the way is the difference between a ten-mile domain costing three
+  // million solver cells and costing three quarters of a million.
+  let coarsenedBy = 1;
+  const wanted = Number(spec.targetResolutionM);
+  if (Number.isFinite(wanted) && wanted > 0 && grid.resolutionM > 0) {
+    const factor = Math.floor(wanted / grid.resolutionM);
+    // Only on a whole factor of two or more: a 1.4x average is a blur that
+    // costs accuracy and saves nothing worth having.
+    if (factor >= 2) {
+      grid = coarsen(grid, factor);
+      coarsenedBy = factor;
+    }
+  }
+
+  return {
+    domain: domain, grid: grid, dataset: read.dataset,
+    filledFrom: filledFrom, coarsenedBy: coarsenedBy
+  };
 }
 
 /**
@@ -735,8 +753,78 @@ function massWindAt(grid, solved, lat, lon, heightAglM, opts) {
   return { east: east, north: north, speedMps: Math.hypot(east, north), fromDeg: from };
 }
 
+/**
+ * Average a grid down by a whole factor.
+ *
+ * **Because the overview pyramid runs out.** `cog.chooseLevel` takes the
+ * coarsest level still finer than what was asked for, and a 3DEP 1 m tile
+ * carries five overviews — 1, 2, 4, 8, 16, 32 — so 32 m is the floor whatever
+ * the caller asks for. A ten-mile box read at 32 m is 520 x 518 and three
+ * million solver cells; the same box at 64 m is a quarter of that. Asking for
+ * 64 does not get it, and this is what does.
+ *
+ * A box average rather than a sample: a sample keeps one pixel in `factor`
+ * squared and throws the rest away, which on a ridge is as likely to land in
+ * the gully as on the crest. The average is also why the coarse ground reads
+ * *gentler* — see `mass.DEFAULT_MAX_SLOPE_DEG`, where that has consequences.
+ *
+ * **A hole stays a hole.** A block with no readable ground averages to NaN
+ * rather than to whatever its neighbours had; filling it here would put ground
+ * under a place the terrain never covered, which is the one thing every read in
+ * this repository refuses.
+ *
+ * The origin is a corner, not a centre, so it survives unchanged and only the
+ * scale multiplies. A partial block at the far edge is averaged from what it
+ * has rather than dropped, so the domain does not quietly shrink.
+ */
+function coarsen(grid, factor) {
+  const f = Math.round(factor);
+  if (!(f > 1)) return grid;
+  const width = Math.ceil(grid.width / f);
+  const height = Math.ceil(grid.height / f);
+  const values = new Float32Array(width * height);
+  let voids = 0;
+
+  for (let j = 0; j < height; j++) {
+    const y0 = j * f;
+    const y1 = Math.min(grid.height, y0 + f);
+    for (let i = 0; i < width; i++) {
+      const x0 = i * f;
+      const x1 = Math.min(grid.width, x0 + f);
+      let sum = 0;
+      let n = 0;
+      for (let y = y0; y < y1; y++) {
+        for (let x = x0; x < x1; x++) {
+          const v = grid.values[y * grid.width + x];
+          if (Number.isFinite(v)) { sum += v; n++; }
+        }
+      }
+      if (n) {
+        values[j * width + i] = sum / n;
+      } else {
+        values[j * width + i] = NaN;
+        voids++;
+      }
+    }
+  }
+
+  return Object.assign({}, grid, {
+    width: width,
+    height: height,
+    values: values,
+    resolutionM: grid.resolutionM * f,
+    transform: Object.assign({}, grid.transform, {
+      scaleX: grid.transform.scaleX * f,
+      scaleY: grid.transform.scaleY * f
+    }),
+    voidFraction: voids / (width * height),
+    coarsenedBy: f
+  });
+}
+
 module.exports = {
   FIELD_VERSION,
+  coarsen,
   groundOnly,
   massWindAt,
   DEFAULT_RADIUS_MILES,
