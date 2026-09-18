@@ -1507,7 +1507,7 @@ describe("a saved place that is warmed while the service is running", () => {
   const realLocation = require("../data/locations.json").locations[0];
 
   /** A basis file valid for a saved location, small enough to write in a test. */
-  function writeBasisFor(dir, loc) {
+  function writeBasisFor(dir, loc, stability) {
     const width = 12;
     const height = 12;
     const spacingM = 30;
@@ -1526,20 +1526,24 @@ describe("a saved place that is warmed while the service is running", () => {
         scaleX: spacingM, scaleY: -spacingM
       }
     };
+    const r = mass.rFor(stability);
     const solved = mass.solveBasis(
       { width: width, height: height, spacingM: { x: spacingM, y: spacingM }, elevation: elevation },
-      { layers: 12, stretch: 1.25, r: mass.DEFAULT_R, maxIterations: 60000 }
+      { layers: 12, stretch: 1.25, r: r, maxIterations: 60000 }
     );
     const spec = { lat: loc.lat, lon: loc.lon, radiusMiles: loc.radiusMiles };
     if (loc.resolutionM !== undefined) spec.targetResolutionM = loc.resolutionM;
 
     fs.mkdirSync(dir, { recursive: true });
-    basisFile.save(path.join(dir, loc.id + ".basis"), {
+    const name = stability === undefined || stability === "neutral"
+      ? loc.id + ".basis"
+      : loc.id + "." + stability + ".basis";
+    basisFile.save(path.join(dir, name), {
       key: basisFile.keyFor(spec, {
-        layers: 12, stretch: 1.25, r: mass.DEFAULT_R, maxIterations: 60000
+        layers: 12, stretch: 1.25, r: r, maxIterations: 60000
       }),
       spec: spec,
-      options: { layers: 12, stretch: 1.25, r: mass.DEFAULT_R, maxIterations: 60000 },
+      options: { layers: 12, stretch: 1.25, r: r, maxIterations: 60000 },
       location: { id: loc.id, name: loc.name, region: loc.region || null },
       dataset: "test", filledFrom: null, grid: grid, basis: solved
     });
@@ -1631,6 +1635,142 @@ describe("a saved place that is warmed while the service is running", () => {
       expect(gone.body.code).toBe("location-cold");
       expect((await get(svc.url, "/v1/locations")).body.locations
         .find((l) => l.id === realLocation.id).warm).toBe(false);
+    } finally {
+      await svc.close();
+    }
+  });
+});
+
+
+describe("asking for a stability", () => {
+  // `r` sits inside the operator being inverted, so unlike speed and bearing it
+  // cannot be recovered by scaling a solved basis. A setting is therefore its
+  // own solve, its own file and its own answer — and a caller that asks for one
+  // the box has not been warmed for has to be told so rather than quietly
+  // handed the other one.
+
+  const loc = require("../data/locations.json").locations[0];
+
+  function writeAt(dir, stability) {
+    const width = 12, height = 12, spacingM = 30;
+    const elevation = new Float32Array(width * height);
+    for (let j = 0; j < height; j++) {
+      for (let i = 0; i < width; i++) elevation[j * width + i] = 1800 + 6 * i;
+    }
+    const crs = proj.crsFromEpsg(26913);
+    const mid = proj.fromGeographic(crs, loc.lat, loc.lon);
+    const r = mass.rFor(stability);
+    const opts = { layers: 12, stretch: 1.25, r: r, maxIterations: 60000 };
+    const spec = { lat: loc.lat, lon: loc.lon, radiusMiles: loc.radiusMiles };
+    if (loc.resolutionM !== undefined) spec.targetResolutionM = loc.resolutionM;
+    fs.mkdirSync(dir, { recursive: true });
+    basisFile.save(path.join(dir, stability === "neutral"
+      ? loc.id + ".basis" : loc.id + "." + stability + ".basis"), {
+      key: basisFile.keyFor(spec, opts),
+      spec: spec, options: opts,
+      location: { id: loc.id, name: loc.name, region: null, stability: stability },
+      dataset: "test-" + stability, filledFrom: null,
+      grid: {
+        crs: crs, width: width, height: height, values: elevation,
+        resolutionM: spacingM, voidFraction: 0,
+        transform: {
+          originX: mid.x - (width * spacingM) / 2,
+          originY: mid.y + (height * spacingM) / 2,
+          scaleX: spacingM, scaleY: -spacingM
+        }
+      },
+      basis: mass.solveBasis(
+        { width: width, height: height, spacingM: { x: spacingM, y: spacingM }, elevation: elevation },
+        opts)
+    });
+  }
+
+  let dir;
+  beforeEach(() => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), "ws-stab-"));
+    server.forgetWarmPlaces();
+  });
+  afterEach(() => {
+    fs.rmSync(dir, { recursive: true, force: true });
+    server.forgetWarmPlaces();
+  });
+
+  const ask = (s) => "/v1/field?location=" + loc.id + "&speedMph=10&fromDeg=270&cols=6" +
+    (s ? "&stability=" + s : "");
+
+  test("defaults to neutral, and says which it used", async () => {
+    const svc = await listen({ field: stubService(), basisDir: dir });
+    try {
+      writeAt(dir, "neutral");
+      const res = await get(svc.url, ask());
+      expect(res.status).toBe(200);
+      expect(res.body.stability).toEqual({ name: "neutral", r: mass.STABILITY.neutral });
+    } finally {
+      await svc.close();
+    }
+  });
+
+  // The whole point of the parameter: two settings are two different fields
+  // out of two different files, not one field relabelled.
+  test("reads a different file for a different setting", async () => {
+    const svc = await listen({ field: stubService(), basisDir: dir });
+    try {
+      writeAt(dir, "neutral");
+      writeAt(dir, "stable");
+
+      const neutral = await get(svc.url, ask("neutral"));
+      const stable = await get(svc.url, ask("stable"));
+      expect(neutral.status).toBe(200);
+      expect(stable.status).toBe(200);
+      expect(stable.body.stability.r).toBe(mass.STABILITY.stable);
+      expect(neutral.body.stability.r).toBe(mass.STABILITY.neutral);
+
+      // Each file carries its own dataset label, so this is proof the two
+      // answers came out of two files rather than one field relabelled.
+      expect(stable.body.terrain.dataset).toBe("test-stable");
+      expect(neutral.body.terrain.dataset).toBe("test-neutral");
+    } finally {
+      await svc.close();
+    }
+  });
+
+  test("a place warm at one setting is cold at the other, and says so", async () => {
+    const svc = await listen({ field: stubService(), basisDir: dir });
+    try {
+      writeAt(dir, "neutral");
+
+      expect((await get(svc.url, ask("neutral"))).status).toBe(200);
+      const cold = await get(svc.url, ask("stable"));
+      expect(cold.status).toBe(503);
+      expect(cold.body.code).toBe("location-cold");
+      expect(cold.body.error).toContain("stable");
+    } finally {
+      await svc.close();
+    }
+  });
+
+  test("the listing reports each setting separately", async () => {
+    const svc = await listen({ field: stubService(), basisDir: dir });
+    try {
+      writeAt(dir, "neutral");
+      const listed = (await get(svc.url, "/v1/locations")).body.locations
+        .find((l) => l.id === loc.id);
+      expect(listed.stabilities).toEqual({ neutral: true, stable: false });
+    } finally {
+      await svc.close();
+    }
+  });
+
+  test("refuses a setting the solver does not have", async () => {
+    const svc = await listen({ field: stubService(), basisDir: dir });
+    try {
+      writeAt(dir, "neutral");
+      const res = await get(svc.url, ask("unstable"));
+      expect(res.status).toBe(400);
+      expect(res.body.code).toBe("no-such-stability");
+      // The names it does have travel in the message, because that is what a
+      // caller reads. `serviceError` detail does not reach the body.
+      expect(res.body.error).toContain("stable, neutral");
     } finally {
       await svc.close();
     }

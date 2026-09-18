@@ -48,6 +48,8 @@ const crypto = require("crypto");
 const fs = require("fs");
 const nodePath = require("path");
 
+const mass = require("../mass.js");
+
 const ROOT = nodePath.join(__dirname, "..");
 
 /**
@@ -89,7 +91,7 @@ const HASHED_NOT_FOLLOWED = ["server.js"];
  */
 const SOLVE_FIELDS = ["lat", "lon", "radiusMiles", "resolutionM"];
 
-const KEY_PREFIX = "basis-v2";
+const KEY_PREFIX = "basis-v3";
 const HASH_CHARS = 16;
 
 function sha256(buf) {
@@ -266,16 +268,37 @@ function checkId(id) {
   return id;
 }
 
-function keyFor(loc, code) {
-  return [KEY_PREFIX, checkId(loc.id), locationHash(loc), code].join("-");
+function keyFor(loc, code, stability) {
+  const name = stability === undefined ? "neutral" : stability;
+  mass.rFor(name);   // refuses a name the solver does not have
+  return [KEY_PREFIX, checkId(loc.id), name, locationHash(loc), code].join("-");
 }
 
+/**
+ * Every place, at every stability, because each is its own solve.
+ *
+ * `r` sits inside the operator being inverted, so unlike speed and bearing it
+ * cannot be recovered from a basis by scaling one. Two settings means two
+ * solves and two files - and two rows here, so the fan-out gives each its own
+ * runner and its own cache entry.
+ */
 function matrix(root) {
   const at = root || ROOT;
   const locations = JSON.parse(
     fs.readFileSync(nodePath.join(at, "data", "locations.json"), "utf8")).locations;
   const code = codeHash(at);
-  return locations.map(function (l) { return { id: l.id, key: keyFor(l, code) }; });
+  const out = [];
+  for (const l of locations) {
+    for (const stability of Object.keys(mass.STABILITY)) {
+      out.push({
+        id: l.id,
+        stability: stability,
+        file: stability === "neutral" ? l.id + ".basis" : l.id + "." + stability + ".basis",
+        key: keyFor(l, code, stability)
+      });
+    }
+  }
+  return out;
 }
 
 /** One line, because it is read back by `fromJSON` in a workflow expression. */
@@ -290,8 +313,12 @@ function main(argv) {
   const at = argv.indexOf("--location");
   if (at >= 0 && argv[at + 1]) {
     const id = argv[at + 1];
-    const entry = matrix(ROOT).find(function (e) { return e.id === id; });
-    if (!entry) throw new Error("no saved location " + id);
+    const wantAt = argv.indexOf("--stability");
+    const want = wantAt >= 0 && argv[wantAt + 1] ? argv[wantAt + 1] : "neutral";
+    const entry = matrix(ROOT).find(function (e) {
+      return e.id === id && e.stability === want;
+    });
+    if (!entry) throw new Error("no saved location " + id + " at " + want);
     return entry.key;
   }
 

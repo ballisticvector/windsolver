@@ -269,12 +269,45 @@ describe("the place half of the key", () => {
 describe("the matrix the workflow fans out over", () => {
   const locations = require("../data/locations.json").locations;
 
-  test("is one entry per saved place, with its id and its key", () => {
+  const mass = require("../mass.js");
+  const settings = Object.keys(mass.STABILITY);
+
+  // One row per place *and* setting. `r` is inside the operator being inverted,
+  // so a stability cannot be recovered from a solved basis the way a speed or a
+  // bearing can - it is a separate solve, a separate file and a separate row.
+  test("is one entry per saved place per stability", () => {
     const m = key.matrix(ROOT);
-    expect(m.map((e) => e.id)).toEqual(locations.map((l) => l.id));
-    for (const entry of m) {
-      expect(entry.key).toMatch(/^basis-v2-[a-z0-9-]+-[0-9a-f]{16}-[0-9a-f]{16}$/);
+    expect(m).toHaveLength(locations.length * settings.length);
+    for (const l of locations) {
+      const mine = m.filter((e) => e.id === l.id);
+      expect(mine.map((e) => e.stability).sort()).toEqual(settings.slice().sort());
     }
+    for (const entry of m) {
+      expect(entry.key).toMatch(/^basis-v3-[a-z0-9-]+-[a-z]+-[0-9a-f]{16}-[0-9a-f]{16}$/);
+    }
+  });
+
+  test("names the file each row will produce, neutral keeping the bare name", () => {
+    for (const entry of key.matrix(ROOT)) {
+      expect(entry.file).toBe(entry.stability === "neutral"
+        ? entry.id + ".basis"
+        : entry.id + "." + entry.stability + ".basis");
+    }
+  });
+
+  // The two settings over one place are two different fields. If they shared a
+  // key, warming one would satisfy the cache for the other and the service
+  // would serve a neutral field to somebody who asked for stable.
+  test("gives one place's two settings different keys", () => {
+    const m = key.matrix(ROOT);
+    for (const l of locations) {
+      const keys = m.filter((e) => e.id === l.id).map((e) => e.key);
+      expect(new Set(keys).size).toBe(keys.length);
+    }
+  });
+
+  test("refuses a stability the solver does not have", () => {
+    expect(() => key.keyFor(locations[0], "abc123", "unstable")).toThrow(/stability/i);
   });
 
   // A matrix value is handed to a shell step as an argument and becomes a
@@ -309,12 +342,18 @@ describe("the matrix the workflow fans out over", () => {
     const added = locations.concat([{
       id: "somewhere-new", lat: 1, lon: 2, radiusMiles: 3, resolutionM: 32
     }]);
-    const after = added.map((l) => ({ id: l.id, key: key.keyFor(l, code) }));
+    const after = [];
+    for (const l of added) {
+      for (const stability of settings) {
+        after.push({ id: l.id, stability: stability, key: key.keyFor(l, code, stability) });
+      }
+    }
 
     for (const entry of before) {
-      expect(after.find((e) => e.id === entry.id).key).toBe(entry.key);
+      const same = after.find((e) => e.id === entry.id && e.stability === entry.stability);
+      expect(same.key).toBe(entry.key);
     }
-    expect(after).toHaveLength(before.length + 1);
+    expect(after).toHaveLength(before.length + settings.length);
   });
 
   test("is JSON that GitHub Actions can fan out over", () => {
