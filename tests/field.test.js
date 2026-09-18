@@ -810,6 +810,96 @@ describe("the ground is cached on the ground alone", () => {
   });
 });
 
+describe("deciding how far to coarsen", () => {
+  // Hat Creek read 630 x 628 where the saved location asked for a grid half
+  // that wide, and the reason was not a bad estimate. An overview level is a
+  // power of two times the DEM's source pixel, and the source pixel is 1 m only
+  // in the DEM's own projection - so the "16 m" level is 15.9936 m at the
+  // Whittington Center and 16.0192 m at Hat Creek. A plain
+  // `Math.floor(32 / 16.0192)` is 1, so an intended halving became no
+  // coarsening at all: four times the cells, 20215 sweeps, an hour and
+  // fifty-four minutes, and 86 MB instead of about 22.
+  //
+  // Which side of the power of two a site lands on is the UTM scale factor
+  // there. Nobody can predict it, and the caller should not have to.
+
+  const WHITTINGTON = 15.9936102236;   // measured, from the stored basis header
+  const HAT_CREEK = 16.0192;           // measured, from the stored basis header
+  const WIDE = 63.9744408946;          // measured, from the stored basis header
+
+  test("halves Hat Creek, which floor() would not have", () => {
+    expect(32 / HAT_CREEK).toBeLessThan(2);          // the trap, stated
+    expect(field.coarsenFactor(32, HAT_CREEK)).toBe(2);
+  });
+
+  test("quarters it too, where the shortfall is four times as wide", () => {
+    // The gap from the whole number grows with the factor - 3.9952 rather than
+    // 1.9976 - so a fixed absolute slack would have fixed the halving and left
+    // this one broken.
+    expect(64 / HAT_CREEK).toBeLessThan(4);
+    expect(field.coarsenFactor(64, HAT_CREEK)).toBe(4);
+    expect(field.coarsenFactor(128, HAT_CREEK)).toBe(8);
+  });
+
+  test("leaves the places that were already right alone", () => {
+    // These three are on the droplet, solved, and serving. If any of them moved
+    // here, their stored basis would quietly be an answer to different ground -
+    // `basis.keyFor` covers the coordinate and the options, not the grid.
+    expect(field.coarsenFactor(30, WHITTINGTON)).toBe(1);
+    expect(field.coarsenFactor(30, 15.9936102236)).toBe(1);
+    expect(field.coarsenFactor(64, WIDE)).toBe(1);
+  });
+
+  test("still refuses a blur", () => {
+    // The original rule, and the reason for it: a 1.4x average costs accuracy
+    // and saves nothing worth having.
+    expect(field.coarsenFactor(22, 16)).toBe(1);
+    expect(field.coarsenFactor(24, 16)).toBe(1);
+    expect(field.coarsenFactor(30, 16)).toBe(1);
+  });
+
+  test("takes a shortfall of a percent and not of ten", () => {
+    // The edge stated exactly rather than approximated, because approximating
+    // it is the mistake this whole change is about: `floor(r * 1.01) >= 2`
+    // means the halving starts at r = 2 / 1.01 = 1.98019..., which is a
+    // shortfall of 0.990099 and not of 0.99.
+    const edge = 2 / (1 + field.RESOLUTION_TOLERANCE);
+    expect(field.coarsenFactor(edge * 1.000001, 1)).toBe(2);
+    expect(field.coarsenFactor(edge * 0.999999, 1)).toBe(1);
+
+    // The window is wide enough for any projection and far too narrow to
+    // swallow a caller who meant 1.9.
+    expect(field.coarsenFactor(1.999, 1)).toBe(2);
+    expect(field.coarsenFactor(1.97, 1)).toBe(1);
+    expect(field.coarsenFactor(1.9, 1)).toBe(1);
+  });
+
+  test("never coarsens past what was asked by more than that percent", () => {
+    for (const [wanted, have] of [[32, HAT_CREEK], [64, HAT_CREEK], [30, WHITTINGTON]]) {
+      const got = field.coarsenFactor(wanted, have) * have;
+      expect(got).toBeLessThanOrEqual(wanted * 1.01);
+    }
+  });
+
+  test("an exact multiple is unchanged by the tolerance", () => {
+    expect(field.coarsenFactor(32, 16)).toBe(2);
+    expect(field.coarsenFactor(64, 16)).toBe(4);
+    expect(field.coarsenFactor(16, 16)).toBe(1);
+  });
+
+  test("refuses to act on a resolution that is not a number", () => {
+    for (const bad of [undefined, null, NaN, 0, -32, Infinity, "32"]) {
+      expect(field.coarsenFactor(bad, 16)).toBe(1);
+      expect(field.coarsenFactor(32, bad)).toBe(1);
+    }
+  });
+
+  test("does not coarsen when the ground is already coarser than asked", () => {
+    expect(field.coarsenFactor(16, 32)).toBe(1);
+    expect(field.coarsenFactor(16, 64)).toBe(1);
+  });
+});
+
 describe("coarsening a grid the overview pyramid could not", () => {
   const proj = require("../proj.js");
 
