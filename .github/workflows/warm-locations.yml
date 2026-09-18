@@ -1,0 +1,160 @@
+name: Warm locations
+
+# Solve the saved places, and put the result on the droplet.
+#
+# A saved place answers a wind in thirty milliseconds because it was solved
+# beforehand. `data/basis/` holds the two fields that make that possible, it is
+# 47 to 62 MB a place, it is derived, and it is therefore gitignored — so it is
+# in neither the repository nor the release tarball, and a freshly deployed box
+# reports every place cold.
+#
+# **This runs here rather than on the droplet on purpose.** The droplet is two
+# vCPUs with BallisticVector on it, and warming is one core pinned for about
+# seven minutes a place. A CI runner has no live site to slow down.
+#
+# `workflow_dispatch` for the same reason the release is: minutes of
+# full-throttle CPU should happen because somebody chose it, not as a side
+# effect of merging. See docs/deploy.md.
+on:
+  workflow_dispatch:
+    inputs:
+      force:
+        description: "Re-solve even where the stored basis is already current"
+        type: boolean
+        default: false
+
+# One at a time. Two runs would solve the same places twice and race each other
+# onto the same directory on the box.
+concurrency:
+  group: warm-locations
+  cancel-in-progress: false
+
+jobs:
+  warm:
+    name: Solve and deliver
+    runs-on: ubuntu-latest
+    environment:
+      name: production
+    timeout-minutes: 90
+
+    steps:
+      # Refused rather than skipped, as the release is. A job with a branch
+      # condition reports green having delivered nothing, which is the one
+      # outcome this must never produce.
+      - name: Refuse to warm from anything but main
+        if: github.ref != 'refs/heads/main'
+        run: |
+          echo "Warming runs from main; this run is on ${{ github.ref }}." >&2
+          exit 1
+
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci --omit=dev
+
+      # What a stored basis is an answer to: the places, the solver, the file
+      # format, and the mesh options `server.js` reads them back with. Any of
+      # those changing makes every stored file an answer to a different
+      # question, which `basis.keyFor` would refuse at load — so the cache key
+      # has to move with them or a stale basis would be delivered as fresh.
+      - name: Key the cache on everything that changes the answer
+        id: key
+        run: |
+          echo "value=$(cat data/locations.json mass.js basis.js server.js \
+            | sha256sum | cut -c1-16)" >> "$GITHUB_OUTPUT"
+
+      - name: Reuse a solve that is still current
+        id: cache
+        if: ${{ !inputs.force }}
+        uses: actions/cache@v4
+        with:
+          path: data/basis
+          key: basis-${{ steps.key.outputs.value }}
+
+      - name: Solve
+        if: ${{ inputs.force || steps.cache.outputs.cache-hit != 'true' }}
+        run: node tools/warm-location.js --all ${{ inputs.force && '--force' || '' }}
+
+      # A place that did not solve leaves no file, and delivering a partial set
+      # silently would leave somebody wondering why one of three works.
+      - name: Check every place has a basis
+        run: |
+          missing=0
+          for id in $(node -e "require('./data/locations.json').locations.forEach(l=>console.log(l.id))"); do
+            if [ -f "data/basis/$id.basis" ]; then
+              echo "  $id  $(du -h "data/basis/$id.basis" | cut -f1)"
+            else
+              echo "  $id  MISSING" >&2
+              missing=1
+            fi
+          done
+          [ "$missing" = "0" ] || { echo "not every place solved" >&2; exit 1; }
+          tar czf basis.tgz -C data basis
+          ls -l basis.tgz
+
+      - name: Save the solve for next time
+        if: ${{ steps.cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@v4
+        with:
+          path: data/basis
+          key: basis-${{ steps.key.outputs.value }}
+
+      - name: Copy to the droplet
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.DEPLOY_HOST }}
+          username: ${{ secrets.DEPLOY_USER }}
+          key: ${{ secrets.DEPLOY_SSH_KEY }}
+          source: basis.tgz
+          target: /tmp
+          overwrite: true
+
+      - name: Unpack beside the service
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.DEPLOY_HOST }}
+          username: ${{ secrets.DEPLOY_USER }}
+          key: ${{ secrets.DEPLOY_SSH_KEY }}
+          script: |
+            set -e
+            cd /home/deploy/windsolver
+
+            # Unpacked into place rather than swapped: a basis is only ever read
+            # whole, on the first request for its place, so a file appearing
+            # under a running service is picked up by the next request and an
+            # older one already in memory keeps working until then.
+            #
+            # No restart. Loading is lazy, and restarting to collect a file the
+            # next request would have collected anyway is a minute of downtime
+            # bought for nothing.
+            echo "==> Unpacking..."
+            mkdir -p data
+            tar xzf /tmp/basis.tgz -C data
+            rm -f /tmp/basis.tgz
+
+            echo "==> On the box now:"
+            ls -lh data/basis
+
+            # The service does not have to be restarted, but it does have to be
+            # able to read them.
+            for f in data/basis/*.basis; do
+              [ -r "$f" ] || { echo "cannot read $f" >&2; exit 1; }
+            done
+
+      - name: Summary
+        run: |
+          {
+            echo "## Saved places warmed"
+            echo ""
+            echo "Solved on the runner and copied to the droplet. No restart:"
+            echo "a basis is read on the first request for its place, so the"
+            echo "next request picks these up."
+            echo ""
+            echo '| place | size |'
+            echo '| --- | --- |'
+            for id in $(node -e "require('./data/locations.json').locations.forEach(l=>console.log(l.id))"); do
+              echo "| \`$id\` | $(du -h "data/basis/$id.basis" | cut -f1) |"
+            done
+          } >> "$GITHUB_STEP_SUMMARY"
