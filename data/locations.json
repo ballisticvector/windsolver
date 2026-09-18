@@ -16,21 +16,21 @@
       "id": "whittington",
       "name": "NRA Whittington Center",
       "region": "Raton, New Mexico",
-      "lat": 36.77,
-      "lon": -104.49,
-      "radiusMiles": 2,
-      "resolutionM": 30,
-      "note": "The coordinate docs/terrain-wind-map.md has used since the first design note. Ground reaches 22.5 degrees at its steepest over a two-mile radius and none of it passes 45, so this solves on layers that follow the ground. Along a 45 degree line from here the terrain does almost nothing - 25 m of relief over two miles - so a line that is meant to cross a canyon needs its own coordinate and probably a larger radius."
+      "lat": 36.79723,
+      "lon": -104.566203,
+      "radiusMiles": 3,
+      "resolutionM": 16,
+      "note": "Centred on the firing lines rather than on the property's middle. The previous centre was a guess made before any range coordinate existed, and it was wrong by four to six kilometres: the 1000 yard range sat 879 m west of the box, and a 2,412 yard engagement began 54 m inside the five-mile box's western wall and ended 1,445 m outside it. A shooter watching that map was watching ground the solve never covered. This box holds the 1000 yard range at 36.787902,-104.535953, and the first known engagement from 36.792028,-104.579632 to 36.806557,-104.596452 - 2,205 m on a bearing of 317 - with about 2.1 km of terrain beyond the outermost of them, so the walls that shape the wind are inside the domain that solves it. Read at 16 m: this is the box the shooting actually happens in, and it is the last place to average a canyon away to save runner minutes."
     },
     {
       "id": "whittington-wide",
       "name": "NRA Whittington Center — whole property",
       "region": "Raton, New Mexico",
-      "lat": 36.77,
-      "lon": -104.49,
+      "lat": 36.79723,
+      "lon": -104.566203,
       "radiusMiles": 5,
       "resolutionM": 64,
-      "note": "Ten miles across, which holds the canyons a two-mile box cuts in half. Read at 64 m, and the number is exact on purpose: `cog.chooseLevel` takes the coarsest overview still FINER than what is asked, so 60 snaps to 32 and doubles the work rather than halving it. At 64 this is 251 x 251 against the two-mile domain's 445 x 424 at 16 m - a third of the cells over six times the ground. Note the mesh a domain gets depends on how finely it was read: slope is measured between neighbouring cells, so coarser ground reads gentler."
+      "note": "The same centre as the 1000 yard box, five miles out and read coarse. This is the whole property and its surrounding landform - what the weather is doing to the Center, rather than what the ground is doing to a particular shot. It still covers the old centre at 36.77,-104.49, so nothing that was visible before this was re-centred has been lost."
     },
     {
       "id": "boulder",
