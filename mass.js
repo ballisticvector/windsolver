@@ -647,6 +647,16 @@ function layerFractions(nz, stretch) {
  *
  * Not a property of the atmosphere — a property of this discretisation. See
  * `maxSlopeDeg` on the mesh for what was measured against the oracle.
+ *
+ * **And "how steep is this ground" is not resolution-independent.** Slope is
+ * measured between neighbouring cells, so a coarser read averages a cliff away
+ * and the same hillside comes back gentler. The Whittington Center over ten
+ * miles read 47.8 degrees at 32 m and fell back to the staircase; the same
+ * ground at 64 m is under the limit and keeps the following mesh. That is a
+ * real property of a finite-difference slope and not a bug, but it means this
+ * limit sorts *readings* rather than places, and a caller who wants one mesh in
+ * particular should pass `maxSlopeDeg` rather than tune the resolution until
+ * the answer changes.
  */
 const DEFAULT_MAX_SLOPE_DEG = 45;
 

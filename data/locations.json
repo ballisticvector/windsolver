@@ -19,8 +19,8 @@
       "lat": 36.77,
       "lon": -104.49,
       "radiusMiles": 5,
-      "resolutionM": 60,
-      "note": "Ten miles across, which holds the canyons a two-mile box cuts in half. Read at 60 m, which the mosaic snaps to 64: a wider box at a coarser read is CHEAPER than a small box at a fine one, because the terrain snaps to powers of two of the 1 m source. 251 x 251 is a third of the cells the two-mile domain carries at 16 m. Use this one to see where the flow splits and converges; use `whittington` for detail at a firing line."
+      "resolutionM": 64,
+      "note": "Ten miles across, which holds the canyons a two-mile box cuts in half. Read at 64 m, and the number is exact on purpose: `cog.chooseLevel` takes the coarsest overview still FINER than what is asked, so 60 snaps to 32 and doubles the work rather than halving it. At 64 this is 251 x 251 against the two-mile domain's 445 x 424 at 16 m - a third of the cells over six times the ground. Note the mesh a domain gets depends on how finely it was read: slope is measured between neighbouring cells, so coarser ground reads gentler."
     },
     {
       "id": "boulder",
