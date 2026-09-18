@@ -102,46 +102,99 @@ function specForLocation(loc) {
   return spec;
 }
 
-/**
- * A place's basis, read off disk the first time it is wanted.
- *
- * **Loading is not solving.** A gunzip and one pass over the ground to rebuild
- * the mesh is a fraction of a second; the solve it replaces was 7 minutes 28 of
- * blocked event loop. So this is done on demand rather than at startup, which
- * keeps a process that never touches a saved place from reading tens of
- * megabytes it will not use — and keeps the test suite from rebuilding a mesh
- * for every server it constructs.
- *
- * A stale file is one solved for a different box or different mesh options —
- * `basis.keyFor` decides — and it is refused rather than used, because a basis
- * over other ground is not a worse answer for this place, it is an answer to
- * another question.
- */
+/** One file per place, named by its id, where `warm-location.js` wrote it. */
 function basisPath(dir, id) {
   return nodePath.join(dir, id + ".basis");
 }
 
+/**
+ * The key a file has to carry to be an answer to *this* place.
+ *
+ * **Loading is not solving.** A gunzip and one pass over the ground to rebuild
+ * the mesh is a fraction of a second; the solve it replaces was 7 minutes 28 of
+ * blocked event loop. So a place is read on demand rather than at startup,
+ * which keeps a process that never touches a saved place from reading tens of
+ * megabytes it will not use.
+ */
 function basisKeyFor(loc) {
   return basisFile.keyFor(specForLocation(loc), {
     layers: MASS_LAYERS, stretch: MASS_STRETCH, r: mass.DEFAULT_R, maxIterations: 60000
   });
 }
 
-/** Whether a place has a file at all, without reading it. */
-function placeHasBasis(dir, id) {
+/**
+ * What a cached decision was made about: the file, as the filesystem has it.
+ *
+ * `null` means there is no file. Anything else changes when the file does, so
+ * comparing it is how a decision made a minute ago is known to still be about
+ * the same bytes.
+ */
+function basisSignature(file) {
   try {
-    return fs.existsSync(basisPath(dir, id));
+    const s = fs.statSync(file);
+    return s.mtimeMs + ":" + s.size;
   } catch (_err) {
-    return false;
+    return null;
   }
 }
 
-function warmPlace(dir, loc, log) {
+/**
+ * Whether a place can be answered, without reading tens of megabytes to find
+ * out.
+ *
+ * A file has to be there, and nothing already known may say it will not load.
+ * The second half matters because this is the answer `/v1/locations` gives, and
+ * a listing that calls a place warm while `/v1/field` refuses it is worse than
+ * one that says nothing: it sends somebody to an endpoint that will 503.
+ */
+function placeIsWarm(dir, loc) {
+  const signature = basisSignature(basisPath(dir, loc.id));
+  if (signature === null) return false;
   const held = warmPlaces.get(loc.id);
-  if (held !== undefined) return held;
+  if (held !== undefined && held.signature === signature && held.loaded === null) return false;
+  return true;
+}
+
+/**
+ * A place's basis, read off disk the first time it is wanted — and read again
+ * when the file underneath it changes.
+ *
+ * **The cache is keyed on the file, not on the place.** It used to be keyed on
+ * the place alone, and it cached failure as readily as success, which broke the
+ * one property the warm workflow relies on. That workflow deliberately does not
+ * restart the service; its reasoning is that "a basis is only ever read whole,
+ * on the first request for its place, so a file appearing under a running
+ * service is picked up by the next request". True of the load, false of the
+ * cache in front of it:
+ *
+ *   1. a request for a place that is not yet solved is refused, and `null` is
+ *      remembered;
+ *   2. the workflow delivers the solved basis, and does not restart;
+ *   3. every later request is answered out of that remembered `null`.
+ *
+ * Hat Creek sat cold that way with 21.5 MB of valid basis on disk beside it,
+ * while `/v1/locations` cheerfully reported it warm — because the listing asked
+ * the filesystem and the field asked the cache.
+ *
+ * A `statSync` per request is the price, and it buys a service that picks up a
+ * re-warm without a restart: a place re-solved at a new resolution replaces its
+ * file, and the next request notices rather than serving ground the operator
+ * has already replaced.
+ *
+ * A stale file is one solved for a different box or different mesh options —
+ * `basis.keyFor` decides — and it is refused rather than used, because a basis
+ * over other ground is not a worse answer for this place, it is an answer to
+ * another question.
+ */
+function warmPlace(dir, loc, log) {
   const file = basisPath(dir, loc.id);
+  const signature = basisSignature(file);
+
+  const held = warmPlaces.get(loc.id);
+  if (held !== undefined && held.signature === signature) return held.loaded;
+
   let loaded = null;
-  if (fs.existsSync(file)) {
+  if (signature !== null) {
     try {
       loaded = basisFile.load(file, basisKeyFor(loc));
       if (log) {
@@ -156,10 +209,15 @@ function warmPlace(dir, loc, log) {
       loaded = null;
     }
   }
-  // `null` is cached too: a place with no file should not stat the disk on
-  // every request for the life of the process.
-  warmPlaces.set(loc.id, loaded);
+  // The decision is stored with what it was made about, so it survives exactly
+  // as long as the file does and not one request longer.
+  warmPlaces.set(loc.id, { signature: signature, loaded: loaded });
   return loaded;
+}
+
+/** Drop every cached decision. For tests, which share one module instance. */
+function forgetWarmPlaces() {
+  warmPlaces.clear();
 }
 
 /** Enough places to be readable, without implying a precision nothing has. */
@@ -1043,9 +1101,10 @@ function createHandler(opts) {
         // Whether a place *can* be answered, from the file's presence rather
         // than from having read it: listing the places should not pull tens of
         // megabytes off disk for places nobody asked about.
-        const loaded = warmPlaces.get(loc.id);
+        const held = warmPlaces.get(loc.id);
+        const loaded = held ? held.loaded : null;
         return Object.assign({
-          warm: placeHasBasis(basisDir, loc.id),
+          warm: placeIsWarm(basisDir, loc),
           loaded: !!loaded,
           mesh: loaded ? loaded.basis.kind : null,
           maxSlopeDeg: loaded ? round(loaded.basis.maxSlopeDeg, 1) : null,
@@ -1481,5 +1540,6 @@ module.exports = {
   createStationModel,
   createHandler,
   redactQuery,
-  createServer
+  createServer,
+  forgetWarmPlaces
 };

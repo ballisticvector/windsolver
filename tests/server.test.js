@@ -37,6 +37,8 @@ const grib2 = require("../grib2.js");
 const png = require("../png.js");
 const profile = require("../profile.js");
 const server = require("../server.js");
+const basisFile = require("../basis.js");
+const mass = require("../mass.js");
 const volumeLib = require("../volume.js");
 
 const CENTRE = { lat: 40.0150, lon: -105.2705 };
@@ -1482,5 +1484,155 @@ describe("createServer", () => {
     const srv = server.createServer({ field: stubService() });
     expect(srv).toBeInstanceOf(http.Server);
     srv.close();
+  });
+});
+
+describe("a saved place that is warmed while the service is running", () => {
+  // The warm workflow deliberately does not restart the service. Its reasoning
+  // is written into the YAML: "a basis is only ever read whole, on the first
+  // request for its place, so a file appearing under a running service is
+  // picked up by the next request." That was true of the load and false of the
+  // cache in front of it, which memoised the *absence* of a file for the life
+  // of the process:
+  //
+  //   1. somebody asks for hat-creek before it is warmed  -> 503, and `null`
+  //      is cached
+  //   2. the workflow delivers 21.5 MB of solved basis, and does not restart
+  //   3. every later request is answered from the cached `null`
+  //
+  // `/v1/locations` said `warm` throughout, because it asks the filesystem,
+  // while `/v1/field` said cold, because it asked the cache. A listing and a
+  // loader disagreeing about the same place is the shape of the bug.
+
+  const realLocation = require("../data/locations.json").locations[0];
+
+  /** A basis file valid for a saved location, small enough to write in a test. */
+  function writeBasisFor(dir, loc) {
+    const width = 12;
+    const height = 12;
+    const spacingM = 30;
+    const elevation = new Float32Array(width * height);
+    for (let j = 0; j < height; j++) {
+      for (let i = 0; i < width; i++) elevation[j * width + i] = 1800 + 4 * i;
+    }
+    const crs = proj.crsFromEpsg(26913);
+    const mid = proj.fromGeographic(crs, loc.lat, loc.lon);
+    const grid = {
+      crs: crs, width: width, height: height, values: elevation,
+      resolutionM: spacingM, voidFraction: 0,
+      transform: {
+        originX: mid.x - (width * spacingM) / 2,
+        originY: mid.y + (height * spacingM) / 2,
+        scaleX: spacingM, scaleY: -spacingM
+      }
+    };
+    const solved = mass.solveBasis(
+      { width: width, height: height, spacingM: { x: spacingM, y: spacingM }, elevation: elevation },
+      { layers: 12, stretch: 1.25, r: mass.DEFAULT_R, maxIterations: 60000 }
+    );
+    const spec = { lat: loc.lat, lon: loc.lon, radiusMiles: loc.radiusMiles };
+    if (loc.resolutionM !== undefined) spec.targetResolutionM = loc.resolutionM;
+
+    fs.mkdirSync(dir, { recursive: true });
+    basisFile.save(path.join(dir, loc.id + ".basis"), {
+      key: basisFile.keyFor(spec, {
+        layers: 12, stretch: 1.25, r: mass.DEFAULT_R, maxIterations: 60000
+      }),
+      spec: spec,
+      options: { layers: 12, stretch: 1.25, r: mass.DEFAULT_R, maxIterations: 60000 },
+      location: { id: loc.id, name: loc.name, region: loc.region || null },
+      dataset: "test", filledFrom: null, grid: grid, basis: solved
+    });
+  }
+
+  let dir;
+  beforeEach(() => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), "ws-basis-"));
+    server.forgetWarmPlaces();
+  });
+  afterEach(() => {
+    fs.rmSync(dir, { recursive: true, force: true });
+    server.forgetWarmPlaces();
+  });
+
+  const ask = "/v1/field?location=" + realLocation.id + "&speedMph=10&fromDeg=270&cols=6";
+
+  test("answers a place whose file arrives after it was already refused", async () => {
+    const svc = await listen({ field: stubService(), basisDir: dir });
+    try {
+      const cold = await get(svc.url, ask);
+      expect(cold.status).toBe(503);
+      expect(cold.body.code).toBe("location-cold");
+
+      writeBasisFor(dir, realLocation);
+
+      const warm = await get(svc.url, ask);
+      expect(warm.status).toBe(200);
+      expect(warm.body.fromBasis).toBe(true);
+    } finally {
+      await svc.close();
+    }
+  });
+
+  test("the listing and the field agree about the same place", async () => {
+    const svc = await listen({ field: stubService(), basisDir: dir });
+    try {
+      writeBasisFor(dir, realLocation);
+      await get(svc.url, ask);
+
+      const listed = (await get(svc.url, "/v1/locations")).body.locations
+        .find((l) => l.id === realLocation.id);
+      const field = await get(svc.url, ask);
+
+      // `warm` is the promise the listing makes. A place it calls warm must be
+      // a place `/v1/field` will answer, or the listing is decoration.
+      expect(listed.warm).toBe(true);
+      expect(field.status).toBe(200);
+    } finally {
+      await svc.close();
+    }
+  });
+
+  // Re-warming an already-loaded place is the other half. A place solved at a
+  // new resolution writes a new file over the old one, and a service holding
+  // the old one in memory keeps serving ground the operator has replaced.
+  test("picks up a basis that is replaced under it", async () => {
+    const svc = await listen({ field: stubService(), basisDir: dir });
+    try {
+      writeBasisFor(dir, realLocation);
+      const first = await get(svc.url, ask);
+      expect(first.status).toBe(200);
+      const before = (await get(svc.url, "/v1/locations")).body.locations
+        .find((l) => l.id === realLocation.id).mesh;
+
+      // Same place, different file: removed and rewritten, as an untar does.
+      fs.rmSync(path.join(dir, realLocation.id + ".basis"));
+      writeBasisFor(dir, realLocation);
+
+      const second = await get(svc.url, ask);
+      expect(second.status).toBe(200);
+      expect((await get(svc.url, "/v1/locations")).body.locations
+        .find((l) => l.id === realLocation.id).mesh).toBe(before);
+    } finally {
+      await svc.close();
+    }
+  });
+
+  test("goes back to cold if the file is taken away", async () => {
+    const svc = await listen({ field: stubService(), basisDir: dir });
+    try {
+      writeBasisFor(dir, realLocation);
+      expect((await get(svc.url, ask)).status).toBe(200);
+
+      fs.rmSync(path.join(dir, realLocation.id + ".basis"));
+
+      const gone = await get(svc.url, ask);
+      expect(gone.status).toBe(503);
+      expect(gone.body.code).toBe("location-cold");
+      expect((await get(svc.url, "/v1/locations")).body.locations
+        .find((l) => l.id === realLocation.id).warm).toBe(false);
+    } finally {
+      await svc.close();
+    }
   });
 });
