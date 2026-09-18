@@ -4,13 +4,22 @@ name: Warm locations
 #
 # A saved place answers a wind in thirty milliseconds because it was solved
 # beforehand. `data/basis/` holds the two fields that make that possible, it is
-# 47 to 62 MB a place, it is derived, and it is therefore gitignored — so it is
+# 17 to 62 MB a place, it is derived, and it is therefore gitignored — so it is
 # in neither the repository nor the release tarball, and a freshly deployed box
 # reports every place cold.
 #
 # **This runs here rather than on the droplet on purpose.** The droplet is two
-# vCPUs with BallisticVector on it, and warming is one core pinned for about
-# seven minutes a place. A CI runner has no live site to slow down.
+# vCPUs with BallisticVector on it, and warming is one core pinned for minutes
+# a place. A CI runner has no live site to slow down.
+#
+# **One place per runner.** This used to be a single job solving every place in
+# turn under one cache key hashed from `locations.json mass.js basis.js
+# server.js`. Adding Hat Creek to that changed `locations.json`, which changed
+# the key, which re-solved Whittington and Boulder to add a location that has
+# nothing to do with either — about forty minutes of runner for ten lines of
+# JSON. `tools/basis-cache-key.js` now keys each place on its own coordinates
+# and box, so adding a place costs that place, and a run costs the slowest
+# solve rather than the sum of them.
 #
 # `workflow_dispatch` for the same reason the release is: minutes of
 # full-throttle CPU should happen because somebody chose it, not as a side
@@ -30,12 +39,12 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  warm:
-    name: Solve and deliver
+  plan:
+    name: Key each place
     runs-on: ubuntu-latest
-    environment:
-      name: production
-    timeout-minutes: 90
+    timeout-minutes: 5
+    outputs:
+      matrix: ${{ steps.plan.outputs.matrix }}
 
     steps:
       # Refused rather than skipped, as the release is. A job with a branch
@@ -51,34 +60,140 @@ jobs:
       - uses: actions/setup-node@v7
         with:
           node-version: 20
+
+      # No `npm ci` here: the key tool reads `crypto`, `fs` and `path` and
+      # nothing else, so the plan is a second rather than a minute.
+      - name: Work out what each place is an answer to
+        id: plan
+        run: |
+          matrix="$(node tools/basis-cache-key.js --matrix)"
+          echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
+
+          {
+            echo "## Places to solve"
+            echo ""
+            echo '| place | cache key |'
+            echo '| --- | --- |'
+            echo "$matrix" | jq -r '.[] | "| `\(.id)` | `\(.key)` |"'
+            echo ""
+            echo "The trailing half of every key is the code the solve runs"
+            echo "through; the half before it is that place's own coordinates,"
+            echo "box and resolution. Two keys differing only in the middle"
+            echo "means one place moved and the rest are reused."
+            echo ""
+            echo "<details><summary>What the code half covers</summary>"
+            echo ""
+            echo '```'
+            node tools/basis-cache-key.js --files
+            echo '```'
+            echo ""
+            echo "Plus the production dependency tree, which is fingerprinted"
+            echo "from package-lock.json rather than hashed whole so that a"
+            echo "devDependency bump does not re-solve anything."
+            echo "</details>"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  solve:
+    name: Solve ${{ matrix.place.id }}
+    needs: plan
+    runs-on: ubuntu-latest
+    # The Whittington two-mile box took seven and a half minutes on a droplet
+    # core. Sixty is room for a domain several times that without being an
+    # excuse for a solve that has stopped converging.
+    timeout-minutes: 60
+
+    strategy:
+      # A place that will not solve should not cancel the places that would.
+      # `deliver` still refuses to ship a partial set — this only means the
+      # failure is one line in one job rather than three jobs killed mid-solve.
+      fail-fast: false
+      matrix:
+        place: ${{ fromJSON(needs.plan.outputs.matrix) }}
+
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 20
           cache: npm
       - run: npm ci --omit=dev
 
-      # What a stored basis is an answer to: the places, the solver, the file
-      # format, and the mesh options `server.js` reads them back with. Any of
-      # those changing makes every stored file an answer to a different
-      # question, which `basis.keyFor` would refuse at load — so the cache key
-      # has to move with them or a stale basis would be delivered as fresh.
-      - name: Key the cache on everything that changes the answer
-        id: key
-        run: |
-          echo "value=$(cat data/locations.json mass.js basis.js server.js \
-            | sha256sum | cut -c1-16)" >> "$GITHUB_OUTPUT"
-
+      # Restore and save written out rather than `actions/cache`, because
+      # `--force` has to mean "solve it again" and not "solve it again and then
+      # quietly restore the old one in the post step".
       - name: Reuse a solve that is still current
         id: cache
         if: ${{ !inputs.force }}
-        uses: actions/cache@v4
+        uses: actions/cache/restore@v4
         with:
           path: data/basis
-          key: basis-${{ steps.key.outputs.value }}
+          key: ${{ matrix.place.key }}
+          # No restore-keys on purpose. A partial match here is a basis solved
+          # for different ground or different code, which `basis.load` refuses
+          # at load — so it would be a slow way to deliver a place that reports
+          # itself cold.
 
       - name: Solve
         if: ${{ inputs.force || steps.cache.outputs.cache-hit != 'true' }}
-        run: node tools/warm-location.js --all ${{ inputs.force && '--force' || '' }}
+        # Through the environment rather than interpolated into the script: a
+        # matrix value reaches a shell as text, and `tools/basis-cache-key.js`
+        # refuses an id that is not lowercase letters, digits and hyphens for
+        # exactly this reason.
+        env:
+          PLACE: ${{ matrix.place.id }}
+          FORCE: ${{ inputs.force }}
+        run: |
+          if [ "$FORCE" = "true" ]; then
+            node tools/warm-location.js --location "$PLACE" --force
+          else
+            node tools/warm-location.js --location "$PLACE"
+          fi
+
+      - name: Keep it for next time
+        if: ${{ steps.cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@v4
+        with:
+          path: data/basis
+          key: ${{ matrix.place.key }}
+
+      - name: Hand it to the delivery job
+        uses: actions/upload-artifact@v4
+        with:
+          name: basis-${{ matrix.place.id }}
+          path: data/basis/${{ matrix.place.id }}.basis
+          # A solve that wrote nothing is a failure here rather than a missing
+          # file discovered three jobs later.
+          if-no-files-found: error
+          # Long enough to be downloaded by the next job, and no longer: these
+          # are tens of megabytes each and the cache already holds them.
+          retention-days: 1
+          compression-level: 0
+
+  deliver:
+    name: Deliver to the droplet
+    needs: [plan, solve]
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    # Only this job needs the deploy secrets. The solves are CPU on a runner
+    # and have no business holding an SSH key.
+    environment:
+      name: production
+
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 20
+
+      - name: Collect every solve
+        uses: actions/download-artifact@v4
+        with:
+          path: data/basis
+          pattern: basis-*
+          merge-multiple: true
 
       # A place that did not solve leaves no file, and delivering a partial set
-      # silently would leave somebody wondering why one of three works.
+      # silently would leave somebody wondering why one of four works.
       - name: Check every place has a basis
         run: |
           missing=0
@@ -93,13 +208,6 @@ jobs:
           [ "$missing" = "0" ] || { echo "not every place solved" >&2; exit 1; }
           tar czf basis.tgz -C data basis
           ls -l basis.tgz
-
-      - name: Save the solve for next time
-        if: ${{ steps.cache.outputs.cache-hit != 'true' }}
-        uses: actions/cache/save@v4
-        with:
-          path: data/basis
-          key: basis-${{ steps.key.outputs.value }}
 
       - name: Copy to the droplet
         uses: appleboy/scp-action@v0.1.7
@@ -148,9 +256,9 @@ jobs:
           {
             echo "## Saved places warmed"
             echo ""
-            echo "Solved on the runner and copied to the droplet. No restart:"
-            echo "a basis is read on the first request for its place, so the"
-            echo "next request picks these up."
+            echo "Solved one place per runner and copied to the droplet. No"
+            echo "restart: a basis is read on the first request for its place,"
+            echo "so the next request picks these up."
             echo ""
             echo '| place | size |'
             echo '| --- | --- |'

@@ -134,6 +134,35 @@ Run the **Warm locations** workflow, which solves on a CI runner and copies the
 files over. It is `workflow_dispatch` for the same reason the release is: this
 is minutes of full-throttle CPU and it should happen because somebody chose it.
 
+**One place per runner, and each keeps its own cache.** The workflow fans out
+over `data/locations.json`, so a run costs the slowest single solve rather than
+the sum of all of them, and a place whose coordinates did not change is restored
+rather than re-solved.
+
+`tools/basis-cache-key.js` is what makes that safe, and it is worth knowing what
+it does before trusting a cache hit. A key is in two halves:
+
+```
+basis-v2-whittington-c93e559b999a3af1-bd2144157c6b168f
+         |            |                |
+         place        its coordinates,  the code a solve runs through
+                      box, resolution
+```
+
+The place half hashes only the four fields that shape a solve — `lat`, `lon`,
+`radiusMiles`, `resolutionM`. Rewriting a `note` therefore costs nothing, and
+adding a location leaves every other location's key alone. The code half is the
+require-closure of `tools/warm-location.js`, plus `server.js`, plus the
+*production* dependency tree; `node tools/basis-cache-key.js --files` prints the
+list. Adding a saved place used to re-solve every saved place, which is how Hat
+Creek came to cost about forty minutes of runner for ten lines of JSON.
+
+The closure is followed rather than listed, which is the point: `field.js` is in
+it because `warm-location.js` requires it, and `field.coarsen` decides what
+resolution the terrain is actually read at. Under the old hand-written list
+`field.js` was absent, so changing the coarsening would have left every key
+still and delivered a stale basis as a fresh one.
+
 By hand, if the workflow is not available:
 
 ```bash
