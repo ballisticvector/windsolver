@@ -128,6 +128,37 @@ the box, the resolution and the mesh options, so changing `MASS_LAYERS`,
 a different question. It is refused rather than used, and the place goes cold
 again. Re-warm after any of those.
 
+### Stability is a second solve, not a second view
+
+`/v1/field?...&stability=stable` asks for a different atmosphere, and it comes
+out of a different file.
+
+`r` is `(alpha_h/alpha_v)^2`, the price the solve charges for lifting air. At
+`r = 1` — `neutral`, the default — air rides over a hill as readily as around
+it. At `r = 0.1` — `stable` — going over is expensive and the flow is pushed
+around instead, which is channelling. Over one ridge, same wind:
+
+```
+neutral   r=1     rms  3.24 deg   max 14.7   speed  6.8-14.8 mph
+stable    r=0.1   rms 10.92 deg   max 42.6   speed  4.1-24.2 mph
+```
+
+**It cannot be scaled out of an existing basis.** Speed and bearing can, which
+is why two basis fields answer every wind — but `r` sits inside the operator
+being inverted, so each setting is its own solve, its own cache key and its own
+file. Warming both settings is twice the CPU; fanned out one per runner, it is
+the same wall clock.
+
+Files are `<id>.basis` for neutral and `<id>.<stability>.basis` for the rest, so
+places already solved stayed valid when stability arrived and only the new
+setting had to be warmed.
+
+`0.1` is the value `tools/score-wind.js` scored against CoAgMet, where it beat
+neutral on direction RMSE — 63.8 degrees against 65.1 over 288 valley
+observations. There is deliberately no `unstable`: it would be `r > 1`, it would
+be physically reasonable, and nobody has scored it. Adding it is a scoring run,
+not a constant.
+
 ### Warming a box
 
 Run the **Warm locations** workflow, which solves on a CI runner and copies the

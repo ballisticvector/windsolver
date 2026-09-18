@@ -136,9 +136,23 @@ function specForLocation(loc) {
   return spec;
 }
 
-/** One file per place, named by its id, where `warm-location.js` wrote it. */
-function basisPath(dir, id) {
-  return nodePath.join(dir, id + ".basis");
+/**
+ * One file per place *and stability*, where `warm-location.js` wrote it.
+ *
+ * Neutral keeps the bare `<id>.basis` it has always had, so places already
+ * solved stay valid when a second setting is added and only the new one has to
+ * be warmed.
+ */
+function basisPath(dir, id, stability) {
+  const name = stability === undefined || stability === "neutral"
+    ? id + ".basis"
+    : id + "." + stability + ".basis";
+  return nodePath.join(dir, name);
+}
+
+/** One cache entry per place and stability: they are different fields. */
+function heldKey(id, stability) {
+  return id + "|" + (stability || "neutral");
 }
 
 /**
@@ -150,9 +164,9 @@ function basisPath(dir, id) {
  * which keeps a process that never touches a saved place from reading tens of
  * megabytes it will not use.
  */
-function basisKeyFor(loc) {
+function basisKeyFor(loc, stability) {
   return basisFile.keyFor(specForLocation(loc), {
-    layers: MASS_LAYERS, stretch: MASS_STRETCH, r: mass.DEFAULT_R, maxIterations: 60000
+    layers: MASS_LAYERS, stretch: MASS_STRETCH, r: mass.rFor(stability), maxIterations: 60000
   });
 }
 
@@ -181,10 +195,10 @@ function basisSignature(file) {
  * a listing that calls a place warm while `/v1/field` refuses it is worse than
  * one that says nothing: it sends somebody to an endpoint that will 503.
  */
-function placeIsWarm(dir, loc) {
-  const signature = basisSignature(basisPath(dir, loc.id));
+function placeIsWarm(dir, loc, stability) {
+  const signature = basisSignature(basisPath(dir, loc.id, stability));
   if (signature === null) return false;
-  const held = warmPlaces.get(loc.id);
+  const held = warmPlaces.get(heldKey(loc.id, stability));
   if (held !== undefined && held.signature === signature && held.loaded === null) return false;
   return true;
 }
@@ -220,24 +234,26 @@ function placeIsWarm(dir, loc) {
  * over other ground is not a worse answer for this place, it is an answer to
  * another question.
  */
-function warmPlace(dir, loc, log) {
-  const file = basisPath(dir, loc.id);
+function warmPlace(dir, loc, log, stability) {
+  const file = basisPath(dir, loc.id, stability);
   const signature = basisSignature(file);
 
-  const held = warmPlaces.get(loc.id);
+  const held = warmPlaces.get(heldKey(loc.id, stability));
   if (held !== undefined && held.signature === signature) return held.loaded;
 
   let loaded = null;
   if (signature !== null) {
     try {
-      loaded = basisFile.load(file, basisKeyFor(loc));
+      loaded = basisFile.load(file, basisKeyFor(loc, stability));
       if (log) {
         log({ level: "info", message: "location loaded", location: loc.id,
+          stability: stability || "neutral",
           mesh: loaded.basis.kind, cells: loaded.grid.width * loaded.grid.height });
       }
     } catch (err) {
       if (log) {
         log({ level: "warn", message: "location not loaded", location: loc.id,
+          stability: stability || "neutral",
           code: err.code || null, error: err.message });
       }
       loaded = null;
@@ -245,7 +261,7 @@ function warmPlace(dir, loc, log) {
   }
   // The decision is stored with what it was made about, so it survives exactly
   // as long as the file does and not one request longer.
-  warmPlaces.set(loc.id, { signature: signature, loaded: loaded });
+  warmPlaces.set(heldKey(loc.id, stability), { signature: signature, loaded: loaded });
   return loaded;
 }
 
@@ -998,6 +1014,16 @@ function createHandler(opts) {
     const speedMph = numberParam(params, "speedMph", { default: undefined, min: 0, max: 200 });
     const measuredFrom = numberParam(params, "fromDeg", { default: undefined, min: 0, max: 360 });
     const heightAglM = numberParam(params, "heightAglM", { default: 2, above: 0, max: 500 });
+    // How hard the air resists being lifted. Refused rather than defaulted when
+    // it is a name the solver does not have: somebody asking for a setting that
+    // does not exist wants a different field from the one neutral would return.
+    const stability = params.get("stability") === null ? "neutral" : params.get("stability");
+    try {
+      mass.rFor(stability);
+    } catch (err) {
+      throw serviceError("no-such-stability", 400, err.message,
+        { stability: stability, have: Object.keys(mass.STABILITY) });
+    }
     if ((speedMph === undefined) !== (measuredFrom === undefined)) {
       throw serviceError("half-a-wind", 400,
         "a measured wind needs both speedMph and fromDeg; one without the other is not a wind");
@@ -1009,13 +1035,14 @@ function createHandler(opts) {
           "a saved location is a box and not a wind: give speedMph and fromDeg, " +
           "or ask for lat/lon without a location to have the model supply one");
       }
-      const warm = warmPlace(basisDir, loc, log);
+      const warm = warmPlace(basisDir, loc, log, stability);
       if (!warm) {
         throw serviceError("location-cold", 503,
-          loc.name + " has not been solved on this service. Solving takes minutes " +
-          "and blocks every other request, so it is a build step: run " +
-          "`node tools/warm-location.js --location " + loc.id + "` and restart.",
-          { location: loc.id });
+          loc.name + " has not been solved at " + stability + " stability on this " +
+          "service. Solving takes minutes and blocks every other request, so it is " +
+          "a build step: run `node tools/warm-location.js --location " + loc.id +
+          " --stability " + stability + "`.",
+          { location: loc.id, stability: stability });
       }
       const solved = mass.combine(warm.basis, { speedMps: speedMph * MPS_PER_MPH, fromDeg: measuredFrom });
       const grid = warm.grid;
@@ -1036,6 +1063,9 @@ function createHandler(opts) {
         heightAglM: heightAglM,
         windSource: "measured",
         measured: { speedMph: speedMph, fromDeg: measuredFrom, heightAglM: heightAglM },
+        // What the caller asked the atmosphere to be. `r` travels with it
+        // because the name is a label and the number is the model.
+        stability: { name: stability, r: mass.rFor(stability) },
         mesh: solved.kind,
         maxSlopeDeg: round(solved.maxSlopeDeg, 1),
         converged: solved.field.converged,
@@ -1073,6 +1103,9 @@ function createHandler(opts) {
         heightAglM: heightAglM,
         windSource: "measured",
         measured: { speedMph: speedMph, fromDeg: measuredFrom, heightAglM: heightAglM },
+        // What the caller asked the atmosphere to be. `r` travels with it
+        // because the name is a label and the number is the model.
+        stability: { name: stability, r: mass.rFor(stability) },
         mesh: solved.kind,
         maxSlopeDeg: round(solved.maxSlopeDeg, 1),
         converged: solved.field.converged,
@@ -1135,10 +1168,18 @@ function createHandler(opts) {
         // Whether a place *can* be answered, from the file's presence rather
         // than from having read it: listing the places should not pull tens of
         // megabytes off disk for places nobody asked about.
-        const held = warmPlaces.get(loc.id);
+        const held = warmPlaces.get(heldKey(loc.id, "neutral"));
         const loaded = held ? held.loaded : null;
+        // Per setting, because each is its own solve and its own file: a place
+        // can be warm at neutral and cold at stable, and a caller choosing a
+        // setting needs to know which before it asks.
+        const stabilities = {};
+        for (const name of Object.keys(mass.STABILITY)) {
+          stabilities[name] = placeIsWarm(basisDir, loc, name);
+        }
         return Object.assign({
-          warm: placeIsWarm(basisDir, loc),
+          warm: placeIsWarm(basisDir, loc, "neutral"),
+          stabilities: stabilities,
           loaded: !!loaded,
           mesh: loaded ? loaded.basis.kind : null,
           maxSlopeDeg: loaded ? round(loaded.basis.maxSlopeDeg, 1) : null,

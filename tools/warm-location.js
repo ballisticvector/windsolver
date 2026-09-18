@@ -22,7 +22,13 @@
  *   --layers     vertical layers in the solve (default 12)
  *   --stretch    geometric ratio between them (default 1.25)
  *   --r          stability: 1 lets the flow over a hill, small sends it around
+ *   --stability  a named stability: neutral (the default) or stable
  *   --force      re-solve a place whose file is already current
+ *
+ * **Stability is a separate solve, not a scaling.** The wind is linear in the
+ * solve, which is why two basis fields answer every speed and every bearing -
+ * but `r` is inside the operator being inverted, so a different stability is a
+ * different basis and a different file. Warming both settings costs two solves.
  */
 
 "use strict";
@@ -38,7 +44,7 @@ const mass = require("../mass.js");
 const locations = require("../data/locations.json");
 
 const DEFAULT_OUT = nodePath.join(__dirname, "..", "data", "basis");
-const FLAGS = ["location", "all", "out", "layers", "stretch", "r", "force"];
+const FLAGS = ["location", "all", "out", "layers", "stretch", "r", "force", "stability"];
 
 function parse(argv) {
   const out = {};
@@ -61,9 +67,21 @@ function number(value, fallback, name) {
   return n;
 }
 
-/** Where a place's basis lives. One file per place, named by its id. */
-function pathFor(dir, id) {
-  return nodePath.join(dir, id + ".basis");
+/**
+ * Where a place's basis lives. One file per place *and stability*.
+ *
+ * Neutral keeps the bare `<id>.basis` it has always had, so the places already
+ * solved and sitting on the droplet stay valid and only the new setting has to
+ * be warmed. Everything else is `<id>.<stability>.basis`.
+ *
+ * A dot rather than a hyphen, because ids carry hyphens - `hat-creek-stable`
+ * reads as a place called "hat creek stable" and `hat-creek.stable` does not.
+ */
+function pathFor(dir, id, stability) {
+  const name = stability === undefined || stability === "neutral"
+    ? id + ".basis"
+    : id + "." + stability + ".basis";
+  return nodePath.join(dir, name);
 }
 
 function specFor(loc) {
@@ -72,10 +90,11 @@ function specFor(loc) {
   return spec;
 }
 
-async function warm(loc, opts, dir, force) {
+async function warm(loc, opts, dir, force, stability) {
   const spec = specFor(loc);
   const key = basisFile.keyFor(spec, opts);
-  const file = pathFor(dir, loc.id);
+  const file = pathFor(dir, loc.id, stability);
+  const label = loc.id + (stability && stability !== "neutral" ? " (" + stability + ")" : "");
 
   if (!force && fs.existsSync(file)) {
     try {
@@ -88,7 +107,7 @@ async function warm(loc, opts, dir, force) {
     }
   }
 
-  process.stdout.write("  " + loc.id.padEnd(14) + "reading terrain...");
+  process.stdout.write("  " + label.padEnd(24) + "reading terrain...");
   const ground = await fieldModule.groundOnly(spec);
   const grid = ground.grid;
   const spacing = derive.spacingAt(grid, Math.floor(grid.height / 2));
@@ -113,7 +132,8 @@ async function warm(loc, opts, dir, force) {
     key: key,
     spec: spec,
     options: opts,
-    location: { id: loc.id, name: loc.name, region: loc.region || null },
+    location: { id: loc.id, name: loc.name, region: loc.region || null,
+      stability: stability || "neutral" },
     dataset: ground.dataset ? ground.dataset.label : null,
     filledFrom: ground.filledFrom,
     grid: grid,
@@ -122,7 +142,7 @@ async function warm(loc, opts, dir, force) {
 
   const bytes = fs.statSync(file).size;
   process.stdout.write(" done\n");
-  process.stdout.write("  " + " ".repeat(14) + solved.kind + ", " +
+  process.stdout.write("  " + " ".repeat(24) + solved.kind + ", " +
     solved.maxSlopeDeg.toFixed(1) + " deg at its steepest, " +
     Math.max(solved.east.iterations, solved.north.iterations) + " sweeps, " +
     (elapsed / 1000).toFixed(1) + " s, " + (bytes / 1048576).toFixed(1) + " MB\n");
@@ -131,10 +151,19 @@ async function warm(loc, opts, dir, force) {
 async function main() {
   const args = parse(process.argv.slice(2));
   const dir = args.out && args.out !== true ? String(args.out) : DEFAULT_OUT;
+  // A named stability and a raw `--r` are two ways to say the same thing, and
+  // taking both would leave the file name and the field it holds disagreeing.
+  if (args.stability !== undefined && args.r !== undefined) {
+    throw new Error("give --stability or --r, not both: the file is named after " +
+      "the stability and would not match the field inside it");
+  }
+  const stability = args.stability === undefined || args.stability === true
+    ? "neutral"
+    : String(args.stability);
   const opts = {
     layers: number(args.layers, 12, "layers"),
     stretch: number(args.stretch, 1.25, "stretch"),
-    r: number(args.r, mass.DEFAULT_R, "r"),
+    r: args.r === undefined ? mass.rFor(stability) : number(args.r, mass.DEFAULT_R, "r"),
     maxIterations: 60000
   };
 
