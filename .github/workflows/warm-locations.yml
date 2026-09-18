@@ -97,10 +97,22 @@ jobs:
     name: Solve ${{ matrix.place.id }}
     needs: plan
     runs-on: ubuntu-latest
-    # The Whittington two-mile box took seven and a half minutes on a droplet
-    # core. Sixty is room for a domain several times that without being an
-    # excuse for a solve that has stopped converging.
-    timeout-minutes: 60
+    # Measured rather than guessed, because the guess was wrong. Sixty minutes
+    # came from the Whittington box taking seven and a half. On a runner:
+    # whittington-wide 185 s, whittington 1017 s, boulder 1909 s — and Hat
+    # Creek, on a laptop core, 6825 s: 630 x 628 cells on the staircase mesh at
+    # 76.5 degrees, needing 20215 sweeps. Sixty would have killed it at the
+    # hour with nothing to show.
+    #
+    # Hat Creek is that expensive because of a coarsening gate that missed by
+    # 0.12 percent, and once that is fixed it costs roughly what Boulder does.
+    # The ceiling stays at three hours anyway, for the place that genuinely
+    # needs the cells: a timeout is there to stop a solve that has stalled, and
+    # sizing it to the cheapest plausible domain is how a real one gets killed.
+    #
+    # Three hours is safe here in a way it was not before the fan-out, because
+    # the timeout is per place now — a stalled solve holds up only itself.
+    timeout-minutes: 180
 
     strategy:
       # A place that will not solve should not cancel the places that would.
