@@ -99,7 +99,13 @@ describe("who holds the deploy key", () => {
   test("only the delivering job enters the production environment", () => {
     // Split where a two-space key sits alone on its line, which inside `jobs:`
     // is a job name and nothing else.
-    const jobs = text.split(/\n(?= {2}\w[\w-]*:\n)/);
+    //
+    // `\r?` is not decoration. git checks this file out with CRLF on Windows,
+    // where a pattern anchored on a bare `\n` matches nothing, finds no jobs at
+    // all, and fails on `toBeDefined` — green on a Linux runner and red on a
+    // developer's machine, which is the worst place for a test to disagree
+    // with itself.
+    const jobs = text.split(/\r?\n(?= {2}\w[\w-]*:\r?\n)/);
     const solve = jobs.find((j) => j.startsWith("  solve:"));
     const deliver = jobs.find((j) => j.startsWith("  deliver:"));
 
