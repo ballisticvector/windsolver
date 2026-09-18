@@ -3,6 +3,16 @@
   "note": "Places a caller asks about often enough to be worth naming. A location is a box and a resolution, not a wind: the atmosphere over it is whatever the caller brings or whatever HRRR says at the hour. radiusMiles has to hold the landform that shapes the wind - a half-mile box in a canyon contains no canyon and the solve has nothing to act on.",
   "locations": [
     {
+      "id": "hat-creek",
+      "name": "Hat Creek Training",
+      "region": "Riggins, Idaho",
+      "lat": 45.314758,
+      "lon": -116.344854,
+      "radiusMiles": 3,
+      "resolutionM": 32,
+      "note": "A 1,700 acre facility east of US-95 overlooking the Seven Devils, with engagements past 2,500 m across canyons. Three miles of radius rather than two because the property is only 1.6 miles square and a 2,500 m shot leaves it: the box has to hold the far side of the canyon as well as the near one, or the walls that shape the wind are outside the domain that solves it. Read at 32 m and not coarser, because the terrain that matters here is the canyon and averaging it away is the one thing that would make this domain look like the flat ones. Expect the staircase mesh: this is not 45-degree-and-under ground."
+    },
+    {
       "id": "whittington",
       "name": "NRA Whittington Center",
       "region": "Raton, New Mexico",
