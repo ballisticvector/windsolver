@@ -80,13 +80,21 @@
   }
 
 /*
- * Flow view. The basemap is pushed back rather than removed: the wind has to
- * sit on ground somebody can recognise, and a road is how they know which
- * canyon they are looking at. Everything else about this view is subtraction —
- * no speed wash, no arrows — because a trail is the same colour as the wash
- * beneath it and disappears into it.
+ * How much of the picture is ground and how much is wind.
+ *
+ * One slider drives both, because they are one question: a trail is only
+ * visible against what is under it, and turning the wind up while the ground
+ * stays bright buys nothing. The flow view is not a separate mechanism any
+ * more, it is a position on this slider that the mode picks for you.
+ *
+ * The basemap is pushed back rather than removed at any setting. The wind has
+ * to sit on ground somebody can recognise, and a road is how they know which
+ * canyon they are looking at.
  */
-#map.flow .leaflet-tile-pane { filter: grayscale(1) brightness(0.38) contrast(0.85); }
+#map { --ground-bright: 1; --ground-gray: 0; --relief-bright: 1; }
+#map .leaflet-tile-pane {
+  filter: grayscale(var(--ground-gray)) brightness(var(--ground-bright)) contrast(0.92);
+}
 /*
  * The relief is its own pane, not a tile, so it needs its own rule — and it is
  * the brighter of the two: a hillshade is a white picture and it was the one
@@ -98,9 +106,10 @@
  * hollow where there is a ridge. A picture that makes the terrain the wrong
  * shape is worse than a bright one, whatever it does for the trails.
  */
-#map.flow .leaflet-relief-pane { filter: brightness(0.34) contrast(1.2); }
-#map.flow .leaflet-control-attribution { background: rgba(12,16,22,0.65); color: #9aa6b2; }
-#map.flow .leaflet-control-attribution a { color: #cbd5e1; }
+#map .leaflet-relief-pane { filter: brightness(var(--relief-bright)) contrast(1.15); }
+#map.dim .leaflet-control-attribution { background: rgba(12,16,22,0.65); color: #9aa6b2; }
+#map.dim .leaflet-control-attribution a { color: #cbd5e1; }
+#balance { width: 100%; }
 </style>
 </head>
 <body>
@@ -165,6 +174,14 @@
           <option value="flow">Flow &mdash; particles on dark ground</option>
           <option value="both">Both</option>
         </select>
+      </div>
+    </div>
+
+    <div class="row">
+      <div>
+        <label for="balance">Ground <span aria-hidden="true">&harr;</span> wind</label>
+        <input id="balance" type="range" min="0" max="100" step="1" value="45"
+               aria-label="How much of the picture is ground and how much is wind">
       </div>
     </div>
 
