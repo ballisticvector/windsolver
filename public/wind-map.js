@@ -438,6 +438,67 @@ function particleLife(scale, opts) {
 }
 
 /**
+ * How the flow view is tuned: how long a trail is, how far its particle lives,
+ * and how many particles there are.
+ *
+ * **These are one decision, not three**, and two of the couplings between them
+ * fail silently when they are wrong.
+ *
+ * A trail cannot be longer than the distance its particle lives for. Ask for
+ * 250 px of trail from a particle that travels 200 and every trail is a 200 px
+ * stub, with nothing anywhere saying so. And `trailPath` keeps a bounded number
+ * of points, so past that bound the trail stops growing however long a length
+ * was requested. Both of those look like "the trails did not get longer" rather
+ * than like an error, so both are refused here instead.
+ *
+ * The third coupling is ink. What closes a flow map into grey hatching is
+ * `count x length`, not either alone — 320 px spacing with 64 px trails did
+ * exactly that over this domain before it was tuned back to 620 and 44. So a
+ * longer trail has to buy its length by thinning the cloud rather than by
+ * adding ink, and `perParticlePx` moves with `trailPx` to keep their product
+ * about where it was.
+ *
+ * The numbers themselves answer a shooter's complaint that the arrows all
+ * pointed one way: a 44 px dash reads as a heading, and showing what terrain
+ * does to the air needs a stroke long enough to curve within itself.
+ */
+function flowLook(opts) {
+  const o = opts || {};
+  const trailPx = Number.isFinite(o.trailPx) && o.trailPx > 0 ? o.trailPx : 120;
+  const stepPx = Number.isFinite(o.stepPx) && o.stepPx > 0 ? o.stepPx : 2;
+  const max = Number.isFinite(o.max) && o.max > 0 ? o.max : 96;
+  const travelPx = Number.isFinite(o.travelPx) && o.travelPx > 0 ? o.travelPx : 480;
+  const perParticlePx = Number.isFinite(o.perParticlePx) && o.perParticlePx > 0
+    ? o.perParticlePx
+    : 1700;
+  const maxParticles = Number.isFinite(o.maxParticles) ? o.maxParticles : 900;
+
+  // A particle part-way through its only trail draws a stub. Three lives to
+  // the trail means most of the cloud is drawing a full-length stroke at any
+  // moment rather than a fragment of one.
+  if (travelPx < trailPx * 3) {
+    throw new Error("a particle travelling " + travelPx + " px cannot outlive a " +
+      trailPx + " px trail often enough to draw it: raise travelPx to at least " +
+      trailPx * 3);
+  }
+  // `trailPath` clamps to `max` points, which is a length of (max - 1) * stepPx.
+  // Past that the trail silently stops growing.
+  if ((max - 1) * stepPx < trailPx) {
+    throw new Error("a cap of " + max + " points every " + stepPx + " px truncates a " +
+      trailPx + " px trail to " + (max - 1) * stepPx + " px: raise max");
+  }
+
+  return {
+    trailPx: trailPx,
+    stepPx: stepPx,
+    max: max,
+    travelPx: travelPx,
+    perParticlePx: perParticlePx,
+    maxParticles: maxParticles
+  };
+}
+
+/**
  * The shape of a trail: how far apart to keep the positions behind a particle,
  * and how many of them, so that a trail is a length in pixels.
  *
@@ -1126,6 +1187,7 @@ const api = {
   motionScale: motionScale,
   particleLife: particleLife,
   trailPath: trailPath,
+  flowLook: flowLook,
   elevationRange: elevationRange,
   centreWind: centreWind,
   compassOf: compassOf,

@@ -407,14 +407,18 @@
         pxPerSecond: calm ? 12 : 55
       });
       const size = this._map.getSize();
-      // A flow view is nothing but these, so it can afford three times as many
-      // and trails twice as long. In the arrow view they are a second reading of
-      // a field the arrows already state, and a dense one would only smear it.
+      // A flow view is nothing but these, so it can afford long trails and has
+      // to thin the cloud to pay for them. `flowLook` holds that trade in one
+      // place and refuses the combinations that fail silently - a trail longer
+      // than its particle lives for, or longer than the point cap keeps. In the
+      // arrow view the particles are a second reading of a field the arrows
+      // already state, so they keep the shorter default.
       const flow = flowing();
+      const look = flow ? lib.flowLook() : null;
       this._field = lib.particleField(grid, {
         count: lib.particleCount(size.x, size.y,
-          flow ? { perParticlePx: 620, max: 1600 } : undefined),
-        life: lib.particleLife(this._scale)
+          look ? { perParticlePx: look.perParticlePx, max: look.maxParticles } : undefined),
+        life: lib.particleLife(this._scale, look ? { travelPx: look.travelPx } : undefined)
       });
       // One trail per particle, in the same order, holding where it has been.
       this._trails = this._field.particles.map(function () { return []; });
@@ -450,9 +454,10 @@
       const m = this._map;
       const grid = this._body.grid;
       const flow = flowing();
-      // Long enough to read as a streamline, short enough that a thousand of
-      // them do not close up into hatching. At 64 px over this domain they did.
-      const path = flow ? lib.trailPath({ trailPx: 44, max: 72 }) : lib.trailPath();
+      // Long enough to read as a streamline - long enough, now, to curve within
+      // itself and show what the terrain does to the air rather than just where
+      // it is heading. The cloud is thinned to pay for it; see `flowLook`.
+      const path = flow ? lib.trailPath(lib.flowLook()) : lib.trailPath();
       const particles = this._field.advance(elapsed * this._scale.secondsPerSecond);
       const trails = this._trails;
       ctx.lineCap = "round";

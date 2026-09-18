@@ -1304,3 +1304,70 @@ describe("the particle layer on the page", () => {
     expect(js).toContain("document.hidden");
   });
 });
+
+describe("flowLook: trail length, lifetime and density are one decision", () => {
+  // A shooter asked for longer trails, so that a trail shows what the terrain
+  // does to the air as it keeps going rather than marking where it is. That is
+  // not one number. Three of them move together, and two of the couplings are
+  // silent when they are wrong:
+  //
+  //   - a trail cannot be longer than the distance its particle lives for. Ask
+  //     for 250 px of trail from a particle that travels 200 and every trail is
+  //     a 200 px stub, with nothing anywhere saying so.
+  //   - `trailPath` caps the number of points it keeps. Past that cap the trail
+  //     silently stops growing no matter what length was asked for.
+  //   - ink is count times length. Double the length at the same count and the
+  //     map closes up into hatching, which is what 320 px spacing and 64 px
+  //     trails already did here once.
+
+  const look = lib.flowLook();
+
+  test("a particle outlives its trail several times over", () => {
+    // Otherwise most particles are part-way through their only trail at any
+    // moment, and the map is stubs rather than streamlines.
+    expect(look.travelPx / look.trailPx).toBeGreaterThanOrEqual(3);
+  });
+
+  test("the point cap cannot silently truncate the trail", () => {
+    const path = lib.trailPath(look);
+    expect((path.points - 1) * path.stepPx).toBeGreaterThanOrEqual(look.trailPx);
+    expect(path.points).toBeLessThan(look.max);
+  });
+
+  test("is long enough to show a bend, not just a heading", () => {
+    // The point of the change. A 44 px dash over this domain reads as an arrow
+    // with a tail; showing the air turning through terrain needs a stroke long
+    // enough to curve within itself.
+    expect(look.trailPx).toBeGreaterThanOrEqual(100);
+  });
+
+  test("holds ink roughly where the previous tuning had it", () => {
+    // Ink per pixel of map is (1 / perParticlePx) * trailPx. The old flow view
+    // was 620 px per particle and 44 px of trail, and that was tuned by eye
+    // against this domain until it stopped being hatching. Longer trails have
+    // to buy their length by thinning the cloud, not by adding ink.
+    const before = 44 / 620;
+    const after = look.trailPx / look.perParticlePx;
+    expect(after / before).toBeGreaterThan(0.8);
+    expect(after / before).toBeLessThan(1.25);
+  });
+
+  test("refuses a trail its particles could not finish", () => {
+    expect(() => lib.flowLook({ trailPx: 400, travelPx: 200 }))
+      .toThrow(/outlive|travelPx|trail/i);
+  });
+
+  test("refuses a trail the point cap would cut short", () => {
+    // `travelPx` given generously so the lifetime check passes and the cap is
+    // the only thing left to fail on. Without it this asserted the wrong
+    // refusal and would have passed with the cap check deleted.
+    expect(() => lib.flowLook({ trailPx: 300, stepPx: 2, max: 20, travelPx: 1200 }))
+      .toThrow(/truncates/i);
+  });
+
+  test("an override that keeps the couplings is allowed", () => {
+    const wider = lib.flowLook({ trailPx: 200, travelPx: 800, max: 160, perParticlePx: 2800 });
+    expect(wider.trailPx).toBe(200);
+    expect(wider.travelPx).toBe(800);
+  });
+});
