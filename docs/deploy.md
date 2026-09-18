@@ -101,6 +101,64 @@ then. `prewarm.js` has the reasoning.
 visitor to a timer, and only for the places that are named. The first request
 over ground nobody listed is still a cold one.
 
+## Saved places are built, not shipped
+
+A saved place answers a wind in thirty milliseconds because it was solved
+beforehand: two fields, a unit east wind and a unit north wind, out of which
+every other wind is a combination. `data/basis/<id>.basis` holds them, and a
+place without one is **cold** — the service refuses it and names the command,
+rather than solving it and holding every other request for seven minutes.
+
+**Those files are not in the repository and not in the release tarball.** One is
+47 to 62 MB of Float32 and it is derived, so `data/basis/` is in `.gitignore`;
+the tarball is built from a CI checkout, which therefore has none either. A
+freshly deployed box reports every place cold, which is exactly what
+windsolver.com did the first time somebody opened it on a phone.
+
+Two things follow that are easy to get wrong in opposite directions.
+
+**A deploy does not erase them.** The release untars *over* the checkout — there
+is no `rm -rf` and no `git reset --hard` — so a basis that is already on the box
+survives every release after it. Warming is a one-time cost, not a per-release
+one.
+
+**But a code change can make them stale.** `basis.keyFor` covers the coordinate,
+the box, the resolution and the mesh options, so changing `MASS_LAYERS`,
+`MASS_STRETCH` or a location's `radiusMiles` makes the stored file an answer to
+a different question. It is refused rather than used, and the place goes cold
+again. Re-warm after any of those.
+
+### Warming a box
+
+Run the **Warm locations** workflow, which solves on a CI runner and copies the
+files over. It is `workflow_dispatch` for the same reason the release is: this
+is minutes of full-throttle CPU and it should happen because somebody chose it.
+
+By hand, if the workflow is not available:
+
+```bash
+cd /home/deploy/windsolver
+nice -n 15 node tools/warm-location.js --all
+```
+
+`nice` is not decoration. The droplet is two vCPUs and BallisticVector is on it;
+warming is one core pinned for about seven minutes per place, and the live site
+is sharing that core.
+
+No restart is needed either way. A basis is loaded the first time a place is
+asked for, not at startup, so the next request picks up a file that appeared
+while the service was running.
+
+### Checking
+
+```bash
+curl -s https://windsolver.com/v1/locations -H "X-API-Key: $KEY"   | node -e "let d='';process.stdin.on('data',c=>d+=c).on('end',()=>      JSON.parse(d).locations.forEach(l=>console.log(l.id, l.warm?'warm':'COLD')))"
+```
+
+`warm` there means a file exists, not that it has been read — listing the places
+deliberately does not pull tens of megabytes off disk for places nobody asked
+about.
+
 ## Where the product listing is cached
 
 The National Map's product search — the 29 s that is not data — is kept on disk
