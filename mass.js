@@ -71,6 +71,61 @@
 const DEFAULT_R = 1;
 
 /**
+ * Stability, as a thing a caller can ask for by name.
+ *
+ * `r` is `(alpha_h/alpha_v)^2` — the price the solve charges for vertical
+ * displacement. At `r = 1` that price is isotropic and air rides over a hill as
+ * readily as around it. Drive `r` down and going over becomes expensive, so the
+ * flow is pushed around instead. That is channelling, and channelling is the
+ * whole reason terrain belongs in a wind field.
+ *
+ * **The default suppresses turning, and that had consequences.** Every saved
+ * place was solved at `DEFAULT_R`, and a user looking at the Whittington map
+ * reported the arrows all pointing one way. They were right, and the field was
+ * not wrong — it was answering at the setting that bends flow least. Re-solving
+ * the wide domain at four values:
+ *
+ *     r = 1      sd  2.96 deg    max  19.9
+ *     r = 0.5    sd  3.97 deg    max  27.1
+ *     r = 0.2    sd  5.78 deg    max  39.7
+ *     r = 0.05   sd 10.21 deg    max 108.3
+ *
+ * **0.1 is not a taste.** `tools/score-wind.js` scores a `massStable` candidate
+ * at exactly that value against CoAgMet, and it beat neutral on direction RMSE
+ * — 63.8 degrees against 65.1 over 288 valley observations. It is the one
+ * non-default value in this repository that has been checked against
+ * anemometers rather than against an intuition.
+ *
+ * **There is deliberately no `unstable`.** It would be `r > 1`, it would be
+ * physically reasonable, and it has never been scored here. Shipping it would
+ * be shipping a field nobody has checked, under a name that implies somebody
+ * did. Adding it is a scoring run with the existing harness, not a constant.
+ */
+const STABILITY = {
+  stable: 0.1,
+  neutral: DEFAULT_R
+};
+
+/**
+ * The `r` behind a name, or a refusal.
+ *
+ * `undefined` means the caller did not ask, and gets the default. Anything else
+ * that is not a known name is refused rather than quietly defaulted: somebody
+ * asking for a setting this does not have wants a different field from the one
+ * neutral would hand back, and answering anyway is answering a question nobody
+ * asked.
+ */
+function rFor(name) {
+  if (name === undefined) return DEFAULT_R;
+  if (typeof name === "string" && Object.prototype.hasOwnProperty.call(STABILITY, name)) {
+    return STABILITY[name];
+  }
+  throw fail("no-such-stability",
+    "no stability called " + JSON.stringify(name) + "; have " +
+    Object.keys(STABILITY).join(", "));
+}
+
+/**
  * Short grass — the same default `downscale.js` carries.
  *
  * Von Karman does not appear: the profile is used as a *ratio* between two
@@ -1379,6 +1434,8 @@ function combine(basis, wind) {
 
 module.exports = {
   DEFAULT_R,
+  STABILITY,
+  rFor,
   DEFAULT_OMEGA,
   DEFAULT_TOLERANCE,
   DEFAULT_ROUGHNESS_M,

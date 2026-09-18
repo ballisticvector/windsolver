@@ -12,14 +12,20 @@ name: Warm locations
 # vCPUs with BallisticVector on it, and warming is one core pinned for minutes
 # a place. A CI runner has no live site to slow down.
 #
-# **One place per runner.** This used to be a single job solving every place in
-# turn under one cache key hashed from `locations.json mass.js basis.js
-# server.js`. Adding Hat Creek to that changed `locations.json`, which changed
-# the key, which re-solved Whittington and Boulder to add a location that has
-# nothing to do with either — about forty minutes of runner for ten lines of
-# JSON. `tools/basis-cache-key.js` now keys each place on its own coordinates
-# and box, so adding a place costs that place, and a run costs the slowest
-# solve rather than the sum of them.
+# **One place and one stability per runner.** This used to be a single job
+# solving every place in turn under one cache key hashed from
+# `locations.json mass.js basis.js server.js`. Adding Hat Creek to that changed
+# `locations.json`, which changed the key, which re-solved Whittington and
+# Boulder to add a location that has nothing to do with either — about forty
+# minutes of runner for ten lines of JSON. `tools/basis-cache-key.js` now keys
+# each place on its own coordinates and box, so adding a place costs that place,
+# and a run costs the slowest solve rather than the sum of them.
+#
+# Stability multiplies the rows rather than the runners' wall time. `r` sits
+# inside the operator being inverted, so a second setting is a second solve and
+# a second file — it cannot be recovered by scaling the first, the way every
+# speed and bearing can. Two settings is twice the CPU and, fanned out, the same
+# wall clock.
 #
 # `workflow_dispatch` for the same reason the release is: minutes of
 # full-throttle CPU should happen because somebody chose it, not as a side
@@ -94,7 +100,7 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
   solve:
-    name: Solve ${{ matrix.place.id }}
+    name: Solve ${{ matrix.place.id }} (${{ matrix.place.stability }})
     needs: plan
     runs-on: ubuntu-latest
     # Measured rather than guessed, because the guess was wrong. Sixty minutes
@@ -153,12 +159,13 @@ jobs:
         # exactly this reason.
         env:
           PLACE: ${{ matrix.place.id }}
+          STABILITY: ${{ matrix.place.stability }}
           FORCE: ${{ inputs.force }}
         run: |
           if [ "$FORCE" = "true" ]; then
-            node tools/warm-location.js --location "$PLACE" --force
+            node tools/warm-location.js --location "$PLACE" --stability "$STABILITY" --force
           else
-            node tools/warm-location.js --location "$PLACE"
+            node tools/warm-location.js --location "$PLACE" --stability "$STABILITY"
           fi
 
       - name: Keep it for next time
@@ -171,8 +178,8 @@ jobs:
       - name: Hand it to the delivery job
         uses: actions/upload-artifact@v4
         with:
-          name: basis-${{ matrix.place.id }}
-          path: data/basis/${{ matrix.place.id }}.basis
+          name: basis-${{ matrix.place.id }}-${{ matrix.place.stability }}
+          path: data/basis/${{ matrix.place.file }}
           # A solve that wrote nothing is a failure here rather than a missing
           # file discovered three jobs later.
           if-no-files-found: error
@@ -206,18 +213,21 @@ jobs:
 
       # A place that did not solve leaves no file, and delivering a partial set
       # silently would leave somebody wondering why one of four works.
-      - name: Check every place has a basis
+      # A place-and-setting that did not solve leaves no file, and delivering a
+      # partial set silently would leave somebody wondering why one saved place
+      # answers at stable and another does not.
+      - name: Check every place has a basis at every setting
         run: |
           missing=0
-          for id in $(node -e "require('./data/locations.json').locations.forEach(l=>console.log(l.id))"); do
-            if [ -f "data/basis/$id.basis" ]; then
-              echo "  $id  $(du -h "data/basis/$id.basis" | cut -f1)"
+          for f in $(node tools/basis-cache-key.js --matrix | jq -r '.[].file'); do
+            if [ -f "data/basis/$f" ]; then
+              echo "  $f  $(du -h "data/basis/$f" | cut -f1)"
             else
-              echo "  $id  MISSING" >&2
+              echo "  $f  MISSING" >&2
               missing=1
             fi
           done
-          [ "$missing" = "0" ] || { echo "not every place solved" >&2; exit 1; }
+          [ "$missing" = "0" ] || { echo "not every place solved at every setting" >&2; exit 1; }
           tar czf basis.tgz -C data basis
           ls -l basis.tgz
 
@@ -268,13 +278,15 @@ jobs:
           {
             echo "## Saved places warmed"
             echo ""
-            echo "Solved one place per runner and copied to the droplet. No"
-            echo "restart: a basis is read on the first request for its place,"
-            echo "so the next request picks these up."
+            echo "Solved one place and one stability per runner, and copied to"
+            echo "the droplet. No restart: a basis is read on the first request"
+            echo "for its place, so the next request picks these up."
             echo ""
-            echo '| place | size |'
-            echo '| --- | --- |'
-            for id in $(node -e "require('./data/locations.json').locations.forEach(l=>console.log(l.id))"); do
-              echo "| \`$id\` | $(du -h "data/basis/$id.basis" | cut -f1) |"
-            done
+            echo '| place | stability | size |'
+            echo '| --- | --- | --- |'
+            node tools/basis-cache-key.js --matrix > matrix.json
+            jq -r '.[] | "\(.id) \(.stability) \(.file)"' matrix.json |
+              while read -r id stab file; do
+                echo "| \`$id\` | $stab | $(du -h "data/basis/$file" | cut -f1) |"
+              done
           } >> "$GITHUB_STEP_SUMMARY"
