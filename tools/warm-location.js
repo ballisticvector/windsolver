@@ -90,11 +90,33 @@ function specFor(loc) {
   return spec;
 }
 
-async function warm(loc, opts, dir, force, stability) {
+/**
+ * The one place that decides which file a solve lands in.
+ *
+ * Extracted so it can be tested. When this lived inline in `warm()` it took the
+ * stability from an argument while `r` came from `opts`, the call site dropped
+ * the argument, and a stable field was written under the neutral name - correct
+ * inside, wrong on the outside, and invisible until CI went looking for a file
+ * that was not there twelve minutes into a solve.
+ *
+ * A first attempt at a test for that asserted on `pathFor` directly and passed
+ * against the bug, because `pathFor` was never what was broken. The decision
+ * has to be the thing under test, so the decision has to have a name.
+ */
+function stabilityOf(opts) {
+  return (opts && opts.stability) || "neutral";
+}
+
+function fileFor(dir, loc, opts) {
+  return pathFor(dir, loc.id, stabilityOf(opts));
+}
+
+async function warm(loc, opts, dir, force) {
   const spec = specFor(loc);
   const key = basisFile.keyFor(spec, opts);
-  const file = pathFor(dir, loc.id, stability);
-  const label = loc.id + (stability && stability !== "neutral" ? " (" + stability + ")" : "");
+  const file = fileFor(dir, loc, opts);
+  const stability = stabilityOf(opts);
+  const label = loc.id + (stability !== "neutral" ? " (" + stability + ")" : "");
 
   if (!force && fs.existsSync(file)) {
     try {
@@ -148,9 +170,20 @@ async function warm(loc, opts, dir, force, stability) {
     (elapsed / 1000).toFixed(1) + " s, " + (bytes / 1048576).toFixed(1) + " MB\n");
 }
 
-async function main() {
-  const args = parse(process.argv.slice(2));
-  const dir = args.out && args.out !== true ? String(args.out) : DEFAULT_OUT;
+/**
+ * The solve options behind a command line, with the stability inside them.
+ *
+ * **The stability travels in `opts` rather than beside it, and that is the
+ * point.** It used to be a separate argument threaded through `warm()`, and the
+ * call site lost it: the stable solve ran correctly at r = 0.1 and then wrote
+ * itself to the neutral filename, because `r` came from `opts` and the name
+ * came from an argument nobody passed. CI caught it only because the upload
+ * looked for a file that was not there.
+ *
+ * One object now carries both, so the field and the name it is stored under
+ * cannot disagree without someone editing this function.
+ */
+function optionsFrom(args) {
   // A named stability and a raw `--r` are two ways to say the same thing, and
   // taking both would leave the file name and the field it holds disagreeing.
   if (args.stability !== undefined && args.r !== undefined) {
@@ -160,27 +193,38 @@ async function main() {
   const stability = args.stability === undefined || args.stability === true
     ? "neutral"
     : String(args.stability);
-  const opts = {
+  return {
     layers: number(args.layers, 12, "layers"),
     stretch: number(args.stretch, 1.25, "stretch"),
     r: args.r === undefined ? mass.rFor(stability) : number(args.r, mass.DEFAULT_R, "r"),
-    maxIterations: 60000
+    maxIterations: 60000,
+    stability: stability
   };
+}
 
-  let chosen;
-  if (args.all) {
-    chosen = locations.locations;
-  } else if (args.location && args.location !== true) {
-    chosen = locations.locations.filter(function (l) { return l.id === String(args.location); });
-    if (!chosen.length) {
+function chosenFrom(args) {
+  if (args.all) return locations.locations;
+  if (args.location && args.location !== true) {
+    const found = locations.locations.filter(function (l) {
+      return l.id === String(args.location);
+    });
+    if (!found.length) {
       throw new Error("no saved location " + args.location + "; have " +
         locations.locations.map(function (l) { return l.id; }).join(", "));
     }
-  } else {
-    throw new Error("give --location <id> or --all");
+    return found;
   }
+  throw new Error("give --location <id> or --all");
+}
 
-  process.stdout.write("warming " + chosen.length + " place(s) into " + dir + "\n");
+async function main() {
+  const args = parse(process.argv.slice(2));
+  const dir = args.out && args.out !== true ? String(args.out) : DEFAULT_OUT;
+  const opts = optionsFrom(args);
+  const chosen = chosenFrom(args);
+
+  process.stdout.write("warming " + chosen.length + " place(s) at " + opts.stability +
+    " (r=" + opts.r + ") into " + dir + "\n");
   for (const loc of chosen) {
     await warm(loc, opts, dir, !!args.force);
   }
@@ -193,4 +237,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { pathFor, specFor, warm };
+module.exports = { pathFor, fileFor, stabilityOf, specFor, warm, optionsFrom, chosenFrom, parse };
