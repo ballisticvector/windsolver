@@ -532,12 +532,19 @@ function stratify(pairs, labelOf, opts) {
  * full-sample one. A scale fitted on a station that is no longer being scored
  * is that station still voting, which is the thing being measured.
  *
- * The result deliberately carries `deltaMps` per group — the score *without*
- * that group minus the score with everything — so a positive number is a group
- * whose removal makes the candidate look worse, i.e. one that was carrying it.
+ * The result deliberately carries `delta` per group — the score *without* that
+ * group minus the score with everything — so a positive number is a group whose
+ * removal makes the candidate look worse, i.e. one that was carrying it. Its
+ * unit is whatever `metric` returns: m/s for the default, degrees when the
+ * caller asks for direction.
  */
 function jackknife(pairs, groupOf, opts) {
   const o = opts || {};
+  // Whatever `metric` returns is what every delta below is in. It defaults to
+  // speed RMSE in m/s, and the fields are named `delta` rather than `deltaMps`
+  // because the same arithmetic answers direction in degrees - which is the
+  // whole reason this is a parameter. A field called `deltaMps` holding degrees
+  // is worse than no leave-one-out at all.
   const metric = o.metric || function (s) { return s.speed.rmseMps; };
   const groups = new Map();
   for (const p of pairs || []) {
@@ -558,7 +565,7 @@ function jackknife(pairs, groupOf, opts) {
     // row says so rather than reporting a score over zero pairs.
     const rest = (pairs || []).filter(function (p) { return groupOf(p) !== key; });
     if (!rest.length) {
-      out.push({ group: key, n: group.length, nRemaining: 0, metric: null, deltaMps: null });
+      out.push({ group: key, n: group.length, nRemaining: 0, metric: null, delta: null });
       continue;
     }
     const without = metric(scoreOf(rest));
@@ -567,27 +574,27 @@ function jackknife(pairs, groupOf, opts) {
       n: group.length,
       nRemaining: rest.length,
       metric: without,
-      deltaMps: full === null || without === null ? null : without - full
+      delta: full === null || without === null ? null : without - full
     });
   }
-  const deltas = out.map(function (r) { return r.deltaMps; })
+  const deltas = out.map(function (r) { return r.delta; })
     .filter(function (v) { return typeof v === "number" && isFinite(v); })
     .sort(function (a, b) { return a - b; });
   const carrying = out.reduce(function (worst, r) {
-    if (r.deltaMps === null) return worst;
-    return worst === null || r.deltaMps > worst.deltaMps ? r : worst;
+    if (r.delta === null) return worst;
+    return worst === null || r.delta > worst.delta ? r : worst;
   }, null);
   return {
     full: full,
     groups: out,
     n: deltas.length,
-    minDeltaMps: deltas.length ? deltas[0] : null,
-    medianDeltaMps: deltas.length ? deltas[(deltas.length - 1) >> 1] : null,
-    maxDeltaMps: deltas.length ? deltas[deltas.length - 1] : null,
+    minDelta: deltas.length ? deltas[0] : null,
+    medianDelta: deltas.length ? deltas[(deltas.length - 1) >> 1] : null,
+    maxDelta: deltas.length ? deltas[deltas.length - 1] : null,
     // The one group whose removal costs the most. Named rather than counted,
     // because "which station" is the question that gets asked next.
     carrying: carrying ? carrying.group : null,
-    carryingDeltaMps: carrying ? carrying.deltaMps : null
+    carryingDelta: carrying ? carrying.delta : null
   };
 }
 
