@@ -24,11 +24,24 @@
       "stabilities": [
         "neutral"
       ],
-      "note": "Centred on the firing lines rather than on the property's middle. The previous centre was a guess made before any range coordinate existed, and it was wrong by four to six kilometres: the 1000 yard range sat 879 m west of the box, and a 2,412 yard engagement began 54 m inside the five-mile box's western wall and ended 1,445 m outside it. A shooter watching that map was watching ground the solve never covered. This box holds the 1000 yard range at 36.787902,-104.535953, and the first known engagement from 36.792028,-104.579632 to 36.806557,-104.596452 - 2,205 m on a bearing of 317 - with about 2.1 km of terrain beyond the outermost of them, so the walls that shape the wind are inside the domain that solves it. Read at 16 m: this is the box the shooting actually happens in, and it is the last place to average a canyon away to save runner minutes.",
+      "note": "Centred on the firing lines rather than on the property's middle. The previous centre was a guess made before any range coordinate existed, and it was wrong by four to six kilometres: the 1000 yard range sat 879 m west of the box, and a 2,412 yard engagement began 54 m inside the five-mile box's western wall and ended 1,445 m outside it. A shooter watching that map was watching ground the solve never covered. This box holds the 1000 yard range at 36.787902,-104.535953, and the first known engagement from 36.792028,-104.579632 to 36.806557,-104.596452 - 2,205 m on a bearing of 317 - with about 2.1 km of terrain beyond the outermost of them, so the walls that shape the wind are inside the domain that solves it. Read at 16 m: this is the box the shooting actually happens in, and it is the last place to average a canyon away to save runner minutes."
+    },
+    {
+      "id": "ko2m",
+      "name": "King of 2 Miles — firing point 1",
+      "region": "NRA Whittington Center, Raton NM",
+      "lat": 36.799292,
+      "lon": -104.588042,
+      "radiusMiles": 2,
+      "resolutionM": 16,
+      "stabilities": [
+        "neutral"
+      ],
+      "note": "The engagement, not the property: centred on the midpoint of the shot rather than on a range, so the box holds the line and the ground either side of it with 2.4 km to spare at every edge. Two miles rather than three because this domain exists to answer one question - what the air does between a firing point and a target 2,202 m away on a bearing of 317 - and a box twice the area costs more than twice the solve without adding anything the bullet passes over. Read at 16 m, the finest the 3DEP pyramid offers here; the whittington box covers the same ground more widely and whittington-wide covers the property.",
       "shots": [
         {
           "id": "ko2m-1",
-          "name": "King of 2 Miles - firing point 1",
+          "name": "Firing point 1 to target 1",
           "shooter": {
             "lat": 36.792028,
             "lon": -104.579632
@@ -37,8 +50,7 @@
             "lat": 36.806557,
             "lon": -104.596452
           },
-          "rangeM": 2205,
-          "note": "The engagement this box was re-centred to hold. 2,205 m on a bearing of 317, which is 2,412 yards. Both pins sit more than two kilometres inside the solved box - under the previous centre the shooter was 54 m inside the five-mile domain's western wall and the target was 1,445 m outside it, so the wind drawn along this line came from ground the solver had never read."
+          "note": "2,202 m on 317 degrees - 2,408 yards. Both pins sit more than 2.4 km inside this box, which matters because the boundary is where the solve is least trustworthy: measured at nearly double the interior maximum on the old domain."
         }
       ]
     },
