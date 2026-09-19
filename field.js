@@ -734,13 +734,74 @@ async function groundOnly(spec, opts) {
   // The pyramid may not go as coarse as the caller asked. Averaging down the
   // rest of the way is the difference between a ten-mile domain costing three
   // million solver cells and costing three quarters of a million.
+  // What the pyramid gave, before any averaging. Kept because it is the only
+  // way a stored basis can later be asked whether this code would still make
+  // the same grid from the same ground - see `gridDisagreement`.
+  const readResolutionM = grid.resolutionM;
   const coarsenedBy = coarsenFactor(spec.targetResolutionM, grid.resolutionM);
   if (coarsenedBy > 1) grid = coarsen(grid, coarsenedBy);
 
   return {
     domain: domain, grid: grid, dataset: read.dataset,
-    filledFrom: filledFrom, coarsenedBy: coarsenedBy
+    filledFrom: filledFrom, coarsenedBy: coarsenedBy,
+    readResolutionM: readResolutionM
   };
+}
+
+/**
+ * Whether a stored grid is still one this code would produce, or a reason it
+ * is not.
+ *
+ * **`basis.keyFor` covers the coordinate, the box, the requested resolution and
+ * the mesh options - and nothing about how a spec becomes a grid.** That gap is
+ * not theoretical. `coarsenFactor` decides how many cells are averaged into
+ * one, it was changed once already, and a stored basis carries no memory of
+ * which rule produced it: the key would have sat still while every file became
+ * an answer to different ground, and the service would have served them.
+ *
+ * The check is cheap and needs no network, which is what makes it usable on a
+ * load. Two things are compared:
+ *
+ * - **the averaging.** The file records the resolution the pyramid handed back
+ *   and how many cells it then averaged. Given the first, this code says what
+ *   it would average today; if that differs, the rule moved under the file.
+ * - **the box.** `domainOf` turns a coordinate and a radius into bounds. If
+ *   that calculation moves, a stored field covers ground the request no longer
+ *   asks about.
+ *
+ * What it cannot check is the pyramid itself: whether 3DEP would still hand
+ * back the same level is only knowable by reading it, which is the thing a warm
+ * basis exists to avoid. So this narrows the gap rather than closing it, and
+ * says so.
+ *
+ * Returns `null` when the file still agrees.
+ */
+function gridDisagreement(spec, stored) {
+  if (!stored || !Number.isFinite(stored.readResolutionM) ||
+      !Number.isFinite(stored.coarsenedBy)) {
+    return "it does not record what resolution it was read at, so there is no " +
+      "way to ask whether this code would still make the same grid from it";
+  }
+
+  const want = coarsenFactor(spec.targetResolutionM, stored.readResolutionM);
+  if (want !== stored.coarsenedBy) {
+    return "it averaged " + stored.coarsenedBy + " cells into one from a " +
+      stored.readResolutionM.toFixed(4) + " m read; this code would average " + want;
+  }
+
+  if (stored.box) {
+    const want2 = domainOf(spec).box;
+    for (const edge of ["west", "east", "south", "north"]) {
+      // A tenth of a millidegree is about 11 m, well under one cell at any
+      // resolution this service reads, and far tighter than any real change to
+      // how a box is worked out.
+      if (Math.abs(want2[edge] - stored.box[edge]) > 1e-4) {
+        return "it covers " + edge + " " + stored.box[edge].toFixed(6) +
+          " where this code would ask for " + want2[edge].toFixed(6);
+      }
+    }
+  }
+  return null;
 }
 
 /**
@@ -855,6 +916,7 @@ module.exports = {
   FIELD_VERSION,
   coarsen,
   coarsenFactor,
+  gridDisagreement,
   RESOLUTION_TOLERANCE,
   groundOnly,
   massWindAt,

@@ -981,3 +981,77 @@ describe("coarsening a grid the overview pyramid could not", () => {
     expect(coarse.maxSlopeDeg).toBeLessThan(fine.maxSlopeDeg);
   });
 });
+
+describe("gridDisagreement: asking a stored basis whether it is still current", () => {
+  // `basis.keyFor` covers the coordinate, the box, the requested resolution and
+  // the mesh options — and nothing about how a spec becomes a grid. That gap is
+  // not theoretical: `coarsenFactor` was changed once already, and a stored
+  // basis carries no memory of which rule made it. The key would have sat still
+  // while every file became an answer to different ground.
+
+  const spec = { lat: 45.314758, lon: -116.344854, radiusMiles: 3, targetResolutionM: 32 };
+
+  /** What a solve of `spec` records today. */
+  function current() {
+    return {
+      readResolutionM: 16.0192,
+      coarsenedBy: field.coarsenFactor(spec.targetResolutionM, 16.0192),
+      box: field.domainOf(spec).box
+    };
+  }
+
+  test("a file this code would still make is not refused", () => {
+    expect(field.gridDisagreement(spec, current())).toBeNull();
+  });
+
+  // The real one. Hat Creek read 16.0192 m against a 32 m target: under the old
+  // `Math.floor` that averaged 1, under the tolerance it averages 2. A file
+  // written before that change is a 630 x 628 grid where this code makes
+  // 315 x 314, and nothing in the key moves.
+  test("catches the coarsening rule moving under a stored file", () => {
+    const old = Object.assign(current(), { coarsenedBy: 1 });
+    expect(field.gridDisagreement(spec, old)).toMatch(/averaged 1 .*would average 2/);
+  });
+
+  test("catches a box that is no longer the box this spec asks for", () => {
+    const moved = current();
+    moved.box = Object.assign({}, moved.box, { west: moved.box.west - 0.01 });
+    expect(field.gridDisagreement(spec, moved)).toMatch(/covers west/);
+  });
+
+  // A file that cannot answer the question is refused rather than trusted.
+  // Schema 1 files carry none of this, which is why the version was bumped
+  // instead of the field being treated as optional.
+  test.each([
+    ["nothing at all", {}],
+    ["no read resolution", { coarsenedBy: 1 }],
+    ["no coarsen factor", { readResolutionM: 16.0192 }]
+  ])("refuses a file recording %s", (_name, stored) => {
+    expect(field.gridDisagreement(spec, stored)).toMatch(/does not record/);
+  });
+
+  test("tolerates a box that differs by less than a cell", () => {
+    // Floating point on a round trip through JSON, not a change of rule.
+    const jittered = current();
+    jittered.box = Object.assign({}, jittered.box, {
+      north: jittered.box.north + 1e-7
+    });
+    expect(field.gridDisagreement(spec, jittered)).toBeNull();
+  });
+
+  test("checks the averaging even when the file records no box", () => {
+    const noBox = Object.assign(current(), { box: null, coarsenedBy: 1 });
+    expect(field.gridDisagreement(spec, noBox)).toMatch(/would average/);
+  });
+
+  // Stated as a limit rather than left to be discovered: whether 3DEP would
+  // still hand back the same level is only knowable by reading it, which is the
+  // thing a warm basis exists to avoid.
+  test("cannot tell that the pyramid itself moved, and does not pretend to", () => {
+    const differentLevel = Object.assign(current(), {
+      readResolutionM: 8.0096,
+      coarsenedBy: field.coarsenFactor(spec.targetResolutionM, 8.0096)
+    });
+    expect(field.gridDisagreement(spec, differentLevel)).toBeNull();
+  });
+});

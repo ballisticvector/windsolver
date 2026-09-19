@@ -158,6 +158,11 @@ async function warm(loc, opts, dir, force) {
       stability: stability || "neutral" },
     dataset: ground.dataset ? ground.dataset.label : null,
     filledFrom: ground.filledFrom,
+    // Recorded so the file can later be asked whether this code would still
+    // make the same grid from the same ground.
+    readResolutionM: ground.readResolutionM,
+    coarsenedBy: ground.coarsenedBy,
+    box: ground.domain.box,
     grid: grid,
     basis: solved
   });
