@@ -1786,8 +1786,13 @@ describe("a saved engagement on the listing", () => {
     const svc = await listen({ field: stubService() });
     try {
       const body = (await get(svc.url, "/v1/locations")).body;
-      const whittington = body.locations.find((l) => l.id === "whittington");
-      const shot = whittington.shots.find((s) => s.id === "ko2m-1");
+      // Found by shot rather than by place: which box carries the engagement is
+      // a decision that has already moved once, and a test that pins it would
+      // fail for the wrong reason the next time it moves.
+      const shot = body.locations
+        .flatMap((l) => l.shots || [])
+        .find((s) => s.id === "ko2m-1");
+      expect(shot).toBeDefined();
 
       expect(shot.rangeM).toBeGreaterThan(2195);
       expect(shot.rangeM).toBeLessThan(2215);
