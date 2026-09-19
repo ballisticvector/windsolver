@@ -36,7 +36,11 @@ const mass = require("./mass.js");
 const proj = require("./proj.js");
 
 const MAGIC = "WSBASIS1";
-const SCHEMA_VERSION = 1;
+// 2 records what the grid was read at and how much it was averaged, so a
+// stored basis can be asked whether this code would still make the same grid
+// from the same ground. A version 1 file cannot answer that and is refused
+// rather than trusted: see `field.gridDisagreement`.
+const SCHEMA_VERSION = 2;
 
 function fail(code, message, detail) {
   const err = new Error(message);
@@ -112,7 +116,13 @@ function encode(doc) {
       height: doc.grid.height,
       transform: doc.grid.transform,
       resolutionM: doc.grid.resolutionM,
-      voidFraction: doc.grid.voidFraction
+      voidFraction: doc.grid.voidFraction,
+      // How this grid came to be, so it can be checked later against the code
+      // that would make it now. `resolutionM` is what it ended up at;
+      // `readResolutionM` is what the pyramid handed back before averaging.
+      readResolutionM: doc.readResolutionM === undefined ? null : doc.readResolutionM,
+      coarsenedBy: doc.coarsenedBy === undefined ? null : doc.coarsenedBy,
+      box: doc.box || null
     },
     arrays: arrays.map(function (a) { return { name: a.name, length: a.values.length }; })
   };

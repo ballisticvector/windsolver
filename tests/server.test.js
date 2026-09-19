@@ -39,6 +39,7 @@ const profile = require("../profile.js");
 const server = require("../server.js");
 const basisFile = require("../basis.js");
 const mass = require("../mass.js");
+const fieldLib = require("../field.js");
 const volumeLib = require("../volume.js");
 
 const CENTRE = { lat: 40.0150, lon: -105.2705 };
@@ -1545,7 +1546,13 @@ describe("a saved place that is warmed while the service is running", () => {
       spec: spec,
       options: { layers: 12, stretch: 1.25, r: r, maxIterations: 60000 },
       location: { id: loc.id, name: loc.name, region: loc.region || null },
-      dataset: "test", filledFrom: null, grid: grid, basis: solved
+      dataset: "test", filledFrom: null,
+      // What a real solve records: the pyramid level it read and how much it
+      // averaged. 30 m against this location's target coarsens by 1.
+      readResolutionM: spacingM,
+      coarsenedBy: fieldLib.coarsenFactor(spec.targetResolutionM, spacingM),
+      box: fieldLib.domainOf(spec).box,
+      grid: grid, basis: solved
     });
   }
 
@@ -1670,6 +1677,9 @@ describe("asking for a stability", () => {
       spec: spec, options: opts,
       location: { id: loc.id, name: loc.name, region: null, stability: stability },
       dataset: "test-" + stability, filledFrom: null,
+      readResolutionM: spacingM,
+      coarsenedBy: fieldLib.coarsenFactor(spec.targetResolutionM, spacingM),
+      box: fieldLib.domainOf(spec).box,
       grid: {
         crs: crs, width: width, height: height, values: elevation,
         resolutionM: spacingM, voidFraction: 0,
@@ -1879,6 +1889,110 @@ describe("a place that does not offer every stability", () => {
       const res = await get(svc.url, "/v1/field?location=" + limited.id +
         "&speedMph=10&fromDeg=270&cols=6&stability=stable");
       expect(res.body.code).not.toBe("location-cold");
+    } finally {
+      await svc.close();
+    }
+  });
+});
+
+describe("a basis whose grid rule has moved under it", () => {
+  // The gap this closes: the key covers the place and the mesh options, so a
+  // file solved under a different coarsening rule matches the key exactly and
+  // is loaded. It is then a field over ground the request no longer describes —
+  // 630 x 628 where this code makes 315 x 314 — and nothing says so.
+
+  const loc = require("../data/locations.json").locations[0];
+
+  function writeWith(dir, provenance) {
+    const width = 12, height = 12, spacingM = 30;
+    const elevation = new Float32Array(width * height);
+    for (let j = 0; j < height; j++) {
+      for (let i = 0; i < width; i++) elevation[j * width + i] = 1800 + 5 * i;
+    }
+    const crs = proj.crsFromEpsg(26913);
+    const mid = proj.fromGeographic(crs, loc.lat, loc.lon);
+    const opts = { layers: 12, stretch: 1.25, r: mass.DEFAULT_R, maxIterations: 60000 };
+    const spec = { lat: loc.lat, lon: loc.lon, radiusMiles: loc.radiusMiles };
+    if (loc.resolutionM !== undefined) spec.targetResolutionM = loc.resolutionM;
+    fs.mkdirSync(dir, { recursive: true });
+    basisFile.save(path.join(dir, loc.id + ".basis"), Object.assign({
+      key: basisFile.keyFor(spec, opts),
+      spec: spec, options: opts,
+      location: { id: loc.id, name: loc.name, region: null },
+      dataset: "test", filledFrom: null,
+      grid: {
+        crs: crs, width: width, height: height, values: elevation,
+        resolutionM: spacingM, voidFraction: 0,
+        transform: {
+          originX: mid.x - (width * spacingM) / 2,
+          originY: mid.y + (height * spacingM) / 2,
+          scaleX: spacingM, scaleY: -spacingM
+        }
+      },
+      basis: mass.solveBasis({
+        width: width, height: height,
+        spacingM: { x: spacingM, y: spacingM }, elevation: elevation
+      }, opts)
+    }, provenance));
+  }
+
+  let dir;
+  beforeEach(() => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), "ws-grid-"));
+    server.forgetWarmPlaces();
+  });
+  afterEach(() => {
+    fs.rmSync(dir, { recursive: true, force: true });
+    server.forgetWarmPlaces();
+  });
+
+  const ask = "/v1/field?location=" + loc.id + "&speedMph=10&fromDeg=270&cols=6";
+  const spec = {
+    lat: loc.lat, lon: loc.lon, radiusMiles: loc.radiusMiles,
+    targetResolutionM: loc.resolutionM
+  };
+
+  test("a file recording the current rule is served", async () => {
+    const svc = await listen({ field: stubService(), basisDir: dir });
+    try {
+      writeWith(dir, {
+        readResolutionM: 30,
+        coarsenedBy: fieldLib.coarsenFactor(spec.targetResolutionM, 30),
+        box: fieldLib.domainOf(spec).box
+      });
+      expect((await get(svc.url, ask)).status).toBe(200);
+    } finally {
+      await svc.close();
+    }
+  });
+
+  test("a file averaged by a rule this build would not use is refused", async () => {
+    const svc = await listen({ field: stubService(), basisDir: dir });
+    try {
+      // Claims a 16.0192 m read averaged once — which is exactly what Hat Creek
+      // recorded before the coarsening gate was fixed, and exactly what this
+      // build would now average twice.
+      writeWith(dir, {
+        readResolutionM: 16.0192,
+        coarsenedBy: 1,
+        box: fieldLib.domainOf(spec).box
+      });
+      const res = await get(svc.url, ask);
+      expect(res.status).toBe(503);
+      expect(res.body.code).toBe("location-cold");
+    } finally {
+      await svc.close();
+    }
+  });
+
+  test("and the listing does not call it warm", async () => {
+    const svc = await listen({ field: stubService(), basisDir: dir });
+    try {
+      writeWith(dir, { readResolutionM: 16.0192, coarsenedBy: 1, box: null });
+      await get(svc.url, ask);          // the load that discovers it
+      const listed = (await get(svc.url, "/v1/locations")).body.locations
+        .find((l) => l.id === loc.id);
+      expect(listed.warm).toBe(false);
     } finally {
       await svc.close();
     }

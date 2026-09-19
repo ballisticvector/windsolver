@@ -262,6 +262,17 @@ function warmPlace(dir, loc, log, stability) {
   if (signature !== null) {
     try {
       loaded = basisFile.load(file, basisKeyFor(loc, stability));
+
+      // The key says this file is an answer to the right place and the right
+      // mesh options. It says nothing about how the spec became a grid, and
+      // that rule has moved before - so ask the file whether this code would
+      // still read the same ground the same way.
+      const disagreement = fieldModule.gridDisagreement(
+        specForLocation(loc), loaded.header.grid);
+      if (disagreement) {
+        throw Object.assign(new Error("this basis is not a grid this build would " +
+          "make: " + disagreement), { code: "stale-grid" });
+      }
       if (log) {
         log({ level: "info", message: "location loaded", location: loc.id,
           stability: stability || "neutral",
