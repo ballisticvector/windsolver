@@ -161,7 +161,16 @@
  * debias refitted on the survivors, reported as the spread of the change and
  * the station that costs the most. `leverage.stable` is the part to read first,
  * because if the winning candidate changes with which station is held out then
- * the run did not produce a ranking, whatever the pooled table says. It is
+ * the run did not produce a ranking, whatever the pooled table says.
+ *
+ * **It runs over direction as well as speed, and that was a gap for a while.**
+ * The terrain result anybody quotes from this tool is 2.3 degrees of direction
+ * RMSE over the Colorado valleys - and the leave-one-out tested speed only, so
+ * the single number being claimed was the single number with no error bar under
+ * it. `leverage.stable` is now true only when both metrics keep the same
+ * winner: a candidate that holds its speed ranking and loses its direction
+ * ranking has not produced a result, and one boolean would have hidden exactly
+ * the half that was being claimed. It is
  * arithmetic over pairs already in memory — one rescore per station per
  * candidate, no network — so it is not behind a flag; below
  * `MIN_LEVERAGE_STATIONS` stations it is null, because leaving one out of two
@@ -1131,41 +1140,80 @@ async function buildReport(options) {
   const distinctStations = new Set(allPairs.map(stationOf)).size;
   let leverage = null;
   if (distinctStations >= MIN_LEVERAGE_STATIONS) {
-    leverage = { minStations: MIN_LEVERAGE_STATIONS, stations: distinctStations, candidates: {} };
-    // Which candidate wins with each station held out. One name is a ranking;
-    // several is a sample too small to have produced one. Decided on the
-    // unrounded scores — the reported ones are rounded to a millimetre per
-    // second, and a tie created by rounding would read as a ranking that held.
-    const bestAt = new Map();
-    for (const candidate of candidates) {
-      const opts = Object.assign({ debias: true }, reading(floor, candidate.key));
-      const jack = verify.jackknife(allPairs, stationOf, opts);
-      for (const g of jack.groups) {
-        if (g.metric === null) continue;
-        const best = bestAt.get(g.group);
-        if (!best || g.metric < best.metric) bestAt.set(g.group, { key: candidate.key, metric: g.metric });
+    // **Both metrics, because the claim was about direction.** The terrain
+    // work's result over the Colorado valleys was 2.3 degrees of direction
+    // RMSE, and this block tested speed only - so the one number anybody cared
+    // about was the one number with no error bar on it. A candidate can win the
+    // pooled direction table on a single mast exactly as easily as it can win
+    // the speed table, and until this ran nothing here would have said so.
+    const METRICS = [
+      { key: "vector", unit: "m/s", digits: 3,
+        of: function (sc) { return sc.speed.rmseMps; } },
+      { key: "direction", unit: "deg", digits: 2,
+        of: function (sc) { return sc.direction.rmseDeg; } }
+    ];
+
+    leverage = {
+      minStations: MIN_LEVERAGE_STATIONS,
+      stations: distinctStations,
+      metrics: {},
+      candidates: {}
+    };
+
+    for (const metric of METRICS) {
+      const bestAt = new Map();
+      for (const candidate of candidates) {
+        const opts = Object.assign({ debias: true, metric: metric.of },
+          reading(floor, candidate.key));
+        const jack = verify.jackknife(allPairs, stationOf, opts);
+        for (const g of jack.groups) {
+          if (g.metric === null) continue;
+          const best = bestAt.get(g.group);
+          if (!best || g.metric < best.metric) {
+            bestAt.set(g.group, { key: candidate.key, metric: g.metric });
+          }
+        }
+        const held = leverage.candidates[candidate.key] ||
+          (leverage.candidates[candidate.key] = {});
+        held[metric.key] = {
+          unit: metric.unit,
+          full: round(jack.full, metric.digits),
+          minDelta: round(jack.minDelta, metric.digits),
+          medianDelta: round(jack.medianDelta, metric.digits),
+          maxDelta: round(jack.maxDelta, metric.digits),
+          carrying: jack.carrying,
+          carryingDelta: round(jack.carryingDelta, metric.digits),
+          stations: jack.groups.map(function (g) {
+            return {
+              id: g.group, n: g.n,
+              value: round(g.metric, metric.digits),
+              delta: round(g.delta, metric.digits)
+            };
+          })
+        };
       }
-      leverage.candidates[candidate.key] = {
-        fullRmseMps: round(jack.full, 3),
-        minDeltaMps: round(jack.minDeltaMps, 3),
-        medianDeltaMps: round(jack.medianDeltaMps, 3),
-        maxDeltaMps: round(jack.maxDeltaMps, 3),
-        carrying: jack.carrying,
-        carryingDeltaMps: round(jack.carryingDeltaMps, 3),
-        stations: jack.groups.map(function (g) {
-          return { id: g.group, n: g.n, rmseMps: round(g.metric, 3), deltaMps: round(g.deltaMps, 3) };
-        })
+      const winners = {};
+      for (const [id, best] of bestAt) winners[id] = best.key;
+      const winnerKeys = Array.from(new Set(Object.values(winners))).sort();
+      leverage.metrics[metric.key] = {
+        unit: metric.unit,
+        winners: winners,
+        winnerKeys: winnerKeys,
+        // A ranking that changes with which mast is held out is not a ranking.
+        stable: winnerKeys.length === 1
       };
     }
-    const winners = {};
-    for (const [id, best] of bestAt) winners[id] = best.key;
-    leverage.winners = winners;
-    leverage.winnerKeys = Array.from(new Set(Object.values(winners))).sort();
-    leverage.stable = leverage.winnerKeys.length === 1;
+
+    // Stable overall only when both agree. A candidate that holds its speed
+    // ranking and loses its direction ranking has not produced a result, and
+    // reading one boolean would hide exactly the half that was being claimed.
+    leverage.stable = Object.keys(leverage.metrics).every(function (k) {
+      return leverage.metrics[k].stable;
+    });
   }
 
   const report = {
-    schemaVersion: 4,
+    schemaVersion: 5,
     generated: new Date(started).toISOString(),
     window: {
       from: validTimes[0].toISOString(),
@@ -1913,25 +1961,31 @@ function summarise(report) {
   // ranking that changes when one mast leaves was never a ranking.
   if (report.leverage && candidates.length > 1) {
     const lev = report.leverage;
-    out.push("leave one station out, debiased speed RMSE refitted on the survivors (" +
-      lev.stations + " stations):");
-    out.push(["candidate".padEnd(16), "rmse".padStart(7), "worst".padStart(7),
-      "median".padStart(7), "best".padStart(7), "  carried by"].join(" "));
-    for (const c of candidates) {
-      const l = lev.candidates[c.key];
-      if (!l) continue;
-      out.push([c.label.padEnd(16), fixed(l.fullRmseMps, 3).padStart(7),
-        signed(l.maxDeltaMps).padStart(7), signed(l.medianDeltaMps).padStart(7),
-        signed(l.minDeltaMps).padStart(7),
-        "  " + (l.carrying || "-") + " " + signed(l.carryingDeltaMps)].join(" "));
+    for (const name of ["vector", "direction"]) {
+      const m = lev.metrics[name];
+      if (!m) continue;
+      out.push("leave one station out, debiased " + name + " RMSE (" + m.unit +
+        ") refitted on the survivors (" + lev.stations + " stations):");
+      out.push(["candidate".padEnd(16), "rmse".padStart(7), "worst".padStart(7),
+        "median".padStart(7), "best".padStart(7), "  carried by"].join(" "));
+      for (const c of candidates) {
+        const l = lev.candidates[c.key] && lev.candidates[c.key][name];
+        if (!l) continue;
+        out.push([c.label.padEnd(16), fixed(l.full, 2).padStart(7),
+          signed(l.maxDelta).padStart(7), signed(l.medianDelta).padStart(7),
+          signed(l.minDelta).padStart(7),
+          "  " + (l.carrying || "-") + " " + signed(l.carryingDelta)].join(" "));
+      }
+      out.push(m.stable
+        ? "  the same candidate wins with every station held out: " + m.winnerKeys[0]
+        : "  the winning candidate changes with which station is held out (" +
+          m.winnerKeys.join(", ") + ") — this sample has not produced a " + name +
+          " ranking");
+      out.push("");
     }
     out.push("worst/median/best are the change in RMSE when one station is removed — a " +
       "positive number is a station whose removal makes the candidate look worse, so it " +
       "was carrying it");
-    out.push(lev.stable
-      ? "the same candidate wins with every station held out: " + lev.winnerKeys[0]
-      : "the winning candidate changes with which station is held out (" +
-        lev.winnerKeys.join(", ") + ") — this sample has not produced a ranking");
     out.push("");
   }
 

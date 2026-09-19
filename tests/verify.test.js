@@ -403,11 +403,11 @@ describe("leaving one station out", () => {
     expect(at("A").nRemaining).toBe(4);
     // Without A: errors -1, -1, +4, +4 → sqrt(34/4).
     expect(at("A").metric).toBeCloseTo(Math.sqrt(34 / 4), 9);
-    expect(at("A").deltaMps).toBeCloseTo(Math.sqrt(34 / 4) - Math.sqrt(6), 9);
+    expect(at("A").delta).toBeCloseTo(Math.sqrt(34 / 4) - Math.sqrt(6), 9);
     // Without C: errors +1, -1, +1, -1 → exactly 1, far better than the pooled
     // score, so the delta is negative.
     expect(at("C").metric).toBeCloseTo(1, 9);
-    expect(at("C").deltaMps).toBeCloseTo(1 - Math.sqrt(6), 9);
+    expect(at("C").delta).toBeCloseTo(1 - Math.sqrt(6), 9);
   });
 
   test("the station that is carrying the score is the one whose removal costs most", () => {
@@ -416,11 +416,11 @@ describe("leaving one station out", () => {
     // largest |delta| instead of the largest delta would name C.
     const jack = verify.jackknife(pairs, byId);
     expect(jack.carrying).toBe("A");
-    expect(jack.carryingDeltaMps).toBeCloseTo(Math.sqrt(34 / 4) - Math.sqrt(6), 9);
-    expect(jack.maxDeltaMps).toBeCloseTo(Math.sqrt(34 / 4) - Math.sqrt(6), 9);
-    expect(jack.minDeltaMps).toBeCloseTo(1 - Math.sqrt(6), 9);
+    expect(jack.carryingDelta).toBeCloseTo(Math.sqrt(34 / 4) - Math.sqrt(6), 9);
+    expect(jack.maxDelta).toBeCloseTo(Math.sqrt(34 / 4) - Math.sqrt(6), 9);
+    expect(jack.minDelta).toBeCloseTo(1 - Math.sqrt(6), 9);
     // A and B are symmetric, so the middle of the three is one of them.
-    expect(jack.medianDeltaMps).toBeCloseTo(Math.sqrt(34 / 4) - Math.sqrt(6), 9);
+    expect(jack.medianDelta).toBeCloseTo(Math.sqrt(34 / 4) - Math.sqrt(6), 9);
     expect(jack.n).toBe(3);
   });
 
@@ -447,9 +447,9 @@ describe("leaving one station out", () => {
     expect(jack.groups).toHaveLength(1);
     expect(jack.groups[0].nRemaining).toBe(0);
     expect(jack.groups[0].metric).toBeNull();
-    expect(jack.groups[0].deltaMps).toBeNull();
+    expect(jack.groups[0].delta).toBeNull();
     expect(jack.carrying).toBeNull();
-    expect(jack.medianDeltaMps).toBeNull();
+    expect(jack.medianDelta).toBeNull();
   });
 
   test("no pairs at all is no score, not a zero", () => {
@@ -465,7 +465,7 @@ describe("leaving one station out", () => {
     });
     // Every wind here is from 270°, so no station is carrying the direction.
     expect(jack.full).toBeCloseTo(0, 9);
-    expect(jack.maxDeltaMps).toBeCloseTo(0, 9);
+    expect(jack.maxDelta).toBeCloseTo(0, 9);
   });
 });
 

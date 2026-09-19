@@ -1369,51 +1369,92 @@ describe("what the ranking is standing on", () => {
   test("every candidate is rescored with each station's pairs removed", async () => {
     const report = await threeStationReport();
     expect(report.leverage.stations).toBe(3);
-    const down = report.leverage.candidates.downscaled;
+    const down = report.leverage.candidates.downscaled.vector;
     expect(down.stations.map(function (s) { return s.id; }).sort())
       .toEqual(["HOLLOW", "KBDU", "RIDGE"]);
     // The same scoring the debiased table reports, over the same pairs.
-    expect(down.fullRmseMps).toBeCloseTo(report.debiased.downscaled.speed.rmseMps, 3);
+    expect(down.full).toBeCloseTo(report.debiased.downscaled.speed.rmseMps, 3);
     for (const s of down.stations) {
       expect(s.n).toBeGreaterThan(0);
-      expect(typeof s.rmseMps).toBe("number");
-      expect(s.deltaMps).toBeCloseTo(s.rmseMps - down.fullRmseMps, 3);
+      expect(typeof s.value).toBe("number");
+      expect(s.delta).toBeCloseTo(s.value - down.full, 3);
     }
+  });
+
+  // The reason this file changed. The terrain result anybody quotes is 2.3
+  // degrees of direction RMSE over the Colorado valleys, and until now the
+  // leave-one-out tested speed only - so the one number being claimed was the
+  // one number with no error bar on it.
+  test("direction is scored the same way, in degrees", async () => {
+    const report = await threeStationReport();
+    const dir = report.leverage.candidates.downscaled.direction;
+    expect(dir.unit).toBe("deg");
+    // To one place: the leverage block rounds degrees to two and the debiased
+    // table to one, so they are the same number reported differently.
+    expect(dir.full).toBeCloseTo(report.debiased.downscaled.direction.rmseDeg, 1);
+    expect(dir.stations.map(function (s) { return s.id; }).sort())
+      .toEqual(["HOLLOW", "KBDU", "RIDGE"]);
+    for (const s of dir.stations) {
+      expect(s.delta).toBeCloseTo(s.value - dir.full, 2);
+    }
+  });
+
+  test("the two metrics are scored separately, not one relabelled", async () => {
+    const report = await threeStationReport();
+    const c = report.leverage.candidates.downscaled;
+    expect(c.vector.unit).toBe("m/s");
+    expect(c.direction.unit).toBe("deg");
+    // Degrees and metres per second over the same pairs do not coincide.
+    expect(c.direction.full).not.toBeCloseTo(c.vector.full, 6);
+  });
+
+  test("a ranking is only stable when both metrics agree", async () => {
+    const report = await threeStationReport();
+    const lev = report.leverage;
+    expect(typeof lev.metrics.vector.stable).toBe("boolean");
+    expect(typeof lev.metrics.direction.stable).toBe("boolean");
+    // Reading one boolean would hide exactly the half being claimed.
+    expect(lev.stable).toBe(lev.metrics.vector.stable && lev.metrics.direction.stable);
   });
 
   test("the station supplying the error is visible as a delta, not as a footnote", async () => {
     const report = await threeStationReport();
-    const down = report.leverage.candidates.downscaled;
+    const down = report.leverage.candidates.downscaled.vector;
     const hollow = down.stations.find(function (s) { return s.id === "HOLLOW"; });
     // Removing the station the model is worst at improves the score, so its
     // delta is the negative end of the spread — which is the number that says
     // the pooled score was mostly one mast.
-    expect(hollow.deltaMps).toBeLessThan(0);
-    expect(down.minDeltaMps).toBeCloseTo(hollow.deltaMps, 3);
-    expect(down.maxDeltaMps).toBeGreaterThanOrEqual(down.medianDeltaMps);
-    expect(down.medianDeltaMps).toBeGreaterThanOrEqual(down.minDeltaMps);
+    expect(hollow.delta).toBeLessThan(0);
+    expect(down.minDelta).toBeCloseTo(hollow.delta, 3);
+    expect(down.maxDelta).toBeGreaterThanOrEqual(down.medianDelta);
+    expect(down.medianDelta).toBeGreaterThanOrEqual(down.minDelta);
     expect(down.carrying).not.toBe("HOLLOW");
   });
 
   test("whether the winner survives losing a station is stated, not left to be worked out", async () => {
     const report = await threeStationReport();
-    expect(Object.keys(report.leverage.winners).sort()).toEqual(["HOLLOW", "KBDU", "RIDGE"]);
-    expect(report.leverage.winnerKeys.length).toBeGreaterThan(0);
-    expect(report.leverage.stable)
-      .toBe(report.leverage.winnerKeys.length === 1);
-    for (const key of report.leverage.winnerKeys) {
-      expect(Object.keys(report.leverage.candidates)).toContain(key);
+    for (const name of ["vector", "direction"]) {
+      const m = report.leverage.metrics[name];
+      expect(Object.keys(m.winners).sort()).toEqual(["HOLLOW", "KBDU", "RIDGE"]);
+      expect(m.winnerKeys.length).toBeGreaterThan(0);
+      expect(m.stable).toBe(m.winnerKeys.length === 1);
+      for (const key of m.winnerKeys) {
+        expect(Object.keys(report.leverage.candidates)).toContain(key);
+      }
     }
   });
 
   test("the summary prints the spread and says whether the ranking held", async () => {
     const report = await threeStationReport();
     const text = scoreWind.summarise(report);
-    expect(text).toMatch(/leave one station out/);
+    expect(text).toMatch(/leave one station out, debiased vector RMSE/);
+    expect(text).toMatch(/leave one station out, debiased direction RMSE \(deg\)/);
     expect(text).toMatch(/carried by/);
-    expect(text).toMatch(report.leverage.stable
-      ? /wins with every station held out/
-      : /has not produced a ranking/);
+    for (const name of ["vector", "direction"]) {
+      expect(text).toMatch(report.leverage.metrics[name].stable
+        ? /wins with every station held out/
+        : new RegExp("has not produced a " + name + " ranking"));
+    }
   });
 
   test("two stations is not a distribution, so nothing is reported", async () => {
