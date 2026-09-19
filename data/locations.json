@@ -21,6 +21,9 @@
       "lon": -104.566203,
       "radiusMiles": 3,
       "resolutionM": 16,
+      "stabilities": [
+        "neutral"
+      ],
       "note": "Centred on the firing lines rather than on the property's middle. The previous centre was a guess made before any range coordinate existed, and it was wrong by four to six kilometres: the 1000 yard range sat 879 m west of the box, and a 2,412 yard engagement began 54 m inside the five-mile box's western wall and ended 1,445 m outside it. A shooter watching that map was watching ground the solve never covered. This box holds the 1000 yard range at 36.787902,-104.535953, and the first known engagement from 36.792028,-104.579632 to 36.806557,-104.596452 - 2,205 m on a bearing of 317 - with about 2.1 km of terrain beyond the outermost of them, so the walls that shape the wind are inside the domain that solves it. Read at 16 m: this is the box the shooting actually happens in, and it is the last place to average a canyon away to save runner minutes.",
       "shots": [
         {

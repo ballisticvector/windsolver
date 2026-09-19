@@ -275,16 +275,41 @@ describe("the matrix the workflow fans out over", () => {
   // One row per place *and* setting. `r` is inside the operator being inverted,
   // so a stability cannot be recovered from a solved basis the way a speed or a
   // bearing can - it is a separate solve, a separate file and a separate row.
-  test("is one entry per saved place per stability", () => {
+  test("is one entry per saved place per stability it offers", () => {
     const m = key.matrix(ROOT);
-    expect(m).toHaveLength(locations.length * settings.length);
     for (const l of locations) {
       const mine = m.filter((e) => e.id === l.id);
-      expect(mine.map((e) => e.stability).sort()).toEqual(settings.slice().sort());
+      expect(mine.map((e) => e.stability).sort())
+        .toEqual(key.stabilitiesOf(l).slice().sort());
     }
     for (const entry of m) {
       expect(entry.key).toMatch(/^basis-v3-[a-z0-9-]+-[a-z]+-[0-9a-f]{16}-[0-9a-f]{16}$/);
     }
+  });
+
+  // A stability is a whole extra solve, and on a big domain that is hours.
+  // Whittington's stable row was cancelled twice without finishing while five
+  // solved rows sat in the cache unable to be delivered, because delivery is
+  // all-or-nothing. A place can now ship the settings it has.
+  test("a place offers every setting unless it says otherwise", () => {
+    expect(key.stabilitiesOf({ id: "x" })).toEqual(settings);
+    expect(key.stabilitiesOf({ id: "x", stabilities: ["neutral"] })).toEqual(["neutral"]);
+  });
+
+  test("refuses a place that does not offer neutral", () => {
+    // Neutral is what a caller gets when it asks for nothing, so a place
+    // without it answers nothing at all to the commonest request.
+    expect(() => key.stabilitiesOf({ id: "x", stabilities: ["stable"] }))
+      .toThrow(/neutral/);
+  });
+
+  test("refuses an empty list rather than reading it as all of them", () => {
+    expect(() => key.stabilitiesOf({ id: "x", stabilities: [] })).toThrow(/cannot be solved/);
+  });
+
+  test("refuses a setting the solver does not have", () => {
+    expect(() => key.stabilitiesOf({ id: "x", stabilities: ["neutral", "balmy"] }))
+      .toThrow(/stability/i);
   });
 
   test("names the file each row will produce, neutral keeping the bare name", () => {
@@ -344,7 +369,7 @@ describe("the matrix the workflow fans out over", () => {
     }]);
     const after = [];
     for (const l of added) {
-      for (const stability of settings) {
+      for (const stability of key.stabilitiesOf(l)) {
         after.push({ id: l.id, stability: stability, key: key.keyFor(l, code, stability) });
       }
     }
