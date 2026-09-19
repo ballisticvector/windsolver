@@ -123,6 +123,23 @@ function shotsOf(loc) {
   });
 }
 
+/**
+ * The settings a place offers.
+ *
+ * Not every place offers every setting: a stability is a whole extra solve, and
+ * on the 604 x 604 Whittington box the stable one runs for hours. A place that
+ * names its settings offers those; a place that names none offers all of them.
+ *
+ * Reported rather than assumed, because "this place has no stable tier" and
+ * "this place has a stable tier nobody has warmed yet" are different answers
+ * and only one of them is fixed by running the warm workflow.
+ */
+function offeredStabilities(loc) {
+  const all = Object.keys(mass.STABILITY);
+  if (!Array.isArray(loc.stabilities) || !loc.stabilities.length) return all;
+  return all.filter(function (name) { return loc.stabilities.indexOf(name) >= 0; });
+}
+
 function locationById(id) {
   for (const loc of locations.locations) {
     if (loc.id === id) return loc;
@@ -1035,6 +1052,13 @@ function createHandler(opts) {
           "a saved location is a box and not a wind: give speedMph and fromDeg, " +
           "or ask for lat/lon without a location to have the model supply one");
       }
+      if (offeredStabilities(loc).indexOf(stability) < 0) {
+        throw serviceError("stability-not-offered", 400,
+          loc.name + " is not solved at " + stability + " stability. It offers " +
+          offeredStabilities(loc).join(", ") + " - a setting is a separate solve, " +
+          "and this domain is large enough that the others are not run for it.",
+          { location: loc.id, stability: stability, offers: offeredStabilities(loc) });
+      }
       const warm = warmPlace(basisDir, loc, log, stability);
       if (!warm) {
         throw serviceError("location-cold", 503,
@@ -1174,21 +1198,23 @@ function createHandler(opts) {
         // can be warm at neutral and cold at stable, and a caller choosing a
         // setting needs to know which before it asks.
         const stabilities = {};
-        for (const name of Object.keys(mass.STABILITY)) {
+        for (const name of offeredStabilities(loc)) {
           stabilities[name] = placeIsWarm(basisDir, loc, name);
         }
         return Object.assign({
           warm: placeIsWarm(basisDir, loc, "neutral"),
-          stabilities: stabilities,
           loaded: !!loaded,
           mesh: loaded ? loaded.basis.kind : null,
           maxSlopeDeg: loaded ? round(loaded.basis.maxSlopeDeg, 1) : null,
           terrain: loaded && loaded.header.dataset ? loaded.header.dataset : null
         }, loc, {
-          // After `loc`, not before it. Spread first, the raw array out of
-          // `locations.json` wins and the hand-typed `rangeM` is what gets
-          // served - which is the drift this was meant to remove.
-          shots: shotsOf(loc)
+          // **Everything computed from a location goes after the spread.** Put
+          // one before it and the raw value out of `locations.json` wins: the
+          // hand-typed `rangeM` gets served instead of the geometry, and
+          // `stabilities` comes back as the array `["neutral"]` rather than as
+          // the map of which settings are warm. Both of those have happened.
+          shots: shotsOf(loc),
+          stabilities: stabilities
         });
       })
     }, headers);

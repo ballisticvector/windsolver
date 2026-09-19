@@ -1827,3 +1827,60 @@ describe("a saved engagement on the listing", () => {
     }
   });
 });
+
+describe("a place that does not offer every stability", () => {
+  // Whittington is 604 x 604 at 16 m. Its neutral solve took 89 minutes and its
+  // stable solve was cancelled twice without finishing, while five solved rows
+  // sat in the cache undeliverable — delivery is all-or-nothing on purpose. So a
+  // place can name the settings it offers and gain the rest later.
+  //
+  // The distinction that matters to a caller: "this place has no stable tier"
+  // and "this place has a stable tier nobody warmed" are different answers, and
+  // only the second is fixed by running the warm workflow.
+
+  const locations = require("../data/locations.json").locations;
+  const limited = locations.find((l) => Array.isArray(l.stabilities) && l.stabilities.length === 1);
+
+  test("the file actually has one, or this suite is testing nothing", () => {
+    expect(limited).toBeDefined();
+    expect(limited.stabilities).toEqual(["neutral"]);
+  });
+
+  test("the listing reports only what it offers", async () => {
+    const svc = await listen({ field: stubService() });
+    try {
+      const body = (await get(svc.url, "/v1/locations")).body;
+      const place = body.locations.find((l) => l.id === limited.id);
+      expect(Object.keys(place.stabilities)).toEqual(["neutral"]);
+    } finally {
+      await svc.close();
+    }
+  });
+
+  test("asking for one it does not offer is refused, and says what it has", async () => {
+    const svc = await listen({ field: stubService() });
+    try {
+      const res = await get(svc.url, "/v1/field?location=" + limited.id +
+        "&speedMph=10&fromDeg=270&cols=6&stability=stable");
+      expect(res.status).toBe(400);
+      expect(res.body.code).toBe("stability-not-offered");
+      expect(res.body.error).toContain("neutral");
+    } finally {
+      await svc.close();
+    }
+  });
+
+  // 400 rather than 503: a cold place is fixed by warming it, and this one
+  // cannot be. Telling a caller to run the warm workflow would send it to do
+  // something that would not help.
+  test("is refused as a request problem, not as a cold place", async () => {
+    const svc = await listen({ field: stubService() });
+    try {
+      const res = await get(svc.url, "/v1/field?location=" + limited.id +
+        "&speedMph=10&fromDeg=270&cols=6&stability=stable");
+      expect(res.body.code).not.toBe("location-cold");
+    } finally {
+      await svc.close();
+    }
+  });
+});

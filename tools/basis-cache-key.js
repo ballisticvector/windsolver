@@ -282,6 +282,34 @@ function keyFor(loc, code, stability) {
  * solves and two files - and two rows here, so the fan-out gives each its own
  * runner and its own cache entry.
  */
+/**
+ * The settings a place offers, which is not always every setting there is.
+ *
+ * A stability is a whole extra solve, and on a big domain that is hours. The
+ * re-centred Whittington box is 604 x 604 at 16 m: its neutral solve took 89
+ * minutes and its stable solve was cancelled twice without ever finishing. One
+ * row nobody has seen complete should not hold back five that are solved and
+ * sitting in the cache, because delivery is all-or-nothing by design.
+ *
+ * So a place may name the settings it offers and gain the others later. Absent,
+ * a place offers all of them, which keeps the small domains honest without
+ * anyone having to list anything.
+ */
+function stabilitiesOf(loc) {
+  const all = Object.keys(mass.STABILITY);
+  if (!Array.isArray(loc.stabilities)) return all;
+  if (!loc.stabilities.length) {
+    throw new Error(loc.id + " lists no stabilities; a place with no settings " +
+      "cannot be solved at all. Remove the key to offer all of them.");
+  }
+  for (const name of loc.stabilities) mass.rFor(name);   // refuses an unknown one
+  if (loc.stabilities.indexOf("neutral") < 0) {
+    throw new Error(loc.id + " does not offer neutral, which is the setting a " +
+      "caller gets when it asks for nothing");
+  }
+  return all.filter(function (name) { return loc.stabilities.indexOf(name) >= 0; });
+}
+
 function matrix(root) {
   const at = root || ROOT;
   const locations = JSON.parse(
@@ -289,7 +317,7 @@ function matrix(root) {
   const code = codeHash(at);
   const out = [];
   for (const l of locations) {
-    for (const stability of Object.keys(mass.STABILITY)) {
+    for (const stability of stabilitiesOf(l)) {
       out.push({
         id: l.id,
         stability: stability,
@@ -343,6 +371,7 @@ module.exports = {
   KEY_PREFIX,
   SAFE_ID,
   checkId,
+  stabilitiesOf,
   closure,
   requiresIn,
   hashedFiles,
